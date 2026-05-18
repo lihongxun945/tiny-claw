@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash"
-    ]
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "Agent"
+    ],
+    "defaultMode": "dontAsk"
   }
 }
