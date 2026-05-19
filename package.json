@@ -1,0 +1,18 @@
+{
+  "name": "tiny-claw",
+  "version": "0.1.0",
+  "description": "一个自主规划、执行任务的 Agent",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx src/index.ts"
+  },
+  "author": "lihongxun",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^25.9.0",
+    "tsx": "^4.22.2",
+    "typescript": "^6.0.3"
+  }
+}
