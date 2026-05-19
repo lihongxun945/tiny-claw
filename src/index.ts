@@ -2,11 +2,25 @@ import * as readline from "node:readline/promises";
 import { loadConfig } from "./config.js";
 import { AnthropicClient } from "./client.js";
 import { MessageHistory } from "./history.js";
+import { ToolRegistry } from "./tools.js";
+import { createWebSearchTool } from "./search.js";
+import { createBashTool } from "./bash.js";
+import { createFileReadTool } from "./file_read.js";
+import { createFileWriteTool } from "./file_write.js";
+import { createFileEditTool } from "./file_edit.js";
+import type { ToolUseBlock, ToolResultBlock } from "./types.js";
 
 async function main() {
   const config = loadConfig();
   const client = new AnthropicClient(config);
   const history = new MessageHistory();
+
+  const registry = new ToolRegistry();
+  registry.register(createWebSearchTool());
+  registry.register(createBashTool());
+  registry.register(createFileReadTool());
+  registry.register(createFileWriteTool());
+  registry.register(createFileEditTool());
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -30,19 +44,76 @@ async function main() {
     if (!userInput.trim()) continue;
 
     history.push({ role: "user", content: userInput });
-    const context = history.getRecentMessages(config.historyWindowSize);
 
-    process.stdout.write("Assistant: ");
-    try {
-      const response = await client.chat(context, (delta) => {
-        process.stdout.write(delta);
-      });
-      process.stdout.write("\n\n");
-      history.push({ role: "assistant", content: response });
-    } catch (err) {
+    // Agent loop: 模型输出 → 可能调用工具 → 执行工具 → 结果反馈给模型 → 循环
+    while (!stdinClosed) {
+      const context = history.getRecentMessages(config.historyWindowSize);
+      const toolDefs = registry.getDefinitions();
+
+      process.stdout.write("Assistant: ");
+      let response;
+      try {
+        response = await client.chat(
+          context,
+          (delta) => process.stdout.write(delta),
+          toolDefs.length > 0 ? toolDefs : undefined,
+        );
+      } catch (err) {
+        process.stdout.write("\n");
+        console.error("错误:", err instanceof Error ? err.message : err);
+        break;
+      }
       process.stdout.write("\n");
-      console.error("错误:", err instanceof Error ? err.message : err);
+
+      // 构造 assistant 消息的 content blocks
+      const assistantContent: (ToolUseBlock | { type: "text"; text: string })[] = [];
+      if (response.text) {
+        assistantContent.push({ type: "text", text: response.text });
+      }
+      for (const tc of response.toolCalls) {
+        assistantContent.push(tc);
+      }
+
+      if (assistantContent.length > 0) {
+        history.push({ role: "assistant", content: assistantContent });
+      }
+
+      // 无工具调用，结束 agent loop，等待用户输入
+      if (response.toolCalls.length === 0) {
+        break;
+      }
+
+      // 执行工具调用，将结果加入历史
+      for (const toolCall of response.toolCalls) {
+        console.log(`[工具调用] ${toolCall.name}(${JSON.stringify(toolCall.input)})`);
+
+        const tool = registry.getTool(toolCall.name);
+        let result: string;
+        if (tool) {
+          try {
+            result = await tool.execute(toolCall.input);
+            console.log(`[工具结果] ${result.slice(0, 200)}${result.length > 200 ? "..." : ""}`);
+          } catch (err) {
+            result = JSON.stringify({
+              error: `工具执行失败: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          }
+        } else {
+          result = JSON.stringify({ error: `未知工具: ${toolCall.name}` });
+        }
+
+        const toolResult: ToolResultBlock = {
+          type: "tool_result",
+          tool_use_id: toolCall.id,
+          content: result,
+        };
+        history.push({ role: "user", content: [toolResult] });
+      }
+
+      // 继续循环，让模型基于工具结果继续输出
     }
+
+    console.log("");
   }
 }
 

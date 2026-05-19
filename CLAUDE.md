@@ -28,3 +28,8 @@ Memory（分层记忆）、Skill（技能系统）、聊天工具（飞书/钉�
 ## 开发顺序
 
 Loop → Model IO + Prompt → 工具调用 → History → 上下文压缩 → 配置管理 → 高级能力。每个能力可用后再做下一个。
+
+## 工作规范
+
+- 代码变更后必须检查 `docs/architecture.md` 是否需要同步更新（模块结构、数据流、设计决策等）
+- 每日开发结束后更新 `docs/devlog/YYYY-MM-DD.md`

@@ -1,7 +1,7 @@
 {
-  "apiUrl": "https://ark.cn-beijing.volces.com/api/coding/v1",
+  "apiUrl": "https://ark.cn-beijing.volces.com/api/coding",
   "apiKey": "YOUR_API_KEY",
-  "model": "claude-sonnet-4-5",
+  "model": "deepseek-v4-flash",
   "maxTokens": 4096,
   "historyWindowSize": 5
 }
