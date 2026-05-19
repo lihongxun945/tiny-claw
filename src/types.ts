@@ -33,6 +33,8 @@ export interface Config {
   model: string;
   maxTokens: number;
   historyWindowSize: number;
+  workspacePath: string;
+  systemPrompt: string;
 }
 
 // === Tool ===

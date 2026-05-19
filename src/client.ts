@@ -16,6 +16,7 @@ export class AnthropicClient {
     messages: Message[],
     onDelta: (text: string) => void,
     tools?: ToolDefinition[],
+    systemPrompt?: string,
   ): Promise<ChatResponse> {
     const url = `${this.config.apiUrl}/v1/messages`;
 
@@ -25,6 +26,9 @@ export class AnthropicClient {
       messages,
       stream: true,
     };
+    if (systemPrompt) {
+      body.system = systemPrompt;
+    }
     if (tools && tools.length > 0) {
       body.tools = tools;
     }

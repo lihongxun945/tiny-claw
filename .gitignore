@@ -2,3 +2,7 @@
 node_modules/
 dist/
 config.json
+workspace/config.json
+workspace/history/
+workspace/logs/
+workspace/memory/
