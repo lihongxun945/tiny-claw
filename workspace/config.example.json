@@ -1,7 +1,0 @@
-{
-  "apiUrl": "https://ark.cn-beijing.volces.com/api/coding",
-  "apiKey": "YOUR_API_KEY",
-  "model": "deepseek-v4-flash",
-  "maxTokens": 4096,
-  "historyWindowSize": 5
-}

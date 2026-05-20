@@ -11,6 +11,7 @@ import { createFileWriteTool } from "./tools/file_write.js";
 import { createFileEditTool } from "./tools/file_edit.js";
 import { resolveWorkspacePath, ensureWorkspace, buildSystemPrompt } from "./workspace/workspace.js";
 import { createMemorySaveTool, createMemoryAppendTool, createMemoryListTool } from "./tools/memory.js";
+import { createSkillUseTool, createSkillListTool } from "./tools/skill.js";
 import { appendHistory, appendLog } from "./workspace/logger.js";
 import { compressIfNeeded } from "./compress.js";
 import type { Message, ToolUseBlock, ToolResultBlock } from "./types.js";
@@ -43,6 +44,8 @@ async function main() {
   registry.register(createMemorySaveTool(workspacePath));
   registry.register(createMemoryAppendTool(workspacePath));
   registry.register(createMemoryListTool(workspacePath));
+  registry.register(createSkillUseTool(workspacePath));
+  registry.register(createSkillListTool(workspacePath));
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -85,6 +88,7 @@ async function main() {
       if (compressed !== context) {
         const estimatedTurnStart = compressed.length - (context.length - turnStartIdx);
         history.replaceWithCompressed(compressed, Math.max(0, estimatedTurnStart));
+        console.log(`[上下文压缩] ${context.length} → ${compressed.length} 条消息`);
         appendLog(workspacePath, "INFO", `上下文已压缩: ${context.length} → ${compressed.length} 条消息`);
       }
 

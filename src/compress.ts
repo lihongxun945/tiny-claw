@@ -30,10 +30,11 @@ export async function compressIfNeeded(
     return [...compressed, ...currentMessages];
   }
 
-  // 历史不足，压缩当前轮早期消息（保留最后几条）
+  // 历史不足，压缩当前轮前半部分消息
   if (currentMessages.length > 4) {
-    const toCompress = currentMessages.slice(0, -4);
-    const toKeep = currentMessages.slice(-4);
+    const splitIdx = Math.ceil(currentMessages.length / 2);
+    const toCompress = currentMessages.slice(0, splitIdx);
+    const toKeep = currentMessages.slice(splitIdx);
     const compressed = await compressMessages(toCompress, client);
     return [...previousMessages, ...compressed, ...toKeep];
   }

@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadAllMemories } from "../tools/memory.js";
+import { listSkills } from "../tools/skill.js";
 
 const SUBDIRS = ["skills", "memory", "history", "logs"];
 
@@ -43,6 +44,15 @@ export function buildSystemPrompt(workspacePath: string): string {
     parts.push("\n## 长期记忆\n");
     parts.push("以下是你在之前的对话中记住的信息：");
     parts.push(memories);
+  }
+
+  const skills = listSkills(workspacePath);
+  if (skills.length > 0) {
+    parts.push("\n## 可用技能\n");
+    parts.push("以下技能可通过 skill_use 工具激活：");
+    for (const s of skills) {
+      parts.push(`- ${s.name}: ${s.description}`);
+    }
   }
 
   return parts.join("\n");

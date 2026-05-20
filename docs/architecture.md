@@ -33,6 +33,7 @@ src/
 │   ├── file_write.ts # 文件写入
 │   ├── file_edit.ts  # 文件精确替换
 │   └── memory.ts     # 持久化记忆（读写 memory/*.md）
+│   └── skill.ts      # 技能系统（加载/激活 skills/*.md）
 └── workspace/        # 工作目录相关
     ├── workspace.ts  # 目录初始化、身份加载、system prompt 构建
     └── logger.ts     # 追加式文件日志（history + 执行日志）
@@ -165,6 +166,8 @@ web_search 工具支持三个搜索引擎，通过 `config.json` 的 `searchProv
 | memory_save | 保存/覆盖长期记忆 | name 防路径遍历（仅允许字母、数字、_-） |
 | memory_append | 追加内容到已有记忆 | 同上 |
 | memory_list | 列出所有长期记忆 | 无参数 |
+| skill_use | 激活一个技能 | 技能不存在时返回可用列表 |
+| skill_list | 列出所有可用技能 | 无参数 |
 
 bash 工具用 `child_process.spawn` 执行，返回 `{ stdout, stderr, exitCode }`。file_edit 采用唯一匹配策略：`old_text` 在文件中必须只出现一次，否则报错，避免误修改。
 
@@ -183,8 +186,25 @@ bash 工具用 `child_process.spawn` 执行，返回 `{ stdout, stderr, exitCode
 
 `identity.md` 作为可选的 system prompt 扩展。如果文件存在，运行时加载并注入到 API 请求的 `system` 参数中，让模型在每次对话中遵循角色设定。
 
+### 技能系统
+
+技能是 Markdown 文件，放在 `workspace/skills/` 目录下，包含 frontmatter（name、description）和指令正文：
+
+```markdown
+---
+name: code-review
+description: 代码审查，检查代码质量、安全性和最佳实践
+---
+
+你是一个代码审查专家。执行以下步骤：...
+```
+
+- **发现**：启动时 `listSkills()` 扫描 `skills/*.md`，将名称和描述注入 system prompt，让模型知道有哪些技能可用
+- **激活**：模型调用 `skill_use(name)` 获取完整指令内容，按指令执行任务
+- **查询**：模型调用 `skill_list()` 列出所有可用技能
+- **文件格式**：frontmatter 用 `---` 包裹，必须包含 `name` 和 `description` 字段
+
 ## 待实现
 
 - **配置管理**：统一管理模型选择、工具权限等
 - **安全沙箱**：工具执行权限控制
-- **技能系统**：从 workspace/skills/ 加载自定义技能
