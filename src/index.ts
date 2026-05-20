@@ -33,7 +33,7 @@ async function main() {
   const systemPrompt = buildSystemPrompt(workspacePath);
 
   const registry = new ToolRegistry();
-  registry.register(createWebSearchTool());
+  registry.register(createWebSearchTool(config));
   registry.register(createBashTool());
   registry.register(createFileReadTool());
   registry.register(createFileWriteTool());

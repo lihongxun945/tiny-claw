@@ -65,6 +65,9 @@ workspace/
 | contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
 | historyWindowSize | 历史窗口（轮） | 5 |
 | maxAgentIterations | Agent Loop 最大迭代次数 | 0（不限） |
+| searchProvider | 搜索引擎 (searxng/brave/duckduckgo) | searxng |
+| searxngUrl | SearXNG 实例地址 | - |
+| braveApiKey | Brave Search API key | - |
 
 ### identity.md
 
@@ -136,15 +139,23 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 
 工具通过 `ToolRegistry.register(tool)` 注册，模型调用时通过 `getTool(name)` 查找执行。新增工具只需：1) 实现 Tool 接口 2) 注册到 Registry。
 
-### 搜索引擎：DuckDuckGo
+### 搜索引擎：多 Provider 架构
 
-免 API key，解析 HTML 搜索结果页提取标题、摘要、链接。作为第一个工具验证 tool use 链路，后续可扩展 Brave/Perplexity 等 provider。
+web_search 工具支持三个搜索引擎，通过 `config.json` 的 `searchProvider` 字段切换：
+
+| Provider | 说明 | 配置 |
+|----------|------|------|
+| searxng（默认） | 自建 SearXNG 实例，返回完整搜索结果 | 需配置 `searxngUrl` |
+| brave | Brave Search API，结果质量好 | 需配置 `braveApiKey` |
+| duckduckgo | DuckDuckGo Instant Answer API，无需 key | 无额外配置 |
+
+注意：DuckDuckGo provider 使用 Instant Answer API（返回摘要/定义），不是完整搜索结果列表。如需完整搜索结果，推荐使用 SearXNG 或 Brave。
 
 ### 内置工具
 
 | 工具 | 用途 | 安全措施 |
 |------|------|----------|
-| web_search | DuckDuckGo 搜索 | 无 |
+| web_search | 网络搜索（多 provider） | 按配置选择引擎 |
 | bash | 执行 shell 命令 | 超时控制（默认30秒）、输出截断（10KB） |
 | file_read | 读取文件 | 路径 resolve 防止路径遍历 |
 | file_write | 写入文件 | 自动创建父目录 |

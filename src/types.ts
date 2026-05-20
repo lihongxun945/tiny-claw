@@ -36,6 +36,9 @@ export interface Config {
   contextCompressionThreshold: number;
   historyWindowSize: number;
   maxAgentIterations: number;
+  searchProvider: "searxng" | "brave" | "duckduckgo";
+  searxngUrl?: string;
+  braveApiKey?: string;
   workspacePath: string;
   systemPrompt: string;
 }

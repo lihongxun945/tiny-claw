@@ -9,6 +9,7 @@ const DEFAULTS: Partial<Config> = {
   contextCompressionThreshold: 0.7,
   historyWindowSize: 5,
   maxAgentIterations: 0,
+  searchProvider: "searxng",
 };
 
 export function loadConfig(workspacePath: string): Config {
@@ -34,6 +35,9 @@ export function loadConfig(workspacePath: string): Config {
     contextCompressionThreshold: (raw.contextCompressionThreshold as number) ?? DEFAULTS.contextCompressionThreshold!,
     historyWindowSize: (raw.historyWindowSize as number) ?? DEFAULTS.historyWindowSize!,
     maxAgentIterations: (raw.maxAgentIterations as number) ?? DEFAULTS.maxAgentIterations!,
+    searchProvider: (raw.searchProvider as Config["searchProvider"]) ?? DEFAULTS.searchProvider!,
+    searxngUrl: raw.searxngUrl as string | undefined,
+    braveApiKey: raw.braveApiKey as string | undefined,
     workspacePath,
     systemPrompt: loadIdentity(workspacePath),
   };
