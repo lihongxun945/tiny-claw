@@ -65,7 +65,7 @@ workspace/
 | contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
 | historyWindowSize | 历史窗口（轮） | 5 |
 | maxAgentIterations | Agent Loop 最大迭代次数 | 0（不限） |
-| searchProvider | 搜索引擎 (searxng/brave/duckduckgo) | searxng |
+| searchProvider | 搜索引擎 (searxng/brave/duckduckgo) | duckduckgo |
 | searxngUrl | SearXNG 实例地址 | - |
 | braveApiKey | Brave Search API key | - |
 
@@ -145,11 +145,11 @@ web_search 工具支持三个搜索引擎，通过 `config.json` 的 `searchProv
 
 | Provider | 说明 | 配置 |
 |----------|------|------|
-| searxng（默认） | 自建 SearXNG 实例，返回完整搜索结果 | 需配置 `searxngUrl` |
+| duckduckgo（默认） | DuckDuckGo Instant Answer API，无需 key | 无额外配置 |
+| searxng | 自建 SearXNG 实例，返回完整搜索结果 | 需配置 `searxngUrl` |
 | brave | Brave Search API，结果质量好 | 需配置 `braveApiKey` |
-| duckduckgo | DuckDuckGo Instant Answer API，无需 key | 无额外配置 |
 
-注意：DuckDuckGo provider 使用 Instant Answer API（返回摘要/定义），不是完整搜索结果列表。如需完整搜索结果，推荐使用 SearXNG 或 Brave。
+注意：DuckDuckGo provider 使用 Instant Answer API（返回摘要/定义），不是完整搜索结果列表，但无需配置即可使用。如需完整搜索结果，推荐使用 SearXNG 或 Brave。
 
 ### 内置工具
 

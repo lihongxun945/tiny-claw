@@ -4,5 +4,8 @@
   "apiKey": "YOUR_API_KEY",
   "model": "deepseek-v4-flash",
   "maxTokens": 4096,
-  "historyWindowSize": 5
+  "historyWindowSize": 5,
+  "searchProvider": "duckduckgo",
+  "searxngUrl": "http://localhost:8080",
+  "braveApiKey": "YOUR_BRAVE_API_KEY"
 }

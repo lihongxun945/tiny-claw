@@ -9,7 +9,7 @@ const DEFAULTS: Partial<Config> = {
   contextCompressionThreshold: 0.7,
   historyWindowSize: 5,
   maxAgentIterations: 0,
-  searchProvider: "searxng",
+  searchProvider: "duckduckgo",
 };
 
 export function loadConfig(workspacePath: string): Config {
