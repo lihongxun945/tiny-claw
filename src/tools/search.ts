@@ -11,6 +11,25 @@ interface SearchProvider {
   search(query: string, count: number): Promise<SearchResult[]>;
 }
 
+const SEARCH_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const SEARCH_TIMEOUT = 15_000;
+
+/** 带超时和 User-Agent 的 fetch 封装 */
+async function searchFetch(url: string, headers?: Record<string, string>): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SEARCH_TIMEOUT);
+  try {
+    const resp = await fetch(url, {
+      headers: { "user-agent": SEARCH_UA, ...headers },
+      signal: controller.signal,
+    });
+    return resp;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // === SearXNG ===
 
 class SearXNGProvider implements SearchProvider {
@@ -18,7 +37,7 @@ class SearXNGProvider implements SearchProvider {
   constructor(private url: string) {}
 
   async search(query: string, count: number): Promise<SearchResult[]> {
-    const resp = await fetch(
+    const resp = await searchFetch(
       `${this.url}/search?q=${encodeURIComponent(query)}&format=json`,
     );
     if (!resp.ok) {
@@ -42,9 +61,9 @@ class BraveProvider implements SearchProvider {
   constructor(private apiKey: string) {}
 
   async search(query: string, count: number): Promise<SearchResult[]> {
-    const resp = await fetch(
+    const resp = await searchFetch(
       `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`,
-      { headers: { "X-Subscription-Token": this.apiKey } },
+      { "X-Subscription-Token": this.apiKey },
     );
     if (!resp.ok) {
       throw new Error(`Brave Search 请求失败 (${resp.status})`);
@@ -68,7 +87,7 @@ class DuckDuckGoProvider implements SearchProvider {
   name = "duckduckgo";
 
   async search(query: string, count: number): Promise<SearchResult[]> {
-    const resp = await fetch(
+    const resp = await searchFetch(
       `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`,
     );
     if (!resp.ok) {
@@ -188,8 +207,12 @@ export function createWebSearchTool(config: Config): Tool {
         }
         return JSON.stringify({ results });
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isTimeout = err instanceof Error && err.name === "AbortError";
         return JSON.stringify({
-          error: `搜索失败 (${provider.name}): ${err instanceof Error ? err.message : String(err)}`,
+          error: isTimeout
+            ? `搜索超时 (${provider.name}，${SEARCH_TIMEOUT / 1000}秒)`
+            : `搜索失败 (${provider.name}): ${msg}`,
         });
       }
     },
