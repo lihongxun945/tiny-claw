@@ -11,7 +11,7 @@
 高级能力：           Memory → Skill → 聊天工具(飞书/钉钉) → RAG
 ```
 
-当前进度：已完成 Loop、Model IO + Prompt、工具调用、History，进入上下文压缩阶段。
+当前进度：已完成 Loop、Model IO + Prompt、工具调用、History、上下文压缩，进入配置管理阶段。
 
 ## 模块结构
 
@@ -21,6 +21,8 @@ src/
 ├── config.ts         # 配置加载（从 workspace 读取）
 ├── client.ts         # Anthropic Messages API 客户端（流式）
 ├── history.ts        # 滑动窗口消息历史
+├── compress.ts       # 上下文压缩（模型摘要）
+├── estimate-tokens.ts # Token 估算（触发压缩）
 ├── types.ts          # 共享类型定义
 ├── tools/            # 工具实现
 │   ├── registry.ts   # 工具注册中心
@@ -59,7 +61,10 @@ workspace/
 | apiKey | API 密钥 | 必填 |
 | model | 模型标识 | 必填 |
 | maxTokens | 单次响应最大 token | 4096 |
+| maxContextTokens | 上下文最大 token 估计 | 128000 |
+| contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
 | historyWindowSize | 历史窗口（轮） | 5 |
+| maxAgentIterations | Agent Loop 最大迭代次数 | 0（不限） |
 
 ### identity.md
 
@@ -78,6 +83,8 @@ history.push(user message)
   ↓
 ┌─── Agent Loop ──────────────────────────────┐
 │  history.getRecentMessages(N)               │
+│       ↓                                     │
+│  compressIfNeeded() → 超阈值时模型摘要压缩  │
 │       ↓                                     │
 │  client.chat(messages, tools, onDelta,      │
 │              systemPrompt)                  │
@@ -114,6 +121,16 @@ Node 22 内置 fetch、readline/promises、TextDecoder，不需要额外 HTTP/IO
 ### 消息历史：滑动窗口
 
 `historyWindowSize` 按"轮"计算（1轮 = 1 user + 1 assistant），截取时保证第一条是 user 消息，满足 API 交替约束。默认 5 轮。
+
+### 上下文压缩
+
+当对话历史 token 估计超过 `maxContextTokens * contextCompressionThreshold` 时触发压缩：
+
+1. **优先压缩历史对话**：markTurnStart 之前的多条消息用模型摘要为一条 `[对话历史摘要]` 用户消息
+2. **回退压缩当前轮早期**：历史不足时，压缩当前 Agent Loop 早期消息，保留最后 4 条
+3. **压缩失败兜底**：API 调用失败时简单截断，保留最后 2 条
+
+token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），不追求精确，只用于判断是否接近上下文上限。压缩使用 `client.complete()` 非流式调用，max_tokens=1024，避免流式开销。
 
 ### 工具注册：ToolRegistry 模式
 
@@ -155,8 +172,6 @@ bash 工具用 `child_process.spawn` 执行，返回 `{ stdout, stderr, exitCode
 
 ## 待实现
 
-- **上下文压缩**：长任务上下文溢出时自动压缩
-- **Loop 终止条件**：最大步数、超时、模型判断无法继续
-- **安全沙箱**：工具执行权限控制
 - **配置管理**：统一管理模型选择、工具权限等
+- **安全沙箱**：工具执行权限控制
 - **技能系统**：从 workspace/skills/ 加载自定义技能

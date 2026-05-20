@@ -11,6 +11,7 @@ import { createFileEditTool } from "./tools/file_edit.js";
 import { resolveWorkspacePath, ensureWorkspace, buildSystemPrompt } from "./workspace/workspace.js";
 import { createMemorySaveTool, createMemoryAppendTool, createMemoryListTool } from "./tools/memory.js";
 import { appendHistory, appendLog } from "./workspace/logger.js";
+import { compressIfNeeded } from "./compress.js";
 import type { Message, ToolUseBlock, ToolResultBlock } from "./types.js";
 
 function parseWorkspaceArg(): string | undefined {
@@ -75,6 +76,16 @@ async function main() {
     while (!stdinClosed && agentIteration < maxIterations) {
       agentIteration++;
       const context = history.getRecentMessages(config.historyWindowSize);
+      const turnStartIdx = history.getTurnStartIndexInContext(config.historyWindowSize);
+
+      // 上下文压缩：token 超过阈值时自动压缩历史
+      const compressed = await compressIfNeeded(context, config, client, turnStartIdx);
+      if (compressed !== context) {
+        const estimatedTurnStart = compressed.length - (context.length - turnStartIdx);
+        history.replaceWithCompressed(compressed, Math.max(0, estimatedTurnStart));
+        appendLog(workspacePath, "INFO", `上下文已压缩: ${context.length} → ${compressed.length} 条消息`);
+      }
+
       const toolDefs = registry.getDefinitions();
 
       process.stdout.write("Assistant: ");

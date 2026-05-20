@@ -1,0 +1,80 @@
+import type { Message, Config } from "./types.js";
+import { AnthropicClient } from "./client.js";
+import { estimateTokens } from "./estimate-tokens.js";
+
+const COMPRESS_PROMPT = `请将以下对话历史压缩为一段简洁的摘要，保留关键信息（事实、决策、结论），省略细节和中间过程。用中文输出，不超过 500 字。`;
+
+/**
+ * 检查是否需要压缩上下文，如果需要则执行压缩。
+ * - 压缩 markTurnStart 之前的消息（历史对话）
+ * - 如果没有历史可压缩，压缩当前轮早期的工具调用结果
+ * 返回压缩后的消息列表。
+ */
+export async function compressIfNeeded(
+  messages: Message[],
+  config: Config,
+  client: AnthropicClient,
+  turnStartIndex: number,
+): Promise<Message[]> {
+  const tokens = estimateTokens(messages);
+  const threshold = config.maxContextTokens * config.contextCompressionThreshold;
+
+  if (tokens < threshold) return messages;
+
+  const previousMessages = messages.slice(0, turnStartIndex);
+  const currentMessages = messages.slice(turnStartIndex);
+
+  // 优先压缩历史对话
+  if (previousMessages.length > 2) {
+    const compressed = await compressMessages(previousMessages, client);
+    return [...compressed, ...currentMessages];
+  }
+
+  // 历史不足，压缩当前轮早期消息（保留最后几条）
+  if (currentMessages.length > 4) {
+    const toCompress = currentMessages.slice(0, -4);
+    const toKeep = currentMessages.slice(-4);
+    const compressed = await compressMessages(toCompress, client);
+    return [...previousMessages, ...compressed, ...toKeep];
+  }
+
+  return messages;
+}
+
+async function compressMessages(
+  messages: Message[],
+  client: AnthropicClient,
+): Promise<Message[]> {
+  // 将消息格式化为可读文本供模型压缩
+  const text = messages
+    .map((msg) => {
+      if (typeof msg.content === "string") {
+        return `[${msg.role}]: ${msg.content}`;
+      }
+      const parts = msg.content.map((block) => {
+        if (block.type === "text") return `[文本]: ${block.text}`;
+        if (block.type === "tool_use") return `[工具调用 ${block.name}]: ${JSON.stringify(block.input)}`;
+        if (block.type === "tool_result") return `[工具结果]: ${block.content.slice(0, 500)}`;
+        return "";
+      });
+      return `[${msg.role}]: ${parts.join(" | ")}`;
+    })
+    .join("\n");
+
+  try {
+    const summary = await client.complete(
+      [{ role: "user", content: `${COMPRESS_PROMPT}\n\n---\n${text}` }],
+      "你是一个对话摘要助手，只输出摘要，不要有任何额外说明。",
+    );
+
+    return [
+      {
+        role: "user",
+        content: `[以下是对话历史的摘要]\n${summary}`,
+      },
+    ];
+  } catch {
+    // 压缩失败时，简单截断：只保留最后 2 条
+    return messages.slice(-2);
+  }
+}

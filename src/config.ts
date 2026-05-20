@@ -5,6 +5,8 @@ import type { Config } from "./types.js";
 
 const DEFAULTS: Partial<Config> = {
   maxTokens: 4096,
+  maxContextTokens: 128000,
+  contextCompressionThreshold: 0.7,
   historyWindowSize: 5,
   maxAgentIterations: 0,
 };
@@ -28,6 +30,8 @@ export function loadConfig(workspacePath: string): Config {
     apiKey: raw.apiKey as string,
     model: raw.model as string,
     maxTokens: (raw.maxTokens as number) ?? DEFAULTS.maxTokens!,
+    maxContextTokens: (raw.maxContextTokens as number) ?? DEFAULTS.maxContextTokens!,
+    contextCompressionThreshold: (raw.contextCompressionThreshold as number) ?? DEFAULTS.contextCompressionThreshold!,
     historyWindowSize: (raw.historyWindowSize as number) ?? DEFAULTS.historyWindowSize!,
     maxAgentIterations: (raw.maxAgentIterations as number) ?? DEFAULTS.maxAgentIterations!,
     workspacePath,

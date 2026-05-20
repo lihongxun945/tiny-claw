@@ -12,6 +12,45 @@ import type {
 export class AnthropicClient {
   constructor(private config: Config) {}
 
+  /** 非流式调用，用于上下文压缩等内部用途 */
+  async complete(messages: Message[], systemPrompt?: string): Promise<string> {
+    const url = `${this.config.apiUrl}/v1/messages`;
+
+    const body: Record<string, unknown> = {
+      model: this.config.model,
+      max_tokens: 1024,
+      messages,
+      stream: false,
+    };
+    if (systemPrompt) {
+      body.system = systemPrompt;
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": this.config.apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API 请求失败 (${response.status}): ${errorText}`);
+    }
+
+    const data = await response.json() as {
+      content: Array<{ type: string; text?: string }>;
+    };
+
+    return data.content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text ?? "")
+      .join("");
+  }
+
   async chat(
     messages: Message[],
     onDelta: (text: string) => void,

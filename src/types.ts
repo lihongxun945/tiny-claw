@@ -32,6 +32,8 @@ export interface Config {
   apiKey: string;
   model: string;
   maxTokens: number;
+  maxContextTokens: number;
+  contextCompressionThreshold: number;
   historyWindowSize: number;
   maxAgentIterations: number;
   workspacePath: string;

@@ -14,19 +14,33 @@ export class MessageHistory {
   }
 
   getRecentMessages(windowSize: number): Message[] {
-    // 当前 Agent Loop 的消息全部保留，不参与截断
-    const currentTurn = this.messages.slice(this.currentTurnStart);
+    return this._buildContext(windowSize).messages;
+  }
 
-    // 之前的消息按窗口截取
+  /** 返回上下文消息中当前轮消息的起始索引 */
+  getTurnStartIndexInContext(windowSize: number): number {
+    return this._buildContext(windowSize).turnStartIndex;
+  }
+
+  /** 压缩后替换内部消息列表 */
+  replaceWithCompressed(messages: Message[], newTurnStart: number): void {
+    this.messages = [...messages];
+    this.currentTurnStart = newTurnStart;
+  }
+
+  private _buildContext(windowSize: number): { messages: Message[]; turnStartIndex: number } {
+    const currentTurn = this.messages.slice(this.currentTurnStart);
     const previousMessages = this.messages.slice(0, this.currentTurnStart);
     const maxPrevious = windowSize * 2;
     let trimmed = previousMessages.slice(-maxPrevious);
 
-    // 保证第一条是 user 消息，满足 API 交替约束
     if (trimmed.length > 0 && trimmed[0].role === "assistant") {
       trimmed = trimmed.slice(1);
     }
 
-    return [...trimmed, ...currentTurn];
+    return {
+      messages: [...trimmed, ...currentTurn],
+      turnStartIndex: trimmed.length,
+    };
   }
 }
