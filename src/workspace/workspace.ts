@@ -30,6 +30,7 @@ export function buildSystemPrompt(workspacePath: string): string {
     "请根据用户的指令自主规划并执行任务，在需要时调用合适的工具。",
     "每次执行工具后，基于结果决定下一步行动或给出最终回答。",
     "重要规则：当工具已经返回了足够的信息来回答用户问题时，直接给出最终回答，不要重复调用相同的工具。避免不必要的工具调用。",
+    "使用 web_search 时，query 必须是1-3个简短英文实体关键词（如 'iPhone 17'、'Python'），绝对不要加限定词、描述词或完整句子（错误示例：'iPhone 17 models comparison'、'Python programming language features'）。先用最短关键词搜索，搜索到的信息由你负责总结回答。",
   ];
 
   if (identity) {

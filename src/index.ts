@@ -4,6 +4,7 @@ import { AnthropicClient } from "./client.js";
 import { MessageHistory } from "./history.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { createWebSearchTool } from "./tools/search.js";
+import { createWebFetchTool } from "./tools/web_fetch.js";
 import { createBashTool } from "./tools/bash.js";
 import { createFileReadTool } from "./tools/file_read.js";
 import { createFileWriteTool } from "./tools/file_write.js";
@@ -34,6 +35,7 @@ async function main() {
 
   const registry = new ToolRegistry();
   registry.register(createWebSearchTool(config));
+  registry.register(createWebFetchTool());
   registry.register(createBashTool());
   registry.register(createFileReadTool());
   registry.register(createFileWriteTool());

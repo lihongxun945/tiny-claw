@@ -26,7 +26,8 @@ src/
 ├── types.ts          # 共享类型定义
 ├── tools/            # 工具实现
 │   ├── registry.ts   # 工具注册中心
-│   ├── search.ts     # DuckDuckGo 网络搜索
+│   ├── search.ts     # 网络搜索（多 provider：SearXNG/Brave/DuckDuckGo）
+│   ├── web_fetch.ts  # 网页内容获取
 │   ├── bash.ts       # Shell 命令执行
 │   ├── file_read.ts  # 文件读取
 │   ├── file_write.ts # 文件写入
@@ -156,6 +157,7 @@ web_search 工具支持三个搜索引擎，通过 `config.json` 的 `searchProv
 | 工具 | 用途 | 安全措施 |
 |------|------|----------|
 | web_search | 网络搜索（多 provider） | 按配置选择引擎 |
+| web_fetch | 获取网页内容 | 15 秒超时、50KB 截断、仅支持文本类内容 |
 | bash | 执行 shell 命令 | 超时控制（默认30秒）、输出截断（10KB） |
 | file_read | 读取文件 | 路径 resolve 防止路径遍历 |
 | file_write | 写入文件 | 自动创建父目录 |

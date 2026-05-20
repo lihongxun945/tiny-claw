@@ -13,7 +13,7 @@ interface SearchProvider {
 
 const SEARCH_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const SEARCH_TIMEOUT = 15_000;
+const SEARCH_TIMEOUT = 3_000;
 
 /** 带超时和 User-Agent 的 fetch 封装 */
 async function searchFetch(url: string, headers?: Record<string, string>): Promise<Response> {
@@ -170,7 +170,7 @@ function createProvider(config: Config): SearchProvider {
 export function createWebSearchTool(config: Config): Tool {
   return {
     name: "web_search",
-    description: "搜索互联网获取最新信息。当用户的问题需要实时数据、新闻、或你不确定的事实信息时使用。",
+    description: "搜索互联网获取信息。输入1-3个简短英文关键词（如 'JavaScript'、'iPhone 17'），不要输入完整句子或长查询。搜索结果由你负责总结。",
     inputSchema: {
       type: "object",
       properties: {
