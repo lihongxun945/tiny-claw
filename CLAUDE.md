@@ -32,4 +32,5 @@ Loop → Model IO + Prompt → 工具调用 → History → 上下文压缩 → 
 ## 工作规范
 
 - 代码变更后必须检查 `docs/architecture.md` 是否需要同步更新（模块结构、数据流、设计决策等）
+- 代码变更后必须做端到端测试：运行 `npm start` 验证主链路可正常运行，确认新功能/修复有效
 - 每日开发结束后更新 `docs/devlog/YYYY-MM-DD.md`

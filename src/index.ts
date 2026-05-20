@@ -8,12 +8,28 @@ import { createBashTool } from "./bash.js";
 import { createFileReadTool } from "./file_read.js";
 import { createFileWriteTool } from "./file_write.js";
 import { createFileEditTool } from "./file_edit.js";
-import type { ToolUseBlock, ToolResultBlock } from "./types.js";
+import { resolveWorkspacePath, ensureWorkspace, buildSystemPrompt } from "./workspace.js";
+import { createMemorySaveTool, createMemoryAppendTool, createMemoryListTool } from "./memory.js";
+import { appendHistory, appendLog } from "./logger.js";
+import type { Message, ToolUseBlock, ToolResultBlock } from "./types.js";
+
+function parseWorkspaceArg(): string | undefined {
+  const idx = process.argv.indexOf("--workspace");
+  if (idx !== -1 && idx + 1 < process.argv.length) {
+    return process.argv[idx + 1];
+  }
+  return undefined;
+}
 
 async function main() {
-  const config = loadConfig();
+  const workspacePath = resolveWorkspacePath(parseWorkspaceArg());
+  ensureWorkspace(workspacePath);
+  console.log(`工作目录: ${workspacePath}\n`);
+
+  const config = loadConfig(workspacePath);
   const client = new AnthropicClient(config);
   const history = new MessageHistory();
+  const systemPrompt = buildSystemPrompt(workspacePath);
 
   const registry = new ToolRegistry();
   registry.register(createWebSearchTool());
@@ -21,6 +37,9 @@ async function main() {
   registry.register(createFileReadTool());
   registry.register(createFileWriteTool());
   registry.register(createFileEditTool());
+  registry.register(createMemorySaveTool(workspacePath));
+  registry.register(createMemoryAppendTool(workspacePath));
+  registry.register(createMemoryListTool(workspacePath));
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -43,7 +62,10 @@ async function main() {
     }
     if (!userInput.trim()) continue;
 
-    history.push({ role: "user", content: userInput });
+    const userMsg: Message = { role: "user", content: userInput };
+    appendHistory(workspacePath, userMsg);
+    appendLog(workspacePath, "INFO", `用户输入: ${userInput}`);
+    history.push(userMsg);
 
     // Agent loop: 模型输出 → 可能调用工具 → 执行工具 → 结果反馈给模型 → 循环
     while (!stdinClosed) {
@@ -57,10 +79,13 @@ async function main() {
           context,
           (delta) => process.stdout.write(delta),
           toolDefs.length > 0 ? toolDefs : undefined,
+          systemPrompt,
         );
       } catch (err) {
         process.stdout.write("\n");
-        console.error("错误:", err instanceof Error ? err.message : err);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        appendLog(workspacePath, "ERROR", `API 请求失败: ${errMsg}`);
+        console.error("错误:", errMsg);
         break;
       }
       process.stdout.write("\n");
@@ -75,7 +100,12 @@ async function main() {
       }
 
       if (assistantContent.length > 0) {
-        history.push({ role: "assistant", content: assistantContent });
+        const assistantMsg: Message = { role: "assistant", content: assistantContent };
+        appendHistory(workspacePath, assistantMsg);
+        if (response.text) {
+          appendLog(workspacePath, "INFO", `Assistant: ${response.text.slice(0, 200)}`);
+        }
+        history.push(assistantMsg);
       }
 
       // 无工具调用，结束 agent loop，等待用户输入
@@ -86,6 +116,7 @@ async function main() {
       // 执行工具调用，将结果加入历史
       for (const toolCall of response.toolCalls) {
         console.log(`[工具调用] ${toolCall.name}(${JSON.stringify(toolCall.input)})`);
+        appendLog(workspacePath, "TOOL", `调用: ${toolCall.name}(${JSON.stringify(toolCall.input)})`);
 
         const tool = registry.getTool(toolCall.name);
         let result: string;
@@ -93,13 +124,16 @@ async function main() {
           try {
             result = await tool.execute(toolCall.input);
             console.log(`[工具结果] ${result.slice(0, 200)}${result.length > 200 ? "..." : ""}`);
+            appendLog(workspacePath, "TOOL", `结果: ${result.slice(0, 500)}`);
           } catch (err) {
             result = JSON.stringify({
               error: `工具执行失败: ${err instanceof Error ? err.message : String(err)}`,
             });
+            appendLog(workspacePath, "ERROR", `工具执行失败: ${err instanceof Error ? err.message : String(err)}`);
           }
         } else {
           result = JSON.stringify({ error: `未知工具: ${toolCall.name}` });
+          appendLog(workspacePath, "ERROR", `未知工具: ${toolCall.name}`);
         }
 
         const toolResult: ToolResultBlock = {
@@ -107,7 +141,9 @@ async function main() {
           tool_use_id: toolCall.id,
           content: result,
         };
-        history.push({ role: "user", content: [toolResult] });
+        const toolResultMsg: Message = { role: "user", content: [toolResult] };
+        appendHistory(workspacePath, toolResultMsg);
+        history.push(toolResultMsg);
       }
 
       // 继续循环，让模型基于工具结果继续输出

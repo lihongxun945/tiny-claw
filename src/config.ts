@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { loadIdentity } from "./workspace.js";
 import type { Config } from "./types.js";
 
 const DEFAULTS: Partial<Config> = {
@@ -7,8 +8,8 @@ const DEFAULTS: Partial<Config> = {
   historyWindowSize: 5,
 };
 
-export function loadConfig(): Config {
-  const configPath = resolve(process.cwd(), "config.json");
+export function loadConfig(workspacePath: string): Config {
+  const configPath = resolve(workspacePath, "config.json");
 
   let raw: Record<string, unknown>;
   try {
@@ -27,5 +28,7 @@ export function loadConfig(): Config {
     model: raw.model as string,
     maxTokens: (raw.maxTokens as number) ?? DEFAULTS.maxTokens!,
     historyWindowSize: (raw.historyWindowSize as number) ?? DEFAULTS.historyWindowSize!,
+    workspacePath,
+    systemPrompt: loadIdentity(workspacePath),
   };
 }
