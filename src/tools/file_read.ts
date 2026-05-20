@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Tool } from "./types.js";
+import type { Tool } from "../types.js";
 
 const MAX_READ = 50000;
 

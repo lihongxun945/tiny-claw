@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Tool } from "./types.js";
+import type { Tool } from "../types.js";
 
 export function createFileEditTool(): Tool {
   return {

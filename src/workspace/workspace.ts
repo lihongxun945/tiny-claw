@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadAllMemories } from "./memory.js";
+import { loadAllMemories } from "../tools/memory.js";
 
 const SUBDIRS = ["skills", "memory", "history", "logs"];
 
@@ -29,6 +29,7 @@ export function buildSystemPrompt(workspacePath: string): string {
     "你是一个自主 AI Agent，名为 tiny-claw。你可以使用各种工具来帮助用户完成任务。",
     "请根据用户的指令自主规划并执行任务，在需要时调用合适的工具。",
     "每次执行工具后，基于结果决定下一步行动或给出最终回答。",
+    "重要规则：当工具已经返回了足够的信息来回答用户问题时，直接给出最终回答，不要重复调用相同的工具。避免不必要的工具调用。",
   ];
 
   if (identity) {

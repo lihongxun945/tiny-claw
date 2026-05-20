@@ -1,4 +1,4 @@
-import type { Tool } from "./types.js";
+import type { Tool } from "../types.js";
 
 interface SearchResult {
   title: string;

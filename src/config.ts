@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadIdentity } from "./workspace.js";
+import { loadIdentity } from "./workspace/workspace.js";
 import type { Config } from "./types.js";
 
 const DEFAULTS: Partial<Config> = {
   maxTokens: 4096,
   historyWindowSize: 5,
+  maxAgentIterations: 0,
 };
 
 export function loadConfig(workspacePath: string): Config {
@@ -28,6 +29,7 @@ export function loadConfig(workspacePath: string): Config {
     model: raw.model as string,
     maxTokens: (raw.maxTokens as number) ?? DEFAULTS.maxTokens!,
     historyWindowSize: (raw.historyWindowSize as number) ?? DEFAULTS.historyWindowSize!,
+    maxAgentIterations: (raw.maxAgentIterations as number) ?? DEFAULTS.maxAgentIterations!,
     workspacePath,
     systemPrompt: loadIdentity(workspacePath),
   };

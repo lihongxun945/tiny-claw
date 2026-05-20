@@ -2,15 +2,15 @@ import * as readline from "node:readline/promises";
 import { loadConfig } from "./config.js";
 import { AnthropicClient } from "./client.js";
 import { MessageHistory } from "./history.js";
-import { ToolRegistry } from "./tools.js";
-import { createWebSearchTool } from "./search.js";
-import { createBashTool } from "./bash.js";
-import { createFileReadTool } from "./file_read.js";
-import { createFileWriteTool } from "./file_write.js";
-import { createFileEditTool } from "./file_edit.js";
-import { resolveWorkspacePath, ensureWorkspace, buildSystemPrompt } from "./workspace.js";
-import { createMemorySaveTool, createMemoryAppendTool, createMemoryListTool } from "./memory.js";
-import { appendHistory, appendLog } from "./logger.js";
+import { ToolRegistry } from "./tools/registry.js";
+import { createWebSearchTool } from "./tools/search.js";
+import { createBashTool } from "./tools/bash.js";
+import { createFileReadTool } from "./tools/file_read.js";
+import { createFileWriteTool } from "./tools/file_write.js";
+import { createFileEditTool } from "./tools/file_edit.js";
+import { resolveWorkspacePath, ensureWorkspace, buildSystemPrompt } from "./workspace/workspace.js";
+import { createMemorySaveTool, createMemoryAppendTool, createMemoryListTool } from "./tools/memory.js";
+import { appendHistory, appendLog } from "./workspace/logger.js";
 import type { Message, ToolUseBlock, ToolResultBlock } from "./types.js";
 
 function parseWorkspaceArg(): string | undefined {
@@ -65,10 +65,15 @@ async function main() {
     const userMsg: Message = { role: "user", content: userInput };
     appendHistory(workspacePath, userMsg);
     appendLog(workspacePath, "INFO", `用户输入: ${userInput}`);
+    history.markTurnStart();
     history.push(userMsg);
 
     // Agent loop: 模型输出 → 可能调用工具 → 执行工具 → 结果反馈给模型 → 循环
-    while (!stdinClosed) {
+    const maxIterations = config.maxAgentIterations > 0 ? config.maxAgentIterations : Infinity;
+    let agentIteration = 0;
+
+    while (!stdinClosed && agentIteration < maxIterations) {
+      agentIteration++;
       const context = history.getRecentMessages(config.historyWindowSize);
       const toolDefs = registry.getDefinitions();
 
@@ -147,6 +152,11 @@ async function main() {
       }
 
       // 继续循环，让模型基于工具结果继续输出
+    }
+
+    if (config.maxAgentIterations > 0 && agentIteration >= maxIterations) {
+      console.log("[达到最大迭代次数，强制结束本轮任务]");
+      appendLog(workspacePath, "WARN", "Agent Loop 达到最大迭代次数限制");
     }
 
     console.log("");

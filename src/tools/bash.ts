@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { Tool } from "./types.js";
+import type { Tool } from "../types.js";
 
 const MAX_OUTPUT = 10000;
 const DEFAULT_TIMEOUT = 30;

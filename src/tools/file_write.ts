@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import type { Tool } from "./types.js";
+import type { Tool } from "../types.js";
 
 export function createFileWriteTool(): Tool {
   return {

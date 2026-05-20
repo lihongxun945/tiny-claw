@@ -33,6 +33,7 @@ export interface Config {
   model: string;
   maxTokens: number;
   historyWindowSize: number;
+  maxAgentIterations: number;
   workspacePath: string;
   systemPrompt: string;
 }

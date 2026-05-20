@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Tool } from "./types.js";
+import type { Tool } from "../types.js";
 
 // === 文件操作 ===
 

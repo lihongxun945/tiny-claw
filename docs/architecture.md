@@ -17,20 +17,22 @@
 
 ```
 src/
-├── index.ts      # 主循环（Agent Loop），CLI 入口
-├── config.ts     # 配置加载（从 workspace 读取）
-├── client.ts     # Anthropic Messages API 客户端（流式）
-├── workspace.ts  # 工作目录初始化、身份加载、system prompt 构建
-├── logger.ts     # 追加式文件日志（history + 执行日志）
-├── history.ts    # 滑动窗口消息历史
-├── memory.ts     # 持久化记忆（读写 memory/*.md）
-├── tools.ts      # 工具注册中心
-├── search.ts     # DuckDuckGo 网络搜索工具
-├── bash.ts       # Shell 命令执行工具
-├── file_read.ts  # 文件读取工具
-├── file_write.ts # 文件写入工具
-├── file_edit.ts  # 文件精确替换工具
-└── types.ts      # 共享类型定义
+├── index.ts          # 主循环（Agent Loop），CLI 入口
+├── config.ts         # 配置加载（从 workspace 读取）
+├── client.ts         # Anthropic Messages API 客户端（流式）
+├── history.ts        # 滑动窗口消息历史
+├── types.ts          # 共享类型定义
+├── tools/            # 工具实现
+│   ├── registry.ts   # 工具注册中心
+│   ├── search.ts     # DuckDuckGo 网络搜索
+│   ├── bash.ts       # Shell 命令执行
+│   ├── file_read.ts  # 文件读取
+│   ├── file_write.ts # 文件写入
+│   ├── file_edit.ts  # 文件精确替换
+│   └── memory.ts     # 持久化记忆（读写 memory/*.md）
+└── workspace/        # 工作目录相关
+    ├── workspace.ts  # 目录初始化、身份加载、system prompt 构建
+    └── logger.ts     # 追加式文件日志（history + 执行日志）
 ```
 
 ## 工作目录结构
