@@ -1,6 +1,101 @@
 ## 关于本仓库
 这个仓库是自己实现一个类似 open-claw 的 agent，可以实现其主要功能，能作为一个 agent 自主规划、执行任务。
 
+## 快速开始
+
+### 安装
+
+```bash
+git clone https://github.com/lihongxun945/tiny-claw.git
+cd tiny-claw
+npm install
+```
+
+### 配置
+
+复制配置模板并修改：
+
+```bash
+cp config.example.json workspace/config.json
+```
+
+`workspace/config.json` 必填字段：
+
+```json
+{
+  "apiUrl": "https://ark.cn-beijing.volces.com/api/coding",
+  "apiKey": "YOUR_API_KEY",
+  "model": "glm-5.1"
+}
+```
+
+### CLI 模式
+
+```bash
+npm start
+```
+
+启动后直接在终端与 Agent 对话，输入问题即可。
+
+### Gateway 模式
+
+```bash
+npm run gateway -- --port 3000
+```
+
+启动 HTTP API 服务，支持外部客户端通过 SSE 流式调用 Agent：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | /chat | 发送消息（SSE 流式响应） |
+| GET | /sessions | 列出活跃会话 |
+| DELETE | /sessions/:id | 销毁会话 |
+
+POST /chat 请求示例：
+
+```json
+{ "message": "你好", "session_id": "optional" }
+```
+
+### 飞书机器人配置
+
+1. **创建飞书自建应用** — 前往 [飞书开放平台](https://open.feishu.cn/app) 创建应用，获取 `App ID` 和 `App Secret`
+
+2. **配置事件订阅** — 在应用后台 → 事件与回调：
+   - 订阅方式选择 **长连接**
+   - 添加事件 `im.message.receive_v1`（接收消息）
+
+3. **开启机器人能力** — 在应用后台 → 应用能力 → 机器人，开启机器人能力
+
+4. **配置权限** — 在应用后台 → 权限管理，添加以下权限：
+   - `im:message` — 获取与发送消息
+   - `im:message.reaction` — 消息表情
+
+5. **发布应用** — 创建版本并发布
+
+6. **修改配置文件** — 在 `workspace/config.json` 中添加飞书插件配置：
+
+```json
+{
+  "enabledPlugins": ["feishu"],
+  "plugins": {
+    "feishu": {
+      "appId": "cli_xxx",
+      "appSecret": "xxx",
+      "verificationToken": "xxx"
+    }
+  }
+}
+```
+
+7. **启动 Gateway** — 飞书插件会随 Gateway 自动启动 WebSocket 长连接：
+
+```bash
+npm run gateway -- --port 3000
+```
+
+启动后日志显示 `飞书长连接已建立` 即表示连接成功，可以在飞书中给机器人发消息测试。
+
 ## 技术栈
 - 主要编程语言：**TypeScript**（项目涉及大量消息格式、工具 schema、API 响应等结构化数据，类型安全能显著减少 bug）
 
