@@ -1,8 +1,12 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { loadConfig } from "./config.js";
 import { AgentSession, type AgentEvent } from "./agent.js";
+import { appendLog } from "./workspace/logger.js";
+import { loadPlugins, destroyPlugins } from "./plugins/loader.js";
+import type { RegisteredRoute, RouteContext } from "./plugins/types.js";
 
-const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 分钟
+const SESSION_TIMEOUT = 30 * 60 * 1000;
 
 function parseWorkspaceArg(): string | undefined {
   const idx = process.argv.indexOf("--workspace");
@@ -56,15 +60,17 @@ function sendSSE(res: ServerResponse, event: string, data: unknown): void {
 // === 会话管理 ===
 
 const sessions = new Map<string, AgentSession>();
+let workspacePath = "";
 
-function getOrCreateSession(sessionId: string | undefined, workspacePath: string): AgentSession {
+function getOrCreateSession(sessionId: string | undefined, wp?: string): AgentSession {
+  const wp_ = wp || workspacePath;
   if (sessionId && sessions.has(sessionId)) {
     const session = sessions.get(sessionId)!;
     session.lastActivity = Date.now();
     return session;
   }
   const id = sessionId || randomUUID();
-  const session = new AgentSession(id, workspacePath);
+  const session = new AgentSession(id, wp_);
   sessions.set(id, session);
   return session;
 }
@@ -78,14 +84,43 @@ function cleanupSessions(): void {
   }
 }
 
-// 每 5 分钟清理超时会话
 setInterval(cleanupSessions, 5 * 60 * 1000);
+
+// === 插件路由注册表 ===
+
+const pluginRoutes: RegisteredRoute[] = [];
 
 // === HTTP 服务器 ===
 
 async function main() {
-  const workspacePath = parseWorkspaceArg() || process.env.TINY_CLAW_WORKSPACE || process.cwd() + "/workspace";
+  workspacePath = parseWorkspaceArg() || process.env.TINY_CLAW_WORKSPACE || process.cwd() + "/workspace";
   const port = parsePortArg();
+
+  // 加载插件
+  const config = loadConfig(workspacePath);
+  const plugins = await loadPlugins(
+    {
+      builtin: config.enabledPlugins,
+      external: config.externalPlugins,
+    },
+    (pluginName) => ({
+      config: config.plugins?.[pluginName] ?? {},
+      workspacePath,
+      registerRoute(route) {
+        pluginRoutes.push({ ...route, pluginName });
+      },
+      getOrCreateSession(id, prefix) {
+        const fullId = prefix ? `${prefix}:${id}` : id;
+        return getOrCreateSession(fullId, workspacePath);
+      },
+      deleteSession(id) {
+        return sessions.delete(id);
+      },
+      log(level, message, sessionId) {
+        appendLog(workspacePath, level, `[plugin:${pluginName}] ${message}`, sessionId);
+      },
+    }),
+  );
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -99,6 +134,26 @@ async function main() {
       });
       res.end();
       return;
+    }
+
+    // 构建 RouteContext
+    const routeCtx: RouteContext = {
+      readBody: () => readBody(req),
+      sendJSON: (status, data) => sendJSON(res, status, data),
+    };
+
+    // 插件路由（优先匹配）
+    for (const route of pluginRoutes) {
+      if (req.method === route.method && url.pathname === route.path) {
+        try {
+          await route.handler(req, res, routeCtx);
+        } catch (err) {
+          if (!res.headersSent) {
+            sendJSON(res, 500, { error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        return;
+      }
     }
 
     // POST /chat
@@ -172,11 +227,24 @@ async function main() {
 
   server.listen(port, () => {
     console.log(`tiny-claw gateway 已启动: http://localhost:${port}`);
-    console.log(`  POST /chat        - 发送消息（SSE 流式响应）`);
-    console.log(`  GET  /sessions    - 列出活跃会话`);
+    console.log(`  POST /chat           - 发送消息（SSE 流式响应）`);
+    console.log(`  GET  /sessions       - 列出活跃会话`);
     console.log(`  DELETE /sessions/:id - 销毁会话`);
+    for (const route of pluginRoutes) {
+      console.log(`  ${route.method.padEnd(6)} ${route.path} [${route.pluginName}]`);
+    }
     console.log(`工作目录: ${workspacePath}`);
   });
+
+  // 优雅关闭
+  const shutdown = async () => {
+    console.log("\n正在关闭...");
+    await destroyPlugins(plugins);
+    server.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 main();

@@ -39,6 +39,9 @@ export interface Config {
   searchProvider: "searxng" | "brave" | "duckduckgo";
   searxngUrl?: string;
   braveApiKey?: string;
+  enabledPlugins?: string[];
+  externalPlugins?: string[];
+  plugins?: Record<string, Record<string, unknown>>;
   workspacePath: string;
   systemPrompt: string;
 }

@@ -38,6 +38,9 @@ export function loadConfig(workspacePath: string): Config {
     searchProvider: (raw.searchProvider as Config["searchProvider"]) ?? DEFAULTS.searchProvider!,
     searxngUrl: raw.searxngUrl as string | undefined,
     braveApiKey: raw.braveApiKey as string | undefined,
+    enabledPlugins: raw.enabledPlugins as string[] | undefined,
+    externalPlugins: raw.externalPlugins as string[] | undefined,
+    plugins: raw.plugins as Record<string, Record<string, unknown>> | undefined,
     workspacePath,
     systemPrompt: loadIdentity(workspacePath),
   };

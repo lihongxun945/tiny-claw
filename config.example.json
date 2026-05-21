@@ -10,5 +10,14 @@
   "maxAgentIterations": 0,
   "searchProvider": "duckduckgo",
   "searxngUrl": "http://localhost:8080",
-  "braveApiKey": "YOUR_BRAVE_API_KEY"
+  "braveApiKey": "YOUR_BRAVE_API_KEY",
+  "enabledPlugins": ["feishu"],
+  "externalPlugins": [],
+  "plugins": {
+    "feishu": {
+      "appId": "cli_xxx",
+      "appSecret": "YOUR_FEISHU_APP_SECRET",
+      "verificationToken": "YOUR_FEISHU_VERIFICATION_TOKEN"
+    }
+  }
 }

@@ -11,14 +11,14 @@
 高级能力：           Memory → Skill → 聊天工具(飞书/钉钉) → RAG
 ```
 
-当前进度：已完成 Loop、Model IO + Prompt、工具调用、History、上下文压缩，进入配置管理阶段。
+当前进度：已完成 Loop、Model IO + Prompt、工具调用、History、上下文压缩、配置管理、Memory、Skill、Gateway、飞书接入。
 
 ## 模块结构
 
 ```
 src/
 ├── index.ts          # CLI 入口（使用 AgentSession）
-├── gateway.ts        # HTTP Gateway（SSE 流式 API）
+├── gateway.ts        # HTTP Gateway（SSE 流式 API + 插件路由注册表）
 ├── agent.ts          # AgentSession 类（核心 Agent Loop）
 ├── config.ts         # 配置加载（从 workspace 读取）
 ├── client.ts         # Anthropic Messages API 客户端（流式）
@@ -26,6 +26,13 @@ src/
 ├── compress.ts       # 上下文压缩（模型摘要）
 ├── estimate-tokens.ts # Token 估算（触发压缩）
 ├── types.ts          # 共享类型定义
+├── plugins/          # 插件系统
+│   ├── types.ts      # Plugin、PluginContext、RouteDefinition 接口
+│   ├── loader.ts     # 插件加载器（内置/外部）
+│   └── feishu/       # 飞书插件
+│       ├── index.ts  # 插件入口（注册路由）
+│       ├── client.ts # FeishuClient（token 缓存、消息发送/回复）
+│       └── handler.ts # 事件处理（验证、消息解析、异步回复）
 ├── tools/            # 工具实现
 │   ├── registry.ts   # 工具注册中心
 │   ├── search.ts     # 网络搜索（多 provider：SearXNG/Brave/DuckDuckGo）
@@ -72,6 +79,9 @@ workspace/
 | searchProvider | 搜索引擎 (searxng/brave/duckduckgo) | duckduckgo |
 | searxngUrl | SearXNG 实例地址 | - |
 | braveApiKey | Brave Search API key | - |
+| enabledPlugins | 启用的内置插件列表 | [] |
+| externalPlugins | 外部插件模块路径列表 | [] |
+| plugins | 插件配置（按插件名命名空间） | {} |
 
 ### identity.md
 
@@ -235,8 +245,74 @@ Gateway 是一个 HTTP 服务器，让外部客户端（Web UI、聊天机器人
 
 **会话管理：** 通过 `session_id` 复用会话，30 分钟无活动自动清理。
 
+### 插件系统
+
+插件系统允许扩展 Gateway 功能（如聊天平台接入），而不修改核心代码。
+
+**Plugin 接口：**
+
+```typescript
+interface Plugin {
+  name: string;
+  init(ctx: PluginContext): Promise<void>;
+  destroy?(): Promise<void>;
+}
+```
+
+**PluginContext（宿主提供）：**
+
+| 方法/属性 | 说明 |
+|-----------|------|
+| `config` | 插件专属配置（来自 `plugins.<name>`） |
+| `workspacePath` | 工作目录路径 |
+| `registerRoute(route)` | 注册 HTTP 路由 |
+| `getOrCreateSession(id, prefix?)` | 获取/创建 AgentSession（可选前缀） |
+| `deleteSession(id)` | 删除会话 |
+| `log(level, message, sessionId?)` | 插件日志 |
+
+**插件加载：**
+- 内置插件：放在 `src/plugins/<name>/` 下，通过 `enabledPlugins` 启用
+- 外部插件：npm 包或文件路径，通过 `externalPlugins` 加载
+- 每个插件的配置在 `plugins.<pluginName>` 下命名空间隔离
+
+**路由注册表：** Gateway 启动时加载插件，插件通过 `registerRoute()` 注册路由。请求匹配时插件路由优先于核心路由。
+
+### 飞书插件（内置）
+
+通过飞书自建应用 + WebSocket 长连接，让用户通过飞书与 Agent 对话。无需公网地址，插件主动连接飞书服务器接收事件。
+
+**接入流程：**
+
+```
+飞书用户 → 飞书服务器 ←(WebSocket 长连接)→ 飞书插件 → AgentSession → 飞书 API (回复消息)
+```
+
+**配置示例：**
+```json
+{
+  "enabledPlugins": ["feishu"],
+  "plugins": {
+    "feishu": {
+      "appId": "cli_xxx",
+      "appSecret": "xxx",
+      "verificationToken": "xxx"
+    }
+  }
+}
+```
+
+**依赖：** `@larksuiteoapi/node-sdk`（飞书官方 SDK，提供 WSClient 和 EventDispatcher）
+
+**关键设计：**
+- 使用 `WSClient` 建立长连接，无需公网域名或 ngrok
+- 使用 `EventDispatcher` 注册 `im.message.receive_v1` 事件处理
+- 收到消息后异步处理，同一 `chat_id` 复用 AgentSession（session_id 格式：`feishu:<chat_id>`）
+- 超长回复自动按换行符分段发送（~4000 字符/段）
+- 支持 `onReady`/`onError`/`onReconnecting`/`onReconnected` 生命周期回调
+- 插件销毁时自动关闭 WebSocket 连接
+
 ## 待实现
 
-- **配置管理**：统一管理模型选择、工具权限等
 - **安全沙箱**：工具执行权限控制
 - **Web UI**：基于 Gateway 的前端界面
+- **RAG**：检索增强生成
