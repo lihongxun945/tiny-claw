@@ -17,7 +17,9 @@
 
 ```
 src/
-├── index.ts          # 主循环（Agent Loop），CLI 入口
+├── index.ts          # CLI 入口（使用 AgentSession）
+├── gateway.ts        # HTTP Gateway（SSE 流式 API）
+├── agent.ts          # AgentSession 类（核心 Agent Loop）
 ├── config.ts         # 配置加载（从 workspace 读取）
 ├── client.ts         # Anthropic Messages API 客户端（流式）
 ├── history.ts        # 滑动窗口消息历史
@@ -32,7 +34,7 @@ src/
 │   ├── file_read.ts  # 文件读取
 │   ├── file_write.ts # 文件写入
 │   ├── file_edit.ts  # 文件精确替换
-│   └── memory.ts     # 持久化记忆（读写 memory/*.md）
+│   ├── memory.ts     # 持久化记忆（读写 memory/*.md）
 │   └── skill.ts      # 技能系统（加载/激活 skills/*.md）
 └── workspace/        # 工作目录相关
     ├── workspace.ts  # 目录初始化、身份加载、system prompt 构建
@@ -47,7 +49,7 @@ tiny-claw 运行时需要一个工作目录（workspace），所有持久化数�
 workspace/
 ├── config.json        # 配置（API key、模型、工具权限等）
 ├── identity.md        # 身份设定（注入 system prompt）
-├── skills/            # 自定义技能（TODO: 技能加载系统）
+├── skills/            # 自定义技能（skills/<name>/SKILL.md）
 ├── memory/            # 跨会话长期记忆（TODO: 分层记忆系统）
 ├── history/           # 对话历史持久化，JSONL 格式，每日轮转
 │   └── 2026-05-19.jsonl
@@ -199,12 +201,42 @@ description: 代码审查，检查代码质量、安全性和最佳实践
 你是一个代码审查专家。执行以下步骤：...
 ```
 
-- **发现**：启动时 `listSkills()` 扫描 `skills/*.md`，将名称和描述注入 system prompt，让模型知道有哪些技能可用
-- **激活**：模型调用 `skill_use(name)` 获取完整指令内容，按指令执行任务
+- **发现**：启动时 `listSkills()` 扫描 `skills/<name>/SKILL.md`，将名称和描述注入 system prompt
+- **激活**：模型调用 `skill_use(name)` 获取完整指令内容，指令中注入技能工作目录绝对路径
 - **查询**：模型调用 `skill_list()` 列出所有可用技能
-- **文件格式**：frontmatter 用 `---` 包裹，必须包含 `name` 和 `description` 字段
+- **动态内容**：支持 `!`command`` 执行命令注入、`$ARGUMENTS` 参数替换、`${CLAUDE_SKILL_DIR}` 路径替换
+- **文件格式**：`SKILL.md` frontmatter 用 `---` 包裹，必须包含 `description` 字段，`name` 由目录名决定
+
+### Gateway：HTTP API 服务
+
+Gateway 是一个 HTTP 服务器，让外部客户端（Web UI、聊天机器人等）通过 HTTP API 与 Agent 交互。
+
+启动方式：`npx tsx src/gateway.ts --port 3000`
+
+**API 端点：**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | /chat | 发送消息，SSE 流式返回事件 |
+| GET | /sessions | 列出活跃会话 |
+| DELETE | /sessions/:id | 销毁会话 |
+
+**POST /chat 请求：**
+```json
+{ "message": "你好", "session_id": "optional" }
+```
+
+**SSE 事件类型：**
+- `text_delta` — 文本增量
+- `tool_call` — 工具调用
+- `tool_result` — 工具结果
+- `done` — 完成（含完整文本和 session_id）
+- `error` — 错误
+
+**会话管理：** 通过 `session_id` 复用会话，30 分钟无活动自动清理。
 
 ## 待实现
 
 - **配置管理**：统一管理模型选择、工具权限等
 - **安全沙箱**：工具执行权限控制
+- **Web UI**：基于 Gateway 的前端界面

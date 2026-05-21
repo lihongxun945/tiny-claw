@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "scripts": {
     "start": "tsx src/index.ts",
+    "gateway": "tsx src/gateway.ts",
     "dev": "tsx src/index.ts"
   },
   "author": "lihongxun",

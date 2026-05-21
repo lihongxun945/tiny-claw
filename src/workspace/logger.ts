@@ -13,16 +13,18 @@ function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true });
 }
 
-export function appendHistory(workspacePath: string, message: unknown): void {
+export function appendHistory(workspacePath: string, message: unknown, sessionId?: string): void {
   const dir = resolve(workspacePath, "history");
   ensureDir(dir);
   const path = resolve(dir, `${today()}.jsonl`);
-  appendFileSync(path, JSON.stringify(message) + "\n", "utf-8");
+  const record = sessionId ? { ...message as object, _session: sessionId } : message;
+  appendFileSync(path, JSON.stringify(record) + "\n", "utf-8");
 }
 
-export function appendLog(workspacePath: string, level: string, message: string): void {
+export function appendLog(workspacePath: string, level: string, message: string, sessionId?: string): void {
   const dir = resolve(workspacePath, "logs");
   ensureDir(dir);
   const path = resolve(dir, `${today()}.log`);
-  appendFileSync(path, `[${now()}] [${level}] ${message}\n`, "utf-8");
+  const prefix = sessionId ? `[${now()}] [${level}] [${sessionId}] ` : `[${now()}] [${level}] `;
+  appendFileSync(path, `${prefix}${message}\n`, "utf-8");
 }
