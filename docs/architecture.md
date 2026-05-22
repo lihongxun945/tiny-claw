@@ -33,6 +33,9 @@ src/
 │       ├── index.ts  # 插件入口（注册路由）
 │       ├── client.ts # FeishuClient（token 缓存、消息发送/回复）
 │       └── handler.ts # 事件处理（验证、消息解析、异步回复）
+├── prompts/          # 系统提示词模板
+│   ├── default.md    # 默认模板（含 {{placeholder}} 占位符）
+│   └── build.ts      # 模板加载 + buildSystemPrompt()
 ├── tools/            # 工具实现
 │   ├── registry.ts   # 工具注册中心
 │   ├── search.ts     # 网络搜索（多 provider：SearXNG/Brave/DuckDuckGo）
@@ -44,8 +47,14 @@ src/
 │   ├── memory.ts     # 持久化记忆（读写 memory/*.md）
 │   └── skill.ts      # 技能系统（加载/激活 skills/*.md）
 └── workspace/        # 工作目录相关
-    ├── workspace.ts  # 目录初始化、身份加载、system prompt 构建
+    ├── workspace.ts  # 目录初始化、身份加载
     └── logger.ts     # 追加式文件日志（history + 执行日志）
+web/                    # Web UI（React + Vite）
+├── src/
+│   ├── lib/           # SSE 客户端、API 封装
+│   └── components/    # UI 组件
+├── dist/              # 构建产物（Gateway 直接服务）
+└── package.json       # 前端独立依赖
 ```
 
 ## 工作目录结构
@@ -55,7 +64,8 @@ tiny-claw 运行时需要一个工作目录（workspace），所有持久化数�
 ```
 workspace/
 ├── config.json        # 配置（API key、模型、工具权限等）
-├── identity.md        # 身份设定（注入 system prompt）
+├── identity.md        # 身份设定（注入 system prompt 模板 {{identity}} 占位符）
+├── system_prompt.md   # 可选：自定义 system prompt 模板（不存在则使用默认模板）
 ├── skills/            # 自定义技能（skills/<name>/SKILL.md）
 ├── memory/            # 跨会话长期记忆（TODO: 分层记忆系统）
 ├── history/           # 对话历史持久化，JSONL 格式，每日轮转
@@ -85,7 +95,23 @@ workspace/
 
 ### identity.md
 
-可选的 markdown 文件，内容注入到 system prompt 中。用于定义 agent 的角色、行为准则、专业领域等。如果不存在则使用默认 system prompt。
+可选的 markdown 文件，内容注入到 system prompt 模板的 `{{identity}}` 占位符中。用于定义 agent 的角色、行为准则、专业领域等。如果不存在则对应区域为空。
+
+### system_prompt.md（可选）
+
+自定义 system prompt 模板，覆盖默认模板。使用 `{{placeholder}}` 占位符语法，运行时替换为实际内容。如果文件不存在则使用 `src/prompts/default.md` 默认模板。
+
+**可用占位符：**
+
+| 占位符 | 替换内容 |
+|--------|----------|
+| `{{identity}}` | `workspace/identity.md` 内容 |
+| `{{memories}}` | 长期记忆内容 |
+| `{{skills}}` | 可用技能列表 |
+| `{{tools}}` | 内置工具列表（名称 + 描述） |
+| `{{current_date}}` | 当前日期（如 2026-05-22） |
+
+未匹配的占位符替换为空字符串。
 
 ## 核心数据流
 
@@ -194,9 +220,13 @@ bash 工具用 `child_process.spawn` 执行，返回 `{ stdout, stderr, exitCode
 
 对比"自动提取"方案，工具驱动的优势是实现简单、透明可控，适合早期阶段。后续可在此基础上叠加自动提取（Phase 2）。
 
-### 身份注入
+### 系统提示词模板
 
-`identity.md` 作为可选的 system prompt 扩展。如果文件存在，运行时加载并注入到 API 请求的 `system` 参数中，让模型在每次对话中遵循角色设定。
+系统提示词采用单文件模板方案，支持用户自定义覆盖。`src/prompts/default.md` 是默认模板，使用 `{{placeholder}}` 占位符语法。用户可在 `workspace/system_prompt.md` 放置自定义模板覆盖默认值。
+
+模板加载逻辑：优先检查 `workspace/system_prompt.md`，存在则使用用户模板，否则使用 `src/prompts/default.md`。运行时将所有 `{{xxx}}` 占位符替换为实际内容（identity、memories、skills、tools、current_date），未匹配的占位符替换为空字符串。
+
+`buildSystemPrompt(workspacePath, tools)` 在 `src/prompts/build.ts` 中实现，`AgentSession` 构造时在工具注册完成后调用，确保 `{{tools}}` 占位符能获得完整的工具列表。
 
 ### 技能系统
 
@@ -229,6 +259,7 @@ Gateway 是一个 HTTP 服务器，让外部客户端（Web UI、聊天机器人
 |------|------|------|
 | POST | /chat | 发送消息，SSE 流式返回事件 |
 | GET | /sessions | 列出活跃会话 |
+| GET | /sessions/:id/messages | 获取会话消息历史 |
 | DELETE | /sessions/:id | 销毁会话 |
 
 **POST /chat 请求：**
@@ -244,6 +275,43 @@ Gateway 是一个 HTTP 服务器，让外部客户端（Web UI、聊天机器人
 - `error` — 错误
 
 **会话管理：** 通过 `session_id` 复用会话，30 分钟无活动自动清理。
+
+**静态文件服务：** Gateway 启动时自动在独立端口（默认 gateway 端口 +1，可通过 `--web-port` 指定）启动 Web UI 服务器。若 `web/dist/` 存在（已构建前端），提供静态文件 + 代理 API 请求到 gateway；若不存在且非 daemon 模式，自动启动 Vite dev server。
+
+### Web UI
+
+基于 React + Vite 的浏览器聊天界面，代码位于独立的 `web/` 目录。
+
+**技术栈：** React 19 + Vite + react-markdown，无 CSS 框架（~150 行 CSS），无状态管理库（useState 足够）。
+
+**目录结构：**
+```
+web/
+├── index.html           # Vite 入口
+├── package.json         # 前端独立依赖
+├── vite.config.ts       # React 插件 + dev 代理
+├── tsconfig.json        # 前端 TS 配置
+└── src/
+    ├── main.tsx         # React 挂载
+    ├── App.tsx          # 根组件，持有全部状态
+    ├── types.ts         # 前端类型
+    ├── index.css        # 全局样式
+    ├── lib/
+    │   ├── sse-client.ts # POST SSE 流消费器（fetch + ReadableStream）
+    │   └── api.ts        # API 封装
+    └── components/
+        ├── ChatView.tsx      # 消息列表 + 自动滚动
+        ├── MessageBubble.tsx # 单条消息（ReactMarkdown）
+        ├── ToolCallBlock.tsx # 工具调用折叠（details/summary）
+        ├── ChatInput.tsx     # 输入框 + 发送按钮
+        └── SessionSidebar.tsx # 会话列表 + 新建
+```
+
+**SSE 消费：** POST /chat 返回 SSE 流，无法使用 `EventSource`（仅支持 GET）。使用 `fetch` + `ReadableStream` 手动解析 SSE 帧，实现为 async generator。
+
+**开发模式：** `npm run web:dev` 启动 Vite dev server（:5173），通过代理转发 API 请求到 Gateway（:3000）。
+
+**生产模式：** `npm run web:build` 构建到 `web/dist/`，Gateway 启动时自动在独立端口启动 Web UI 服务器并代理 API 请求。默认 `http://localhost:3001`（可通过 `--web-port` 指定）。
 
 ### 插件系统
 
@@ -314,5 +382,4 @@ interface Plugin {
 ## 待实现
 
 - **安全沙箱**：工具执行权限控制
-- **Web UI**：基于 Gateway 的前端界面
 - **RAG**：检索增强生成

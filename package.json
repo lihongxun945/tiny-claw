@@ -7,7 +7,9 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "gateway": "tsx src/gateway.ts",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "web:dev": "cd web && npm run dev",
+    "web:build": "cd web && npm install && npm run build"
   },
   "author": "lihongxun",
   "license": "ISC",

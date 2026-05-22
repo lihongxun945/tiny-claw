@@ -6,3 +6,8 @@ workspace/config.json
 workspace/history/
 workspace/logs/
 workspace/memory/
+web/dist/
+web/node_modules/
+workspace/gateway.pid
+__pycache__/
+*.tsbuildinfo

@@ -10,7 +10,8 @@ import { createFileWriteTool } from "./tools/file_write.js";
 import { createFileEditTool } from "./tools/file_edit.js";
 import { createMemorySaveTool, createMemoryAppendTool, createMemoryListTool } from "./tools/memory.js";
 import { createSkillUseTool, createSkillListTool } from "./tools/skill.js";
-import { ensureWorkspace, buildSystemPrompt } from "./workspace/workspace.js";
+import { ensureWorkspace } from "./workspace/workspace.js";
+import { buildSystemPrompt } from "./prompts/build.js";
 import { appendHistory, appendLog } from "./workspace/logger.js";
 import { compressIfNeeded } from "./compress.js";
 import type { Config, Message, ToolUseBlock, ToolResultBlock } from "./types.js";
@@ -68,6 +69,10 @@ export class AgentSession {
   private workspacePath: string;
   lastActivity: number;
 
+  getMessages(): Message[] {
+    return this.history.getRecentMessages(Infinity);
+  }
+
   constructor(id: string, workspacePath: string) {
     this.id = id;
     this.workspacePath = workspacePath;
@@ -76,7 +81,6 @@ export class AgentSession {
     this.config = loadConfig(workspacePath);
     this.client = new AnthropicClient(this.config);
     this.history = new MessageHistory();
-    this.systemPrompt = buildSystemPrompt(workspacePath);
     this.lastActivity = Date.now();
 
     this.registry = new ToolRegistry();
@@ -91,6 +95,8 @@ export class AgentSession {
     this.registry.register(createMemoryListTool(workspacePath));
     this.registry.register(createSkillUseTool(workspacePath));
     this.registry.register(createSkillListTool(workspacePath));
+
+    this.systemPrompt = buildSystemPrompt(workspacePath, this.registry.getDefinitions());
   }
 
   /** 执行一轮对话，返回事件流 */

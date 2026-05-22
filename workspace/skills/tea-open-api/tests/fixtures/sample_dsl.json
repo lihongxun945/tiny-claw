@@ -1,0 +1,54 @@
+{
+  "version": 3,
+  "resources": [
+    {
+      "id": "app_id_123",
+      "type": "app"
+    }
+  ],
+  "use_app_cloud_id": false,
+  "periods": [
+    {
+      "type": "past_range",
+      "granularity": "day",
+      "timezone": "Asia/Shanghai",
+      "week_start": 1,
+      "spans": [
+        {
+          "type": "timestamp",
+          "timestamp": "1740787200"
+        },
+        {
+          "type": "timestamp",
+          "timestamp": "1741291199"
+        }
+      ]
+    }
+  ],
+  "content": {
+    "query_type": "event",
+    "queries": [
+      [
+        {
+          "event_name": "app_launch",
+          "event_type": "origin",
+          "event_indicator": "events",
+          "show_name": "总次数",
+          "show_label": "A",
+          "groups_v2": [],
+          "filters": []
+        }
+      ]
+    ],
+    "profile_filters": [],
+    "profile_groups_v2": [],
+    "orders": [],
+    "page": {
+      "limit": 1000,
+      "offset": 0
+    },
+    "option": {}
+  },
+  "option": {},
+  "show_option": {}
+}

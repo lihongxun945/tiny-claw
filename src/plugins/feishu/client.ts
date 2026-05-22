@@ -137,13 +137,66 @@ export class FeishuClient {
 }
 
 function buildMarkdownCard(markdown: string): Record<string, unknown> {
+  const elements: Record<string, unknown>[] = [];
+  const lines = markdown.split("\n");
+  let textBuffer: string[] = [];
+
+  function flushText(): void {
+    if (textBuffer.length > 0) {
+      elements.push({ tag: "markdown", content: textBuffer.join("\n") });
+      textBuffer = [];
+    }
+  }
+
+  let i = 0;
+  while (i < lines.length) {
+    if (isTableRow(lines[i]) && i + 1 < lines.length && (isSeparatorRow(lines[i + 1]) || isTableRow(lines[i + 1]))) {
+      flushText();
+      const headerCells = parseRow(lines[i]);
+      i++;
+      if (i < lines.length && isSeparatorRow(lines[i])) i++;
+      elements.push(createRowElement(headerCells, true));
+      while (i < lines.length && isTableRow(lines[i])) {
+        elements.push(createRowElement(parseRow(lines[i]), false));
+        i++;
+      }
+    } else {
+      textBuffer.push(lines[i]);
+      i++;
+    }
+  }
+  flushText();
+
+  return { elements };
+}
+
+function isTableRow(line: string): boolean {
+  return /^\|.*\|$/.test(line.trim());
+}
+
+function isSeparatorRow(line: string): boolean {
+  return /^\|[\s\-:]+\|$/.test(line.trim());
+}
+
+function parseRow(line: string): string[] {
+  return line.trim().split("|").slice(1, -1).map((c) => c.trim());
+}
+
+function createRowElement(cells: string[], isHeader: boolean): Record<string, unknown> {
   return {
-    elements: [
-      {
-        tag: "markdown",
-        content: markdown,
-      },
-    ],
+    tag: "column_set",
+    columns: cells.map((cell) => ({
+      tag: "column",
+      width: "weighted",
+      weight: 1,
+      vertical_align: "top",
+      elements: [
+        {
+          tag: "markdown",
+          content: isHeader ? `**${cell}**` : cell || " ",
+        },
+      ],
+    })),
   };
 }
 

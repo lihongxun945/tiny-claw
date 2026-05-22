@@ -1,0 +1,65 @@
+import type { SSEEvent } from "../types.js";
+
+export async function* streamChat(
+  message: string,
+  sessionId?: string,
+  signal?: AbortSignal,
+): AsyncGenerator<SSEEvent> {
+  const body: Record<string, string> = { message };
+  if (sessionId) body.session_id = sessionId;
+
+  const response = await fetch("/chat", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Chat request failed: ${response.status} ${error}`);
+  }
+
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop()!;
+
+    for (const part of parts) {
+      if (!part.trim()) continue;
+      if (signal?.aborted) return;
+      const event = parseSSEFrame(part);
+      if (event) yield event;
+    }
+  }
+
+  if (buffer.trim()) {
+    const event = parseSSEFrame(buffer);
+    if (event) yield event;
+  }
+}
+
+function parseSSEFrame(frame: string): SSEEvent | null {
+  let event = "message";
+  let data = "";
+  for (const line of frame.split("\n")) {
+    if (line.startsWith("event: ")) {
+      event = line.slice(7);
+    } else if (line.startsWith("data: ")) {
+      data = line.slice(6);
+    }
+  }
+  if (!data) return null;
+  try {
+    return { event, data: JSON.parse(data) };
+  } catch {
+    return null;
+  }
+}

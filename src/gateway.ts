@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
@@ -28,6 +28,16 @@ function parsePortArg(): number {
   const envPort = process.env.TINY_CLAW_PORT;
   if (envPort) return parseInt(envPort, 10) || 3000;
   return 3000;
+}
+
+function parseWebPortArg(): number | undefined {
+  const idx = process.argv.indexOf("--web-port");
+  if (idx !== -1 && idx + 1 < process.argv.length) {
+    return parseInt(process.argv[idx + 1], 10) || undefined;
+  }
+  const envPort = process.env.TINY_CLAW_WEB_PORT;
+  if (envPort) return parseInt(envPort, 10) || undefined;
+  return undefined;
 }
 
 function parseCommand(): string {
@@ -66,15 +76,16 @@ function startDaemon(port: number, workspacePath: string): void {
   // 找到 tsx 二进制路径来重新调用自己（因为 .ts 文件不能直接用 node 执行）
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const tsxBin = resolve(__dirname, "../node_modules/.bin/tsx");
+  const webPort = parseWebPortArg() || port + 1;
 
-  const child = spawn(
-    tsxBin,
-    [process.argv[1]!, "--daemon-child", "--port", String(port), "--workspace", resolve(workspacePath)],
-    { detached: true, stdio: "ignore" },
-  );
+  const args = [process.argv[1]!, "--daemon-child", "--port", String(port), "--web-port", String(webPort), "--workspace", resolve(workspacePath)];
+
+  const child = spawn(tsxBin, args, { detached: true, stdio: "ignore" });
   child.unref();
 
   console.log(`Gateway daemon 已启动 (PID: ${child.pid})`);
+  console.log(`  Gateway API: http://localhost:${port}`);
+  console.log(`  Web UI:      http://localhost:${webPort}`);
   process.exit(0);
 }
 
@@ -132,6 +143,76 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
     req.on("error", reject);
   });
+}
+
+type FormattedMessage = { role: string; text: string; toolCalls: Array<{ name: string; input: Record<string, unknown>; result?: string }>; timestamp: number };
+
+function buildMessageListFromMessages(msgs: Array<{ role: string; content: string | Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>): FormattedMessage[] {
+  // 第一步：解析原始消息，将 tool_result 合并到前一条 assistant
+  const parsed: FormattedMessage[] = [];
+  for (const m of msgs) {
+    if (typeof m.content === "string") {
+      if (m.role === "assistant" || m.role === "user") {
+        parsed.push({ role: m.role, text: m.content, toolCalls: [], timestamp: Date.now() });
+      }
+      continue;
+    }
+    const blocks = m.content;
+    let text = "";
+    const toolCalls: FormattedMessage["toolCalls"] = [];
+    for (const b of blocks) {
+      if (b.type === "text" && b.text) text += b.text;
+      else if (b.type === "tool_use") toolCalls.push({ name: b.name ?? "", input: b.input ?? {} });
+      else if (b.type === "tool_result") {
+        const tc = toolCalls.find((t) => t.result === undefined);
+        if (tc) tc.result = b.content ?? "";
+      }
+    }
+    // user 消息只有 tool_result → 合并到前一条 assistant
+    if (m.role === "user" && !text && toolCalls.some((tc) => tc.result !== undefined)) {
+      const lastAssistant = [...parsed].reverse().find((r) => r.role === "assistant");
+      if (lastAssistant) {
+        for (const tc of toolCalls) {
+          const existing = lastAssistant.toolCalls.find((t) => t.name === tc.name && t.result === undefined);
+          if (existing) existing.result = tc.result;
+          else lastAssistant.toolCalls.push(tc);
+        }
+      }
+      continue;
+    }
+    if (m.role === "assistant" || (m.role === "user" && text)) {
+      parsed.push({ role: m.role, text, toolCalls, timestamp: Date.now() });
+    }
+  }
+
+  // 第二步：合并连续的 assistant 消息（Agent 多轮工具调用）
+  const result: FormattedMessage[] = [];
+  for (const m of parsed) {
+    if (m.role === "assistant" && result.length > 0 && result[result.length - 1].role === "assistant") {
+      const prev = result[result.length - 1];
+      prev.toolCalls.push(...m.toolCalls);
+      if (m.text) prev.text += (prev.text ? "\n" : "") + m.text;
+    } else {
+      result.push({ ...m, toolCalls: [...m.toolCalls] });
+    }
+  }
+  return result;
+}
+
+function buildMessageListFromRecords(historyDir: string, sessionId: string): FormattedMessage[] {
+  const rawMsgs: Array<{ role: string; content: unknown }> = [];
+  const files = readdirSync(historyDir).filter((f) => f.endsWith(".jsonl")).sort();
+  for (const f of files) {
+    const lines = readFileSync(resolve(historyDir, f), "utf-8").split("\n").filter(Boolean);
+    for (const line of lines) {
+      try {
+        const record = JSON.parse(line);
+        if (record._session !== sessionId) continue;
+        rawMsgs.push({ role: record.role, content: record.content });
+      } catch { /* skip */ }
+    }
+  }
+  return buildMessageListFromMessages(rawMsgs as Array<{ role: string; content: string | Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>);
 }
 
 function sendJSON(res: ServerResponse, status: number, data: unknown): void {
@@ -192,6 +273,12 @@ const pluginRoutes: RegisteredRoute[] = [];
 // === HTTP 服务器 ===
 
 async function runServer(port: number, workspacePath: string): Promise<void> {
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const isDaemonChild = process.argv.includes("--daemon-child");
+
+  // Web UI 端口（默认 gateway 端口 +1）
+  const webPort = parseWebPortArg() || port + 1;
+
   // 加载插件
   const config = loadConfig(workspacePath);
   const plugins = await loadPlugins(
@@ -219,7 +306,6 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
   );
 
   const pidPath = getPidPath(workspacePath);
-  const isDaemonChild = process.argv.includes("--daemon-child");
   if (isDaemonChild) {
     writeFileSync(pidPath, String(process.pid));
   }
@@ -323,29 +409,239 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       return;
     }
 
+    // GET /sessions/:id/messages
+    if (req.method === "GET" && url.pathname.startsWith("/sessions/") && url.pathname.endsWith("/messages")) {
+      const id = url.pathname.slice("/sessions/".length, -"/messages".length);
+      const session = sessions.get(id);
+      if (!session) {
+        sendJSON(res, 404, { error: "会话不存在" });
+        return;
+      }
+      const messages = buildMessageListFromMessages(session.getMessages());
+      sendJSON(res, 200, { messages });
+      return;
+    }
+
+    // GET /logs — 日志文件列表
+    if (req.method === "GET" && url.pathname === "/logs") {
+      const logsDir = resolve(workspacePath, "logs");
+      if (!existsSync(logsDir)) {
+        sendJSON(res, 200, { files: [] });
+        return;
+      }
+      const files = readdirSync(logsDir)
+        .filter((f) => f.endsWith(".log"))
+        .map((f) => ({ name: f, size: statSync(resolve(logsDir, f)).size }))
+        .sort((a, b) => b.name.localeCompare(a.name));
+      sendJSON(res, 200, { files });
+      return;
+    }
+
+    // GET /logs/:date — 日志内容
+    if (req.method === "GET" && url.pathname.startsWith("/logs/")) {
+      const date = url.pathname.slice("/logs/".length);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        sendJSON(res, 400, { error: "日期格式无效" });
+        return;
+      }
+      const logPath = resolve(workspacePath, "logs", `${date}.log`);
+      if (!existsSync(logPath)) {
+        sendJSON(res, 404, { error: "日志文件不存在" });
+        return;
+      }
+      const tail = Math.min(parseInt(url.searchParams.get("tail") ?? "200", 10), 2000) || 200;
+      const content = readFileSync(logPath, "utf-8");
+      const lines = content.split("\n").filter(Boolean).slice(-tail);
+      sendJSON(res, 200, { date, lines });
+      return;
+    }
+
+    // GET /config — 获取配置（apiKey 脱敏）
+    if (req.method === "GET" && url.pathname === "/config") {
+      const configPath = resolve(workspacePath, "config.json");
+      if (!existsSync(configPath)) {
+        sendJSON(res, 404, { error: "配置文件不存在" });
+        return;
+      }
+      const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+      if (raw.apiKey) raw.apiKey = raw.apiKey.slice(0, 4) + "***";
+      sendJSON(res, 200, { config: raw });
+      return;
+    }
+
+    // PUT /config — 更新配置
+    if (req.method === "PUT" && url.pathname === "/config") {
+      try {
+        const configPath = resolve(workspacePath, "config.json");
+        const existing = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf-8")) : {};
+        const updates = JSON.parse(await readBody(req));
+        delete updates.apiKey;
+        const merged = { ...existing, ...updates };
+        writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n", "utf-8");
+        merged.apiKey = (merged.apiKey ?? "").slice(0, 4) + "***";
+        sendJSON(res, 200, { config: merged });
+      } catch (err) {
+        sendJSON(res, 500, { error: `更新配置失败: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      return;
+    }
+
+    // GET /history/sessions — 从历史文件扫描所有会话
+    if (req.method === "GET" && url.pathname === "/history/sessions") {
+      const historyDir = resolve(workspacePath, "history");
+      if (!existsSync(historyDir)) {
+        sendJSON(res, 200, { sessions: [] });
+        return;
+      }
+      const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string }>();
+      const files = readdirSync(historyDir).filter((f) => f.endsWith(".jsonl")).sort().reverse();
+      for (const f of files.slice(0, 30)) {
+        const lines = readFileSync(resolve(historyDir, f), "utf-8").split("\n").filter(Boolean);
+        for (const line of lines) {
+          try {
+            const record = JSON.parse(line);
+            const sid = record._session;
+            if (!sid) continue;
+            if (!sessionMap.has(sid)) {
+              const preview = typeof record.content === "string"
+                ? record.content.slice(0, 60)
+                : Array.isArray(record.content) && record.content[0]?.text
+                  ? record.content[0].text.slice(0, 60)
+                  : "";
+              sessionMap.set(sid, { id: sid, lastActivity: 0, preview });
+            }
+            const entry = sessionMap.get(sid)!;
+            if (record.role === "user") entry.lastActivity = Math.max(entry.lastActivity, Date.parse(f.replace(".jsonl", "")) || 0);
+          } catch { /* skip malformed */ }
+        }
+      }
+      const sessions = Array.from(sessionMap.values()).sort((a, b) => b.lastActivity - a.lastActivity);
+      sendJSON(res, 200, { sessions });
+      return;
+    }
+
+    // GET /history/sessions/:id/messages — 读取指定会话的历史消息
+    if (req.method === "GET" && url.pathname.startsWith("/history/sessions/") && url.pathname.endsWith("/messages")) {
+      const id = decodeURIComponent(url.pathname.slice("/history/sessions/".length, -"/messages".length));
+      const historyDir = resolve(workspacePath, "history");
+      if (!existsSync(historyDir)) {
+        sendJSON(res, 200, { messages: [] });
+        return;
+      }
+      const messages = buildMessageListFromRecords(historyDir, id);
+      sendJSON(res, 200, { messages });
+      return;
+    }
+
     // 404
     sendJSON(res, 404, { error: "未找到路由" });
   });
 
-  // 启动日志（在 listen 之前写入，daemon 模式下 console.log 不可见）
-  if (isDaemonChild) {
-    appendLog(workspacePath, "info", `Gateway daemon 已启动 (PID: ${process.pid})，监听端口 ${port}`);
-    appendLog(workspacePath, "info", "路由: POST /chat | GET /sessions | DELETE /sessions/:id");
-    if (pluginRoutes.length > 0) {
-      for (const route of pluginRoutes) {
-        appendLog(workspacePath, "info", `路由: ${route.method} ${route.path} [${route.pluginName}]`);
+  // === Web UI 服务器 ===
+  const webDistPath = resolve(__dirname, "../web/dist");
+  const webDir = resolve(__dirname, "../web");
+  const hasDist = existsSync(resolve(webDistPath, "index.html"));
+  let webServer: ReturnType<typeof createServer> | null = null;
+  let viteChild: ReturnType<typeof spawn> | null = null;
+
+  if (hasDist) {
+    // 生产模式：从 web/dist/ 提供静态文件 + 代理 API 请求到 gateway
+    webServer = createServer(async (req, res) => {
+      const url = new URL(req.url ?? "/", `http://localhost:${webPort}`);
+
+      // 代理 API 请求到 gateway
+      if (url.pathname === "/chat" || url.pathname === "/sessions" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|logs|history\/sessions)\/[^/]+/)) {
+        try {
+          const proxyRes = await fetch(`http://localhost:${port}${url.pathname}${url.search}`, {
+            method: req.method,
+            headers: { "content-type": req.headers["content-type"] ?? "application/json" },
+            body: req.method !== "GET" && req.method !== "HEAD" ? await readBody(req) : undefined,
+          });
+          const contentType = proxyRes.headers.get("content-type") ?? "application/json";
+          res.writeHead(proxyRes.status, {
+            "content-type": contentType,
+            "access-control-allow-origin": "*",
+          });
+          if (contentType.includes("text/event-stream")) {
+            const reader = proxyRes.body!.getReader();
+            const decoder = new TextDecoder();
+            const pump = async () => {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) { res.end(); return; }
+                res.write(decoder.decode(value, { stream: true }));
+              }
+            };
+            pump().catch(() => res.end());
+          } else {
+            const body = await proxyRes.text();
+            res.end(body);
+          }
+        } catch (err) {
+          res.writeHead(502, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: `代理请求失败: ${err instanceof Error ? err.message : String(err)}` }));
+        }
+        return;
       }
+
+      // 静态文件
+      let filePath = resolve(webDistPath, url.pathname.slice(1) || "index.html");
+
+      if (!filePath.startsWith(webDistPath)) {
+        res.writeHead(403);
+        res.end("Forbidden");
+        return;
+      }
+
+      if (existsSync(filePath) && statSync(filePath).isFile()) {
+        const ext = filePath.split(".").pop()!;
+        const mimeTypes: Record<string, string> = {
+          html: "text/html", js: "application/javascript", css: "text/css",
+          json: "application/json", png: "image/png", svg: "image/svg+xml",
+          ico: "image/x-icon", woff2: "font/woff2", woff: "font/woff",
+          ttf: "font/ttf",
+        };
+        res.writeHead(200, {
+          "content-type": mimeTypes[ext] || "application/octet-stream",
+          "cache-control": ext === "html" ? "no-cache" : "max-age=3600",
+        });
+        res.end(readFileSync(filePath));
+        return;
+      }
+
+      // SPA fallback
+      const indexPath = resolve(webDistPath, "index.html");
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(readFileSync(indexPath));
+    });
+    webServer.listen(webPort);
+  } else if (!isDaemonChild) {
+    // 开发模式：启动 Vite dev server
+    const viteBin = resolve(webDir, "node_modules/.bin/vite");
+    if (existsSync(viteBin)) {
+      viteChild = spawn(viteBin, ["--port", String(webPort), "--strictPort"], {
+        cwd: webDir,
+        stdio: "inherit",
+        env: { ...process.env, TINY_CLAW_PORT: String(port) },
+      });
+      viteChild.on("error", (err) => {
+        console.error(`Vite dev server 启动失败: ${err.message}`);
+        viteChild = null;
+      });
     }
+  }
+
+  // 启动日志
+  if (isDaemonChild) {
+    appendLog(workspacePath, "info", `Gateway daemon 已启动 (PID: ${process.pid})`);
+    appendLog(workspacePath, "info", `Gateway API: http://localhost:${port}`);
+    if (hasDist) appendLog(workspacePath, "info", `Web UI: http://localhost:${webPort}`);
     appendLog(workspacePath, "info", `工作目录: ${workspacePath}`);
   } else {
-    console.log(`tiny-claw gateway 已启动: http://localhost:${port}`);
-    console.log(`  POST /chat           - 发送消息（SSE 流式响应）`);
-    console.log(`  GET  /sessions       - 列出活跃会话`);
-    console.log(`  DELETE /sessions/:id - 销毁会话`);
-    for (const route of pluginRoutes) {
-      console.log(`  ${route.method.padEnd(6)} ${route.path} [${route.pluginName}]`);
-    }
-    console.log(`工作目录: ${workspacePath}`);
+    console.log(`tiny-claw 已启动`);
+    console.log(`  Gateway API: http://localhost:${port}`);
+    console.log(`  Web UI:      http://localhost:${webPort}${!hasDist && viteChild ? " (dev)" : ""}`);
+    console.log(`  工作目录:    ${workspacePath}`);
   }
 
   server.on("error", (err: NodeJS.ErrnoException) => {
@@ -365,6 +661,8 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     const msg = "Gateway 正在关闭";
     console.log(`\n${msg}...`);
     appendLog(workspacePath, "info", msg);
+    if (viteChild) viteChild.kill();
+    if (webServer) webServer.close();
     await destroyPlugins(plugins);
     server.close();
     if (isDaemonChild) {
