@@ -1,5 +1,9 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
 import { AgentSession, type AgentEvent } from "./agent.js";
 import { appendLog } from "./workspace/logger.js";
@@ -24,6 +28,101 @@ function parsePortArg(): number {
   const envPort = process.env.TINY_CLAW_PORT;
   if (envPort) return parseInt(envPort, 10) || 3000;
   return 3000;
+}
+
+function parseCommand(): string {
+  const arg = process.argv.slice(2).find((a) => !a.startsWith("-"));
+  return arg || "start";
+}
+
+// === Daemon 管理 ===
+
+function getPidPath(workspacePath: string): string {
+  return resolve(workspacePath, "gateway.pid");
+}
+
+function daemonIsRunning(pidPath: string): number | false {
+  if (!existsSync(pidPath)) return false;
+  const pid = parseInt(readFileSync(pidPath, "utf-8").trim(), 10);
+  try {
+    process.kill(pid, 0);
+    return pid;
+  } catch {
+    return false;
+  }
+}
+
+function startDaemon(port: number, workspacePath: string): void {
+  const pidPath = getPidPath(workspacePath);
+  const running = daemonIsRunning(pidPath);
+  if (running !== false) {
+    console.log(`Gateway 已在运行中 (PID: ${running})`);
+    process.exit(0);
+  }
+
+  // 清除过期 PID 文件
+  if (existsSync(pidPath)) unlinkSync(pidPath);
+
+  // 找到 tsx 二进制路径来重新调用自己（因为 .ts 文件不能直接用 node 执行）
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const tsxBin = resolve(__dirname, "../node_modules/.bin/tsx");
+
+  const child = spawn(
+    tsxBin,
+    [process.argv[1]!, "--daemon-child", "--port", String(port), "--workspace", resolve(workspacePath)],
+    { detached: true, stdio: "ignore" },
+  );
+  child.unref();
+
+  console.log(`Gateway daemon 已启动 (PID: ${child.pid})`);
+  process.exit(0);
+}
+
+function stopDaemon(workspacePath: string): void {
+  const pidPath = getPidPath(workspacePath);
+  const running = daemonIsRunning(pidPath);
+  if (running === false) {
+    console.log("Gateway 未运行");
+    return;
+  }
+
+  process.kill(running, "SIGTERM");
+
+  // 等待进程退出（最多 3 秒）
+  for (let i = 0; i < 30; i++) {
+    try {
+      // eslint-disable-next-line no-loop-func, @typescript-eslint/no-loop-func
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      process.kill(running, 0);
+    } catch {
+      // 进程已退出
+      try { unlinkSync(pidPath); } catch { /* ignore */ }
+      console.log("Gateway 已停止");
+      return;
+    }
+  }
+
+  // 超时强制杀死
+  try {
+    process.kill(running, "SIGKILL");
+    unlinkSync(pidPath);
+  } catch { /* ignore */ }
+  console.log("Gateway 已停止");
+}
+
+function daemonStatus(workspacePath: string): void {
+  const pidPath = getPidPath(workspacePath);
+  const running = daemonIsRunning(pidPath);
+  if (running === false) {
+    if (existsSync(pidPath)) {
+      console.log("Gateway 未运行（存在过期 PID 文件，已清理）");
+      unlinkSync(pidPath);
+    } else {
+      console.log("Gateway 未运行");
+    }
+  } else {
+    console.log(`Gateway 正在运行 (PID: ${running})`);
+  }
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -92,10 +191,7 @@ const pluginRoutes: RegisteredRoute[] = [];
 
 // === HTTP 服务器 ===
 
-async function main() {
-  workspacePath = parseWorkspaceArg() || process.env.TINY_CLAW_WORKSPACE || process.cwd() + "/workspace";
-  const port = parsePortArg();
-
+async function runServer(port: number, workspacePath: string): Promise<void> {
   // 加载插件
   const config = loadConfig(workspacePath);
   const plugins = await loadPlugins(
@@ -121,6 +217,12 @@ async function main() {
       },
     }),
   );
+
+  const pidPath = getPidPath(workspacePath);
+  const isDaemonChild = process.argv.includes("--daemon-child");
+  if (isDaemonChild) {
+    writeFileSync(pidPath, String(process.pid));
+  }
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -225,7 +327,17 @@ async function main() {
     sendJSON(res, 404, { error: "未找到路由" });
   });
 
-  server.listen(port, () => {
+  // 启动日志（在 listen 之前写入，daemon 模式下 console.log 不可见）
+  if (isDaemonChild) {
+    appendLog(workspacePath, "info", `Gateway daemon 已启动 (PID: ${process.pid})，监听端口 ${port}`);
+    appendLog(workspacePath, "info", "路由: POST /chat | GET /sessions | DELETE /sessions/:id");
+    if (pluginRoutes.length > 0) {
+      for (const route of pluginRoutes) {
+        appendLog(workspacePath, "info", `路由: ${route.method} ${route.path} [${route.pluginName}]`);
+      }
+    }
+    appendLog(workspacePath, "info", `工作目录: ${workspacePath}`);
+  } else {
     console.log(`tiny-claw gateway 已启动: http://localhost:${port}`);
     console.log(`  POST /chat           - 发送消息（SSE 流式响应）`);
     console.log(`  GET  /sessions       - 列出活跃会话`);
@@ -234,17 +346,60 @@ async function main() {
       console.log(`  ${route.method.padEnd(6)} ${route.path} [${route.pluginName}]`);
     }
     console.log(`工作目录: ${workspacePath}`);
+  }
+
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    const msg = `Gateway 启动失败: ${err.code} - ${err.message}`;
+    appendLog(workspacePath, "error", msg);
+    console.error(msg);
+    if (err.code === "EADDRINUSE") {
+      try { unlinkSync(pidPath); } catch { /* ignore */ }
+    }
+    process.exit(1);
   });
+
+  server.listen(port);
 
   // 优雅关闭
   const shutdown = async () => {
-    console.log("\n正在关闭...");
+    const msg = "Gateway 正在关闭";
+    console.log(`\n${msg}...`);
+    appendLog(workspacePath, "info", msg);
     await destroyPlugins(plugins);
     server.close();
+    if (isDaemonChild) {
+      appendLog(workspacePath, "info", "Gateway 已停止");
+      try { unlinkSync(pidPath); } catch { /* ignore */ }
+    }
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+}
+
+async function main() {
+  const workspacePath = parseWorkspaceArg() || process.env.TINY_CLAW_WORKSPACE || process.cwd() + "/workspace";
+  const port = parsePortArg();
+  const command = parseCommand();
+
+  switch (command) {
+    case "stop":
+      stopDaemon(workspacePath);
+      break;
+    case "status":
+      daemonStatus(workspacePath);
+      break;
+    case "restart":
+      stopDaemon(workspacePath);
+      startDaemon(port, workspacePath);
+      break;
+    default:
+      if (process.argv.includes("--daemon-child")) {
+        await runServer(port, workspacePath);
+      } else {
+        startDaemon(port, workspacePath);
+      }
+  }
 }
 
 main();

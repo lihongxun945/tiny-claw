@@ -136,3 +136,30 @@ npm run gateway -- --port 3000
 ## 难点记录
 1. 搜索问题：DuckDuckGo 虽然免费，但 Instant Answer API 本质不是搜索引擎，只能搜短英文实体关键词。Brave Search 是搜索引擎，但需绑定银行卡。SearXNG 需要自建服务器。当前默认 DuckDuckGo + 系统提示词约束模型使用简短关键词搜索。
 2. 插件系统：官方 `@larksuite/openclaw-lark` 依赖 openclaw/plugin-sdk 的 18 个子模块，无法直接使用。当前实现了简化版插件系统和飞书插件（WebSocket 长连接），后续逐步兼容 openclaw 插件生态。
+
+## 与 Open-Claw 的对比
+
+| 功能模块 | tiny-claw | open-claw |
+|---------|-----------|-----------|
+| **Agent Loop** | 自实现规划-执行-观察循环，`AgentSession` 管理多会话 | 内置 Loop 引擎，架构相似 |
+| **Prompt 管理** | 手动构造 system prompt + `identity.md` 注入 | 内置 prompt 模板系统 |
+| **工具系统** | `ToolRegistry` + JSON Schema 声明式注册，11 个内置工具 | Plugin SDK 驱动，工具通过插件注册 |
+| **上下文压缩** | 模型摘要压缩，滑动窗口历史 | 有类似机制 |
+| **Memory** | 工具驱动，文件存储 `memory/*.md` | 独立的 Memory 模块 |
+| **Skill 系统** | `workspace/skills/<name>/SKILL.md` + frontmatter | 插件形式的技能系统 |
+| **HTTP Gateway** | 自定义实现，SSE 流式 + 会话管理 | 内置 Gateway 模块 |
+| **飞书接入** | 简化实现，直接使用 `@larksuiteoapi/node-sdk` WSClient | 官方 `@larksuite/openclaw-lark` 插件 |
+| **插件系统** | 自定义 Plugin 接口 + 路由注册表，~100 行 | 完整 Plugin SDK，18 个子模块 |
+| **权限沙箱** | 未实现 | 有 sandbox 模块 |
+| **Web UI** | 未实现 | 有 Web UI |
+| **RAG** | 未实现 | RAG 模块 |
+| **代码规模** | ~20 个源文件，轻量聚焦 | 企业级，功能全面 |
+| **外部依赖** | 极少（仅 `@larksuiteoapi/node-sdk`） | 重型（Plugin SDK 等） |
+| **模型支持** | 兼容 Anthropic Messages API（可对接火山方舟等） | Anthropic Messages API |
+| **多租户** | `AgentSession` + `session_id` 隔离 | Session 管理 |
+
+### 设计哲学差异
+
+- **tiny-claw** 追求极简——零运行时依赖、核心逻辑自实现、代码量小、易于理解和修改。适合学习、个人项目或定制化场景。
+- **open-claw** 追求企业级完备性——丰富的插件生态、完善的权限管理、开箱即用的多平台支持。适合团队协作、生产环境部署。
+- **插件兼容**：当前插件系统为简化自实现，后续计划逐步兼容 open-claw 的插件规范，最终能复用其插件生态。
