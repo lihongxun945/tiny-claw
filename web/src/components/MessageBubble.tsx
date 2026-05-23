@@ -1,4 +1,5 @@
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { Message } from "../types.js";
 import ToolCallBlock from "./ToolCallBlock.js";
 
@@ -8,6 +9,7 @@ interface Props {
 }
 
 function formatTime(ts: number): string {
+  if (ts <= 0) return "";
   const d = new Date(ts);
   if (isNaN(d.getTime())) return "";
   return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
@@ -28,7 +30,7 @@ export default function MessageBubble({ message, isStreaming }: Props) {
             ))}
             {message.text && (
               <span className={isStreaming ? "streaming-cursor" : ""}>
-                <Markdown>{message.text}</Markdown>
+                <Markdown remarkPlugins={[remarkGfm]}>{message.text}</Markdown>
               </span>
             )}
             {isStreaming && !message.text && message.toolCalls.length > 0 && (

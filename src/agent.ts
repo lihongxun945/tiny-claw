@@ -103,7 +103,7 @@ export class AgentSession {
   async *chat(userInput: string): AsyncGenerator<AgentEvent> {
     this.lastActivity = Date.now();
 
-    const userMsg: Message = { role: "user", content: userInput };
+    const userMsg: Message = { role: "user", content: userInput, _timestamp: Date.now() };
     appendHistory(this.workspacePath, userMsg, this.id);
     appendLog(this.workspacePath, "INFO", `用户输入: ${userInput}`, this.id);
     this.history.markTurnStart();
@@ -178,7 +178,7 @@ export class AgentSession {
       }
 
       if (assistantContent.length > 0) {
-        const assistantMsg: Message = { role: "assistant", content: assistantContent };
+        const assistantMsg: Message = { role: "assistant", content: assistantContent, _timestamp: Date.now() };
         appendHistory(this.workspacePath, assistantMsg, this.id);
         if (response.text) {
           appendLog(this.workspacePath, "INFO", `Assistant: ${response.text.slice(0, 200)}`, this.id);
@@ -221,7 +221,7 @@ export class AgentSession {
           tool_use_id: toolCall.id,
           content: result,
         };
-        const toolResultMsg: Message = { role: "user", content: [toolResult] };
+        const toolResultMsg: Message = { role: "user", content: [toolResult], _timestamp: Date.now() };
         appendHistory(this.workspacePath, toolResultMsg, this.id);
         this.history.push(toolResultMsg);
       }
