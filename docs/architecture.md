@@ -17,28 +17,31 @@
 
 ```
 src/
-├── index.ts          # CLI 入口（使用 AgentSession）
-├── gateway.ts        # HTTP Gateway（SSE 流式 API + 插件路由注册表）
-├── agent.ts          # AgentSession 类（核心 Agent Loop）
+├── index.ts          # CLI 入口（使用 PluginManager + AgentSession）
+├── gateway.ts        # HTTP Gateway（SSE 流式 API + 插件路由）
+├── agent.ts          # AgentSession 类（核心 Agent Loop，仅编排流程+调用钩子）
+├── plugin-manager.ts # 插件管理器（生命周期、工具注册、钩子调度）
 ├── config.ts         # 配置加载（从 workspace 读取）
 ├── client.ts         # Anthropic Messages API 客户端（流式）
 ├── history.ts        # 滑动窗口消息历史
-├── compress.ts       # 上下文压缩（模型摘要）
-├── estimate-tokens.ts # Token 估算（触发压缩）
+├── estimate-tokens.ts # Token 估算（供 compress 插件使用）
 ├── types.ts          # 共享类型定义
 ├── plugins/          # 插件系统
-│   ├── types.ts      # Plugin、PluginContext、RouteDefinition 接口
-│   ├── loader.ts     # 插件加载器（内置/外部）
-│   └── feishu/       # 飞书插件
-│       ├── index.ts  # 插件入口（注册路由）
-│       ├── client.ts # FeishuClient（token 缓存、消息发送/回复）
-│       └── handler.ts # 事件处理（验证、消息解析、异步回复）
-├── prompts/          # 系统提示词模板
-│   ├── default.md    # 默认模板（含 {{placeholder}} 占位符）
-│   └── build.ts      # 模板加载 + buildSystemPrompt()
-├── tools/            # 工具实现
-│   ├── registry.ts   # 工具注册中心
-│   ├── search.ts     # 网络搜索（多 provider：SearXNG/Brave/DuckDuckGo）
+│   ├── types.ts      # Plugin、PluginContext、PluginHooks、HookContext 接口
+│   ├── loader.ts     # 插件加载器（内置/外部动态加载）
+│   ├── core/         # 核心插件包（始终启用）
+│   │   ├── index.ts  # 聚合导出所有核心插件
+│   │   ├── tools.ts  # 工具注册插件（注册所有内置工具）
+│   │   ├── prompts.ts # 提示词构建插件（模板加载+占位符替换）
+│   │   ├── compress.ts # 上下文压缩插件（阈值判断+模型摘要）
+│   │   └── logger.ts # 日志插件（通过钩子记录所有事件）
+│   └── feishu/       # 飞书插件（平台适配器）
+│       ├── index.ts  # 插件入口
+│       ├── client.ts # FeishuClient
+│       └── handler.ts # 事件处理
+├── tools/            # 工具实现（工厂函数，供 core-tools 插件导入）
+│   ├── registry.ts   # 工具注册中心（由 PluginManager 内部持有）
+│   ├── search.ts     # 网络搜索（多 provider）
 │   ├── web_fetch.ts  # 网页内容获取
 │   ├── bash.ts       # Shell 命令执行
 │   ├── file_read.ts  # 文件读取
@@ -118,28 +121,36 @@ workspace/
 ```
 用户输入
   ↓
-CLI 参数解析 → 确定 workspace 路径
+PluginManager 加载核心插件（tools, prompts, compress, logger）
   ↓
-workspace 初始化 → 创建子目录、加载配置、加载 identity
+AgentSession 初始化 → PluginManager.setRuntimeDeps()
   ↓
-history.push(user message)
-  ↓
-┌─── Agent Loop ──────────────────────────────┐
-│  history.getRecentMessages(N)               │
-│       ↓                                     │
-│  compressIfNeeded() → 超阈值时模型摘要压缩  │
-│       ↓                                     │
-│  client.chat(messages, tools, onDelta,      │
-│              systemPrompt)                  │
-│       ↓                                     │
-│  response = { text, toolCalls }             │
-│       ↓                                     │
-│  有 toolCalls?                              │
-│    是 → 执行工具 → push tool_result         │
-│         → 回到循环顶部                       │
-│    否 → push assistant message              │
-│         → 跳出循环，等待用户输入             │
-└─────────────────────────────────────────────┘
+┌─── Agent Loop ───────────────────────────────────┐
+│  onBeforeChat 钩子 → 日志记录 / 阻断 / 输入修改  │
+│       ↓                                          │
+│  onBuildPrompt 钩子 → 构建系统提示词（懒加载）   │
+│       ↓                                          │
+│  history.push(user message)                       │
+│       ↓                                          │
+│  history.getRecentMessages(N)                     │
+│       ↓                                          │
+│  onBeforeModelCall 钩子 → 上下文压缩 / 消息修改  │
+│       ↓                                          │
+│  client.chat(messages, tools, onDelta,            │
+│              systemPrompt)                        │
+│       ↓                                          │
+│  response = { text, toolCalls }                   │
+│       ↓                                          │
+│  push assistant message + appendHistory           │
+│       ↓                                          │
+│  onAfterIteration 钩子                            │
+│       ↓                                          │
+│  有 toolCalls?                                    │
+│    是 → onBeforeTool 钩子 → 执行工具             │
+│         → onAfterTool 钩子 → push tool_result    │
+│         → 回到循环顶部                            │
+│    否 → 跳出循环，等待用户输入                    │
+└──────────────────────────────────────────────────┘
 ```
 
 Agent Loop 是核心：模型自主决定是否调用工具，工具执行结果反馈给模型，模型继续输出，直到无工具调用时将最终回答交给用户。
@@ -165,9 +176,9 @@ Node 22 内置 fetch、readline/promises、TextDecoder，不需要额外 HTTP/IO
 
 `historyWindowSize` 按"轮"计算（1轮 = 1 user + 1 assistant），截取时保证第一条是 user 消息，满足 API 交替约束。默认 5 轮。
 
-### 上下文压缩
+### 上下文压缩（插件化）
 
-当对话历史 token 估计超过 `maxContextTokens * contextCompressionThreshold` 时触发压缩：
+上下文压缩逻辑已迁移到 `plugins/core/compress.ts` 插件中，通过 `onBeforeModelCall` 钩子实现。当对话历史 token 估计超过 `maxContextTokens * contextCompressionThreshold` 时触发压缩：
 
 1. **优先压缩历史对话**：markTurnStart 之前的多条消息用模型摘要为一条 `[对话历史摘要]` 用户消息
 2. **回退压缩当前轮早期**：历史不足时，压缩当前 Agent Loop 早期消息，保留最后 4 条
@@ -175,9 +186,11 @@ Node 22 内置 fetch、readline/promises、TextDecoder，不需要额外 HTTP/IO
 
 token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），不追求精确，只用于判断是否接近上下文上限。压缩使用 `client.complete()` 非流式调用，max_tokens=1024，避免流式开销。
 
-### 工具注册：ToolRegistry 模式
+### 工具注册：插件化
 
-工具通过 `ToolRegistry.register(tool)` 注册，模型调用时通过 `getTool(name)` 查找执行。新增工具只需：1) 实现 Tool 接口 2) 注册到 Registry。
+工具通过 `ToolRegistry.register(tool)` 注册，由 `PluginManager` 内部持有 `ToolRegistry` 实例。核心插件 `plugins/core/tools.ts` 在初始化时通过 `ctx.registerTool()` 注册所有内置工具。
+
+插件也可以注册自己的工具，通过 `PluginContext.registerTool()` 方法。所有插件的工具统一合并到 PluginManager 的 ToolRegistry 中，模型调用时通过 `getTool(name)` 查找执行。新增工具只需：1) 在任意插件中实现 Tool 接口 2) 在插件 init 中注册。
 
 ### 搜索引擎：多 Provider 架构
 
@@ -220,13 +233,15 @@ bash 工具用 `child_process.spawn` 执行，返回 `{ stdout, stderr, exitCode
 
 对比"自动提取"方案，工具驱动的优势是实现简单、透明可控，适合早期阶段。后续可在此基础上叠加自动提取（Phase 2）。
 
-### 系统提示词模板
+### 系统提示词模板（插件化）
 
-系统提示词采用单文件模板方案，支持用户自定义覆盖。`src/prompts/default.md` 是默认模板，使用 `{{placeholder}}` 占位符语法。用户可在 `workspace/system_prompt.md` 放置自定义模板覆盖默认值。
+系统提示词构建已迁移到 `plugins/core/prompts.ts` 插件中，通过 `onBuildPrompt` 钩子实现。
+
+采用单文件模板方案，支持用户自定义覆盖。`src/prompts/default.md` 是默认模板，使用 `{{placeholder}}` 占位符语法。用户可在 `workspace/system_prompt.md` 放置自定义模板覆盖默认值。
 
 模板加载逻辑：优先检查 `workspace/system_prompt.md`，存在则使用用户模板，否则使用 `src/prompts/default.md`。运行时将所有 `{{xxx}}` 占位符替换为实际内容（identity、memories、skills、tools、current_date），未匹配的占位符替换为空字符串。
 
-`buildSystemPrompt(workspacePath, tools)` 在 `src/prompts/build.ts` 中实现，`AgentSession` 构造时在工具注册完成后调用，确保 `{{tools}}` 占位符能获得完整的工具列表。
+其他插件可以通过 `ctx.extendPrompt()` 注册 `PromptSection`，自动追加到系统提示词末尾。
 
 ### 技能系统
 
@@ -315,7 +330,9 @@ web/
 
 ### 插件系统
 
-插件系统允许扩展 Gateway 功能（如聊天平台接入），而不修改核心代码。
+tiny-claw 采用插件化架构，主框架（AgentSession）只负责编排 Agent Loop 和在关键节点调用插件钩子，所有业务逻辑（工具注册、提示词构建、上下文压缩、日志记录）均由插件实现。
+
+**核心原则：** 插件通过注册钩子介入流程，框架通过 PluginManager 统一调度。
 
 **Plugin 接口：**
 
@@ -334,16 +351,69 @@ interface Plugin {
 | `config` | 插件专属配置（来自 `plugins.<name>`） |
 | `workspacePath` | 工作目录路径 |
 | `registerRoute(route)` | 注册 HTTP 路由 |
-| `getOrCreateSession(id, prefix?)` | 获取/创建 AgentSession（可选前缀） |
+| `registerTool(tool)` | 注册工具到全局 ToolRegistry |
+| `registerHooks(hooks)` | 注册生命周期钩子 |
+| `extendPrompt(section)` | 注册提示词片段（追加到系统提示词） |
+| `getOrCreateSession(id, prefix?)` | 获取/创建 AgentSession |
 | `deleteSession(id)` | 删除会话 |
 | `log(level, message, sessionId?)` | 插件日志 |
 
-**插件加载：**
-- 内置插件：放在 `src/plugins/<name>/` 下，通过 `enabledPlugins` 启用
-- 外部插件：npm 包或文件路径，通过 `externalPlugins` 加载
-- 每个插件的配置在 `plugins.<pluginName>` 下命名空间隔离
+**插件分类：**
 
-**路由注册表：** Gateway 启动时加载插件，插件通过 `registerRoute()` 注册路由。请求匹配时插件路由优先于核心路由。
+1. **核心插件**（`plugins/core/`）：始终启用，实现基础功能
+   - `core-tools`：注册所有内置工具
+   - `core-prompts`：系统提示词模板加载与占位符替换
+   - `core-compress`：上下文压缩（阈值判断 + 模型摘要）
+   - `core-logger`：执行日志与对话历史写入
+
+2. **用户插件**（内置/外部）：通过配置启用
+   - 内置插件：放在 `src/plugins/<name>/`，通过 `enabledPlugins` 启用
+   - 外部插件：npm 包或文件路径，通过 `externalPlugins` 加载
+   - 每个插件的配置在 `plugins.<pluginName>` 下命名空间隔离
+
+**生命周期钩子（PluginHooks）：**
+
+| 钩子 | 触发时机 | 用途 |
+|------|----------|------|
+| `onBeforeChat` | 用户输入进入 Loop 前 | 日志、输入修改、阻断 |
+| `onBuildPrompt` | 构建系统提示词 | 模板填充、内容注入 |
+| `onBeforeModelCall` | 调用模型 API 前 | 上下文压缩、消息修改 |
+| `onChatResponse` | 模型返回后 | 响应拦截/修改 |
+| `onBeforeTool` | 工具执行前 | 日志、阻断 |
+| `onAfterTool` | 工具执行后 | 日志、结果修改 |
+| `onAfterIteration` | 每次 Agent 迭代完成 | 状态更新 |
+| `onError` | 发生错误 | 错误日志 |
+
+钩子采用串行管道模式：按注册顺序执行，前一个钩子的返回值作为下一个的输入。
+
+**PluginManager：**
+
+`PluginManager` 是插件系统的核心，负责：
+- 加载核心插件（始终启用）
+- 加载用户插件（从配置读取）
+- 维护 `ToolRegistry`（所有插件的工具合并注册）
+- 维护钩子列表（负责调度）
+- 维护路由注册表（Gateway 使用）
+- 提供 `setRuntimeDeps()` 在 AgentSession 创建后注入 `Config` 和 `AnthropicClient`
+
+**路由注册表：** Gateway 启动时通过 PluginManager 加载插件，插件通过 `registerRoute()` 注册路由。请求匹配时插件路由优先于核心路由。
+
+**入口文件变化：**
+
+CLI 入口和 Gateway 入口现在都需要先创建 PluginManager，加载核心插件，再将 PluginManager 传给 AgentSession：
+
+```typescript
+// CLI
+const pm = new PluginManager(workspacePath);
+await pm.loadCorePlugins();
+const session = new AgentSession("cli", workspacePath, pm);
+
+// Gateway
+const pm = new PluginManager(workspacePath);
+await pm.loadCorePlugins();
+await pm.loadUserPlugins({ builtinPlugins, externalPlugins, pluginConfigs });
+const session = new AgentSession(id, workspacePath, pm);
+```
 
 ### 飞书插件（内置）
 

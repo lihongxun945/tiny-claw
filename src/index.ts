@@ -1,5 +1,8 @@
 import * as readline from "node:readline/promises";
+import { resolve } from "node:path";
 import { AgentSession } from "./agent.js";
+import { PluginManager } from "./plugin-manager.js";
+import { resolveWorkspacePath } from "./workspace/workspace.js";
 
 function parseWorkspaceArg(): string | undefined {
   const idx = process.argv.indexOf("--workspace");
@@ -10,9 +13,10 @@ function parseWorkspaceArg(): string | undefined {
 }
 
 async function main() {
-  const workspaceArg = parseWorkspaceArg();
-  const workspacePath = workspaceArg || process.env.TINY_CLAW_WORKSPACE || process.cwd() + "/workspace";
-  const session = new AgentSession("cli", workspacePath);
+  const workspacePath = resolveWorkspacePath(parseWorkspaceArg());
+  const pm = new PluginManager(workspacePath);
+  await pm.loadCorePlugins();
+  const session = new AgentSession("cli", workspacePath, pm);
   console.log(`工作目录: ${workspacePath}\n`);
 
   const rl = readline.createInterface({
