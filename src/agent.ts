@@ -163,10 +163,23 @@ export class AgentSession {
         return;
       }
 
-      // 7. 构造 assistant 消息
+      // 7. Chat Response Hook：插件可修改回复文本（如追加统计信息）
+      const modifiedResponse = await this.pluginManager.callOnChatResponse(response, agentIteration, this.id);
+      if (modifiedResponse.text !== fullText) {
+        // 插件修改了文本（通常是前缀），计算增量并推流
+        const extra = modifiedResponse.text.endsWith(fullText)
+          ? modifiedResponse.text.slice(0, -fullText.length)
+          : "";
+        if (extra) {
+          fullText = modifiedResponse.text;
+          yield { type: "text_delta", text: extra };
+        }
+      }
+
+      // 8. 构造 assistant 消息
       const assistantContent: (ToolUseBlock | { type: "text"; text: string })[] = [];
-      if (response.text) {
-        assistantContent.push({ type: "text", text: response.text });
+      if (modifiedResponse.text) {
+        assistantContent.push({ type: "text", text: modifiedResponse.text });
       }
       for (const tc of response.toolCalls) {
         assistantContent.push(tc);

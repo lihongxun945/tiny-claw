@@ -96,6 +96,21 @@ npm run gateway -- --port 3000
 
 启动后日志显示 `飞书长连接已建立` 即表示连接成功，可以在飞书中给机器人发消息测试。
 
+## 插件开发
+
+tiny-claw 采用插件化架构，所有业务逻辑由插件实现。框架通过 `PluginManager` 统一调度插件生命周期和钩子。
+
+用户自定义插件只需放在 `workspace/plugins/<name>/index.ts`，启动时自动加载，无需修改配置。
+
+插件开发详细文档请参考 [docs/plugin-development.md](docs/plugin-development.md)，包含：
+
+- `Plugin` / `PluginContext` 接口说明
+- 8 个生命周期钩子的触发时机和用途
+- 快速创建插件的完整示例
+- 注册工具、HTTP 路由的代码示例
+- 配置读写方式
+- 核心插件和飞书插件作为实战参考
+
 ## 技术栈
 - 主要编程语言：**TypeScript**（项目涉及大量消息格式、工具 schema、API 响应等结构化数据，类型安全能显著减少 bug）
 

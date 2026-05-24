@@ -1,3 +1,5 @@
+import { existsSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { ToolRegistry } from "./tools/registry.js";
 import { loadPlugins, destroyPlugins } from "./plugins/loader.js";
 import { corePlugins } from "./plugins/core/index.js";
@@ -13,6 +15,8 @@ import type {
 import type { Config, Tool, ToolDefinition, Message, ChatResponse } from "./types.js";
 import type { AnthropicClient } from "./client.js";
 import type { AgentSession } from "./agent.js";
+
+type PluginModule = { default: Plugin };
 
 export interface PluginManagerOptions {
   builtinPlugins?: string[];
@@ -54,16 +58,47 @@ export class PluginManager {
   // ========== User Plugins ==========
 
   async loadUserPlugins(options: PluginManagerOptions): Promise<void> {
-    if (!options.builtinPlugins?.length && !options.externalPlugins?.length) return;
+    if (options.builtinPlugins?.length || options.externalPlugins?.length) {
+      const plugins = await loadPlugins(
+        {
+          builtin: options.builtinPlugins,
+          external: options.externalPlugins,
+        },
+        (pluginName) => this.createPluginContext(pluginName),
+      );
+      this.loadedPlugins.push(...plugins);
+    }
 
-    const plugins = await loadPlugins(
-      {
-        builtin: options.builtinPlugins,
-        external: options.externalPlugins,
-      },
-      (pluginName) => this.createPluginContext(pluginName),
-    );
-    this.loadedPlugins.push(...plugins);
+    await this.loadWorkspacePlugins();
+  }
+
+  /** 扫描 workspace/plugins/ 目录，加载所有用户自定义插件 */
+  private async loadWorkspacePlugins(): Promise<void> {
+    const pluginsDir = resolve(this.workspacePath, "plugins");
+    if (!existsSync(pluginsDir)) return;
+
+    const entries = readdirSync(pluginsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const indexFile = resolve(pluginsDir, entry.name, "index.ts");
+      if (!existsSync(indexFile)) continue;
+
+      try {
+        const mod = await import(indexFile) as PluginModule;
+        const plugin = mod.default;
+        if (!plugin?.name || typeof plugin.init !== "function") {
+          console.warn(`workspace/plugins/${entry.name}: 未导出有效的 Plugin，已跳过`);
+          continue;
+        }
+        const ctx = this.createPluginContext(plugin.name);
+        await plugin.init(ctx);
+        this.loadedPlugins.push(plugin);
+        console.log(`插件已加载: ${plugin.name} (workspace/plugins/)`);
+      } catch (err) {
+        console.error(`workspace/plugins/${entry.name}: 加载失败: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   private createPluginContext(pluginName: string): PluginContext {
