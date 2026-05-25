@@ -29,6 +29,7 @@ export default function App() {
   const [streamingText, setStreamingText] = useState("");
   const [streamingToolCalls, setStreamingToolCalls] = useState<ToolCallInfo[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isRefreshingMessages, setIsRefreshingMessages] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(readHashSession);
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -153,6 +154,19 @@ export default function App() {
     }
   }, [activeSessionId]);
 
+  const handleRefreshMessages = useCallback(async () => {
+    if (!activeSessionId || isStreaming || isRefreshingMessages) return;
+    setIsRefreshingMessages(true);
+    try {
+      const msgs = await fetchHistoryMessages(activeSessionId);
+      setMessages(msgs);
+    } catch {
+      // ignore
+    } finally {
+      setIsRefreshingMessages(false);
+    }
+  }, [activeSessionId, isRefreshingMessages, isStreaming]);
+
   return (
     <div className="app">
       <SessionSidebar
@@ -172,6 +186,9 @@ export default function App() {
               streamingText={streamingText}
               streamingToolCalls={streamingToolCalls}
               isStreaming={isStreaming}
+              activeSessionId={activeSessionId}
+              isRefreshing={isRefreshingMessages}
+              onRefreshMessages={handleRefreshMessages}
             />
             <ChatInput onSend={handleSend} disabled={isStreaming} />
           </>

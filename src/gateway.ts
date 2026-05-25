@@ -147,6 +147,10 @@ function readBody(req: IncomingMessage): Promise<string> {
 
 type FormattedMessage = { role: string; text: string; toolCalls: Array<{ name: string; input: Record<string, unknown>; result?: string }>; timestamp: number };
 
+function isSubAgentSessionId(id: string): boolean {
+  return id.startsWith("sub:");
+}
+
 function buildMessageListFromMessages(msgs: Array<{ role: string; content: string | Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>): FormattedMessage[] {
   // 第一步：解析原始消息，将 tool_result 合并到前一条 assistant
   const parsed: FormattedMessage[] = [];
@@ -213,6 +217,37 @@ function buildMessageListFromRecords(historyDir: string, sessionId: string): For
     }
   }
   return buildMessageListFromMessages(rawMsgs as Array<{ role: string; content: string | Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>);
+}
+
+function deleteSessionHistory(workspacePath: string, sessionId: string): number {
+  const historyDir = resolve(workspacePath, "history");
+  if (!existsSync(historyDir)) return 0;
+
+  let deleted = 0;
+  const files = readdirSync(historyDir).filter((f) => f.endsWith(".jsonl"));
+  for (const file of files) {
+    const path = resolve(historyDir, file);
+    const lines = readFileSync(path, "utf-8").split("\n");
+    const kept: string[] = [];
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line);
+        if (record._session === sessionId) {
+          deleted++;
+          continue;
+        }
+      } catch {
+        // 保留无法解析的行，避免误删历史。
+      }
+      kept.push(line);
+    }
+
+    writeFileSync(path, kept.length > 0 ? `${kept.join("\n")}\n` : "", "utf-8");
+  }
+
+  return deleted;
 }
 
 function sendJSON(res: ServerResponse, status: number, data: unknown): void {
@@ -380,19 +415,24 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 
     // GET /sessions
     if (req.method === "GET" && url.pathname === "/sessions") {
-      const list = Array.from(sessions.values()).map((s) => ({
-        id: s.id,
-        lastActivity: s.lastActivity,
-      }));
+      const list = Array.from(sessions.values())
+        .filter((s) => !isSubAgentSessionId(s.id))
+        .map((s) => ({
+          id: s.id,
+          lastActivity: s.lastActivity,
+        }));
       sendJSON(res, 200, { sessions: list });
       return;
     }
 
     // DELETE /sessions/:id
     if (req.method === "DELETE" && url.pathname.startsWith("/sessions/")) {
-      const id = url.pathname.slice("/sessions/".length);
-      if (sessions.delete(id)) {
-        sendJSON(res, 200, { deleted: true });
+      const id = decodeURIComponent(url.pathname.slice("/sessions/".length));
+      const deletedActive = sessions.delete(id);
+      const deletedHistoryRecords = deleteSessionHistory(workspacePath, id);
+      if (deletedActive || deletedHistoryRecords > 0) {
+        appendLog(workspacePath, "INFO", `会话已删除，历史记录 ${deletedHistoryRecords} 条`, id);
+        sendJSON(res, 200, { deleted: true, deletedHistoryRecords });
       } else {
         sendJSON(res, 404, { error: "会话不存在" });
       }
@@ -491,6 +531,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
               const record = JSON.parse(line);
               const sid = record._session;
               if (!sid) continue;
+              if (isSubAgentSessionId(sid)) continue;
               if (!sessionMap.has(sid)) {
                 const preview = typeof record.content === "string"
                   ? record.content.slice(0, 60)
@@ -510,6 +551,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 
       // 合并活跃会话（新创建的但还未写入历史文件的）
       for (const [id, session] of sessions) {
+        if (isSubAgentSessionId(id)) continue;
         if (!sessionMap.has(id)) {
           sessionMap.set(id, { id, lastActivity: session.lastActivity, preview: "" });
         }

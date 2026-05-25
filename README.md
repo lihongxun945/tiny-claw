@@ -36,8 +36,8 @@ cp config.example.json workspace/config.json
 ```json
 {
   "subAgent": {
-    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "skill_list", "skill_use"],
-    "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "sub_agent_run"],
+    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "memory_search", "skill_list", "skill_use"],
+    "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "sub_agent_run"],
     "maxIterations": 3,
     "maxConcurrency": 3
   }
@@ -47,6 +47,22 @@ cp config.example.json workspace/config.json
 如果需要让子 agent 具备更多能力，可以把工具名加入 `allowedTools`，再确保不在 `disabledTools` 中。`sub_agent_run` 会始终被禁用，避免递归派生。
 
 Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作目录放置 `workspace/sub_agent_prompt.md` 覆盖。支持占位符：`{{task}}`、`{{context}}`、`{{allowed_tools}}`、`{{current_date}}`。
+
+### 会话摘要配置
+
+`core-session-summary` 插件会为每个普通会话维护滚动摘要，模型调用时注入摘要并只保留最近几轮原文，避免历史消息持续膨胀：
+
+```json
+{
+  "sessionSummary": {
+    "enabled": true,
+    "recentTurns": 3,
+    "maxChars": 4000
+  }
+}
+```
+
+`sub:` 开头的临时 sub-agent 会话默认不生成摘要，避免额外消耗。
 
 ### CLI 模式
 
@@ -147,7 +163,7 @@ tiny-claw 采用插件化架构，所有业务逻辑由插件实现。框架通�
 3. [x] **工具调用** — 脚本执行、文件读写等
    - 声明式工具注册：使用 JSON Schema 定义工具的参数和描述（类似 OpenAI function calling）
    - 工具发现：自动发现和注册可用工具
-   - 内置工具：web_search、web_fetch、bash、file_read、file_write、file_edit、memory_save、memory_append、memory_list、skill_use、skill_list、sub_agent_run
+   - 内置工具：web_search、web_fetch、bash、file_read、file_write、file_edit、memory_save、memory_append、memory_list、memory_read、memory_search、memory_delete、skill_use、skill_list、sub_agent_run
 4. [x] **History** — 历史消息管理
 5. [x] **日志** — 方便排查问题
 6. [x] **上下文压缩** — 长任务导致上下文溢出时自动压缩
@@ -180,7 +196,7 @@ tiny-claw 采用插件化架构，所有业务逻辑由插件实现。框架通�
 |---------|-----------|-----------|
 | **Agent Loop** | 自实现规划-执行-观察循环，`AgentSession` 管理多会话 | 内置 Loop 引擎，架构相似 |
 | **Prompt 管理** | 手动构造 system prompt + `identity.md` 注入 | 内置 prompt 模板系统 |
-| **工具系统** | `ToolRegistry` + JSON Schema 声明式注册，12 个内置工具 | Plugin SDK 驱动，工具通过插件注册 |
+| **工具系统** | `ToolRegistry` + JSON Schema 声明式注册，15 个内置工具 | Plugin SDK 驱动，工具通过插件注册 |
 | **上下文压缩** | 模型摘要压缩，滑动窗口历史 | 有类似机制 |
 | **Memory** | 工具驱动，文件存储 `memory/*.md` | 独立的 Memory 模块 |
 | **Skill 系统** | `workspace/skills/<name>/SKILL.md` + frontmatter | 插件形式的技能系统 |

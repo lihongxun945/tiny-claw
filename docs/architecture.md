@@ -38,6 +38,7 @@ src/
 │   │   ├── tools.ts  # 基础工具注册插件（文件、搜索、记忆、技能等）
 │   │   ├── sub-agent.ts # sub-agent 插件（注册 sub_agent_run 工具）
 │   │   ├── prompts.ts # 提示词构建插件（模板加载+占位符替换）
+│   │   ├── session-summary.ts # 会话滚动摘要插件（摘要 + 最近几轮原文）
 │   │   ├── compress.ts # 上下文压缩插件（阈值判断+模型摘要）
 │   │   └── logger.ts # 日志插件（通过钩子记录所有事件）
 │   └── feishu/       # 飞书插件（平台适配器）
@@ -96,6 +97,7 @@ workspace/
 | contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
 | historyWindowSize | 历史窗口（轮） | 5 |
 | maxAgentIterations | Agent Loop 最大迭代次数 | 0（不限） |
+| sessionSummary | 会话滚动摘要配置 | enabled=true, recentTurns=3 |
 | searchProvider | 搜索引擎 (searxng/brave/duckduckgo) | duckduckgo |
 | searxngUrl | SearXNG 实例地址 | - |
 | braveApiKey | Brave Search API key | - |
@@ -144,8 +146,8 @@ workspace/
 ```json
 {
   "subAgent": {
-    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "skill_list", "skill_use"],
-    "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "sub_agent_run"],
+    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "memory_search", "skill_list", "skill_use"],
+    "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "sub_agent_run"],
     "maxIterations": 3,
     "maxConcurrency": 3
   }
@@ -163,7 +165,7 @@ workspace/
 ```
 用户输入
   ↓
-PluginManager 加载核心插件（tools, sub-agent, prompts, compress, logger）
+PluginManager 加载核心插件（tools, sub-agent, prompts, session-summary, compress, logger）
   ↓
 AgentSession 初始化 → PluginManager.setRuntimeDeps()
   ↓
@@ -228,6 +230,28 @@ Node 22 内置 fetch、readline/promises、TextDecoder，不需要额外 HTTP/IO
 
 token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），不追求精确，只用于判断是否接近上下文上限。压缩使用 `client.complete()` 非流式调用，max_tokens=1024，避免流式开销。
 
+### 会话滚动摘要
+
+核心插件 `core-session-summary` 为每个普通会话维护一份内存中的滚动摘要，减少旧消息原文进入模型上下文：
+
+1. `onBeforeModelCall`：移除旧摘要消息，保留最近 `recentTurns` 轮原文和当前轮消息；如果已有摘要，将摘要合并进下一条 user 消息前部。
+2. `onChatResponse`：当模型给出最终回复（没有 tool_calls）后，调用 `client.complete()`，用“已有摘要 + 本次上下文 + 最终回复”更新会话摘要。
+3. `sub:` 开头的临时 sub-agent 会话跳过摘要，避免额外模型调用。
+
+默认配置：
+
+```json
+{
+  "sessionSummary": {
+    "enabled": true,
+    "recentTurns": 3,
+    "maxChars": 4000
+  }
+}
+```
+
+完整原始历史仍写入 `workspace/history/*.jsonl`，用于回放和审计；滚动摘要只影响模型上下文，不写入长期 memory。
+
 ### 工具注册：插件化
 
 工具通过 `ToolRegistry.register(tool)` 注册，由 `PluginManager` 内部持有 `ToolRegistry` 实例。核心插件 `plugins/core/tools.ts` 在初始化时通过 `ctx.registerTool()` 注册基础内置工具，`plugins/core/sub-agent.ts` 单独注册 `sub_agent_run`。
@@ -258,9 +282,12 @@ web_search 工具支持三个搜索引擎，通过 `config.json` 的 `searchProv
 | file_read | 读取文件 | 路径 resolve 防止路径遍历 |
 | file_write | 写入文件 | 自动创建父目录 |
 | file_edit | 精确替换文本 | old_text 必须唯一匹配，防止误替换 |
-| memory_save | 保存/覆盖长期记忆 | name 防路径遍历（仅允许字母、数字、_-） |
+| memory_save | 保存/覆盖长期记忆，写入 frontmatter 元数据 | name 防路径遍历（仅允许字母、数字、_-） |
 | memory_append | 追加内容到已有记忆 | 同上 |
-| memory_list | 列出所有长期记忆 | 无参数 |
+| memory_list | 列出长期记忆摘要索引 | 默认过滤敏感记忆 |
+| memory_read | 读取指定记忆完整内容 | 敏感记忆需显式 include_sensitive |
+| memory_search | 按关键词搜索记忆摘要 | 默认过滤敏感记忆 |
+| memory_delete | 删除指定记忆 | 仅在用户明确要求删除时使用 |
 | skill_use | 激活一个技能 | 技能不存在时返回可用列表 |
 | skill_list | 列出所有可用技能 | 无参数 |
 | sub_agent_run | 并行启动临时 sub-agent 执行子任务 | 默认只读工具集、权限可配置、禁止递归 |
@@ -317,7 +344,7 @@ runSubAgents() 并发创建临时 AgentSession
 
 **权限模型：**
 
-Sub-agent 默认只允许 `web_search`、`web_fetch`、`file_read`、`memory_list`、`skill_list`、`skill_use`。`bash`、`file_write`、`file_edit`、`memory_save`、`memory_append` 默认不可用。`sub_agent_run` 始终不可用，防止递归创建。
+Sub-agent 默认只允许 `web_search`、`web_fetch`、`file_read`、`memory_list`、`memory_read`、`memory_search`、`skill_list`、`skill_use`。`bash`、`file_write`、`file_edit`、`memory_save`、`memory_append`、`memory_delete` 默认不可用。`sub_agent_run` 始终不可用，防止递归创建。
 
 权限通过 `config.json` 的 `subAgent.allowedTools` 和 `subAgent.disabledTools` 配置。实现上，sub-agent 创建专用 `PluginManager`，并在工具注册阶段过滤工具定义，因此被禁用的工具不会进入模型可见工具列表。
 
@@ -337,9 +364,10 @@ Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prom
 记忆系统采用工具驱动的方式，让模型自主决定何时保存和读取信息：
 
 - **写路径**：`memory_save` 和 `memory_append` 两个工具，写入 `workspace/memory/*.md`
-- **读路径**：启动时 `loadAllMemories()` 读取所有 `*.md` 文件，注入到 system prompt 的"长期记忆"章节
-- **文件格式**：纯 Markdown，名称语义化（如 `user-preferences.md`、`project-context.md`）
+- **读路径**：启动时 `loadAllMemories()` 只读取非敏感记忆摘要索引，注入到 system prompt 的"长期记忆"章节；需要全文时使用 `memory_read` 或 `memory_search`
+- **文件格式**：带 frontmatter 的 Markdown，名称语义化（如 `user-preferences.md`、`project-context.md`）
 - **安全**：文件名仅允许字母、数字、下划线、连字符，防止路径遍历
+- **敏感过滤**：`sensitive: true` 的记忆默认不进入 prompt，也不会被 `memory_list` / `memory_search` 返回，除非显式传入 `include_sensitive`
 
 对比"自动提取"方案，工具驱动的优势是实现简单、透明可控，适合早期阶段。后续可在此基础上叠加自动提取（Phase 2）。
 
@@ -474,6 +502,7 @@ interface Plugin {
    - `core-tools`：注册基础内置工具（文件、搜索、记忆、技能等）
    - `core-sub-agent`：注册 `sub_agent_run`，提供并行临时 sub-agent 能力
    - `core-prompts`：系统提示词模板加载与占位符替换
+   - `core-session-summary`：维护普通会话滚动摘要，减少旧消息原文进入上下文
    - `core-compress`：上下文压缩（阈值判断 + 模型摘要）
    - `core-logger`：执行日志与对话历史写入
 

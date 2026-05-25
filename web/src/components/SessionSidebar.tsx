@@ -16,11 +16,13 @@ interface Props {
 
 export default function SessionSidebar({ activeSessionId, currentView, onSelectSession, onNewChat, onSessionDeleted, onViewChange, refreshKey }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
   const loadingRef = useRef(false);
 
   const loadSessions = async () => {
     if (loadingRef.current) return;
     loadingRef.current = true;
+    setIsLoading(true);
     try {
       const list = await fetchHistorySessions();
       setSessions(list.sort((a, b) => b.lastActivity - a.lastActivity));
@@ -28,6 +30,7 @@ export default function SessionSidebar({ activeSessionId, currentView, onSelectS
       // ignore
     } finally {
       loadingRef.current = false;
+      setIsLoading(false);
     }
   };
 
@@ -70,7 +73,10 @@ export default function SessionSidebar({ activeSessionId, currentView, onSelectS
     <div className="sidebar">
       <div className="sidebar-header">
         <span>tiny-claw</span>
-        <button onClick={onNewChat}>+ 新对话</button>
+        <div className="sidebar-actions">
+          <button onClick={loadSessions} disabled={isLoading} title="刷新会话列表">刷新</button>
+          <button onClick={onNewChat}>+ 新对话</button>
+        </div>
       </div>
       <div className="session-list">
         {sessions.map((s) => (
