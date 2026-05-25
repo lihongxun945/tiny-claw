@@ -9,5 +9,6 @@ workspace/memory/
 web/dist/
 web/node_modules/
 workspace/gateway.pid
+workspace/plugins/
 __pycache__/
 *.tsbuildinfo

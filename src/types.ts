@@ -23,6 +23,7 @@ export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
 export interface Message {
   role: "user" | "assistant";
   content: string | ContentBlock[];
+  _timestamp?: number;
 }
 
 // === Config ===

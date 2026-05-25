@@ -6,8 +6,8 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
 import { AgentSession, type AgentEvent } from "./agent.js";
+import { PluginManager } from "./plugin-manager.js";
 import { appendLog } from "./workspace/logger.js";
-import { loadPlugins, destroyPlugins } from "./plugins/loader.js";
 import type { RegisteredRoute, RouteContext } from "./plugins/types.js";
 
 const SESSION_TIMEOUT = 30 * 60 * 1000;
@@ -153,7 +153,7 @@ function buildMessageListFromMessages(msgs: Array<{ role: string; content: strin
   for (const m of msgs) {
     if (typeof m.content === "string") {
       if (m.role === "assistant" || m.role === "user") {
-        parsed.push({ role: m.role, text: m.content, toolCalls: [], timestamp: Date.now() });
+        parsed.push({ role: m.role, text: m.content, toolCalls: [], timestamp: (m as any)._timestamp ?? 0 });
       }
       continue;
     }
@@ -181,7 +181,7 @@ function buildMessageListFromMessages(msgs: Array<{ role: string; content: strin
       continue;
     }
     if (m.role === "assistant" || (m.role === "user" && text)) {
-      parsed.push({ role: m.role, text, toolCalls, timestamp: Date.now() });
+      parsed.push({ role: m.role, text, toolCalls, timestamp: (m as any)._timestamp ?? 0 });
     }
   }
 
@@ -200,7 +200,7 @@ function buildMessageListFromMessages(msgs: Array<{ role: string; content: strin
 }
 
 function buildMessageListFromRecords(historyDir: string, sessionId: string): FormattedMessage[] {
-  const rawMsgs: Array<{ role: string; content: unknown }> = [];
+  const rawMsgs: Array<{ role: string; content: unknown; _timestamp?: number }> = [];
   const files = readdirSync(historyDir).filter((f) => f.endsWith(".jsonl")).sort();
   for (const f of files) {
     const lines = readFileSync(resolve(historyDir, f), "utf-8").split("\n").filter(Boolean);
@@ -208,7 +208,7 @@ function buildMessageListFromRecords(historyDir: string, sessionId: string): For
       try {
         const record = JSON.parse(line);
         if (record._session !== sessionId) continue;
-        rawMsgs.push({ role: record.role, content: record.content });
+        rawMsgs.push({ role: record.role, content: record.content, _timestamp: record._timestamp });
       } catch { /* skip */ }
     }
   }
@@ -241,8 +241,9 @@ function sendSSE(res: ServerResponse, event: string, data: unknown): void {
 
 const sessions = new Map<string, AgentSession>();
 let workspacePath = "";
+let globalPluginManager: PluginManager | null = null;
 
-function getOrCreateSession(sessionId: string | undefined, wp?: string): AgentSession {
+function getOrCreateSession(sessionId: string | undefined, wp?: string, pm?: PluginManager): AgentSession {
   const wp_ = wp || workspacePath;
   if (sessionId && sessions.has(sessionId)) {
     const session = sessions.get(sessionId)!;
@@ -250,7 +251,7 @@ function getOrCreateSession(sessionId: string | undefined, wp?: string): AgentSe
     return session;
   }
   const id = sessionId || randomUUID();
-  const session = new AgentSession(id, wp_);
+  const session = new AgentSession(id, wp_, pm || globalPluginManager!);
   sessions.set(id, session);
   return session;
 }
@@ -266,10 +267,6 @@ function cleanupSessions(): void {
 
 setInterval(cleanupSessions, 5 * 60 * 1000);
 
-// === 插件路由注册表 ===
-
-const pluginRoutes: RegisteredRoute[] = [];
-
 // === HTTP 服务器 ===
 
 async function runServer(port: number, workspacePath: string): Promise<void> {
@@ -279,31 +276,23 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
   // Web UI 端口（默认 gateway 端口 +1）
   const webPort = parseWebPortArg() || port + 1;
 
-  // 加载插件
+  // 加载配置 + 初始化 PluginManager
   const config = loadConfig(workspacePath);
-  const plugins = await loadPlugins(
-    {
-      builtin: config.enabledPlugins,
-      external: config.externalPlugins,
-    },
-    (pluginName) => ({
-      config: config.plugins?.[pluginName] ?? {},
-      workspacePath,
-      registerRoute(route) {
-        pluginRoutes.push({ ...route, pluginName });
-      },
-      getOrCreateSession(id, prefix) {
-        const fullId = prefix ? `${prefix}:${id}` : id;
-        return getOrCreateSession(fullId, workspacePath);
-      },
-      deleteSession(id) {
-        return sessions.delete(id);
-      },
-      log(level, message, sessionId) {
-        appendLog(workspacePath, level, `[plugin:${pluginName}] ${message}`, sessionId);
-      },
-    }),
-  );
+  const pm = new PluginManager(workspacePath);
+  globalPluginManager = pm;
+  pm.setPluginConfigs(config.plugins ?? {});
+  await pm.loadCorePlugins();
+
+  // 为用户插件设置 Session 工厂（Gateway 特有）
+  pm.setSessionFactory({
+    getOrCreateSession: (id, prefix) => getOrCreateSession(prefix ? `${prefix}:${id}` : id, workspacePath, pm),
+    deleteSession: (id) => sessions.delete(id),
+  });
+  await pm.loadUserPlugins({
+    builtinPlugins: config.enabledPlugins,
+    externalPlugins: config.externalPlugins,
+    pluginConfigs: config.plugins,
+  });
 
   const pidPath = getPidPath(workspacePath);
   if (isDaemonChild) {
@@ -331,7 +320,8 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     };
 
     // 插件路由（优先匹配）
-    for (const route of pluginRoutes) {
+    const allRoutes = pm.getRoutes();
+    for (const route of allRoutes) {
       if (req.method === route.method && url.pathname === route.path) {
         try {
           await route.handler(req, res, routeCtx);
@@ -356,7 +346,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
           return;
         }
 
-        const session = getOrCreateSession(sessionId, workspacePath);
+        const session = getOrCreateSession(sessionId, workspacePath, pm);
         sendSSEHeader(res);
 
         for await (const event of session.chat(message)) {
@@ -486,37 +476,47 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       return;
     }
 
-    // GET /history/sessions — 从历史文件扫描所有会话
+    // GET /history/sessions — 从历史文件 + 活跃会话合并
     if (req.method === "GET" && url.pathname === "/history/sessions") {
-      const historyDir = resolve(workspacePath, "history");
-      if (!existsSync(historyDir)) {
-        sendJSON(res, 200, { sessions: [] });
-        return;
-      }
       const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string }>();
-      const files = readdirSync(historyDir).filter((f) => f.endsWith(".jsonl")).sort().reverse();
-      for (const f of files.slice(0, 30)) {
-        const lines = readFileSync(resolve(historyDir, f), "utf-8").split("\n").filter(Boolean);
-        for (const line of lines) {
-          try {
-            const record = JSON.parse(line);
-            const sid = record._session;
-            if (!sid) continue;
-            if (!sessionMap.has(sid)) {
-              const preview = typeof record.content === "string"
-                ? record.content.slice(0, 60)
-                : Array.isArray(record.content) && record.content[0]?.text
-                  ? record.content[0].text.slice(0, 60)
-                  : "";
-              sessionMap.set(sid, { id: sid, lastActivity: 0, preview });
-            }
-            const entry = sessionMap.get(sid)!;
-            if (record.role === "user") entry.lastActivity = Math.max(entry.lastActivity, Date.parse(f.replace(".jsonl", "")) || 0);
-          } catch { /* skip malformed */ }
+
+      // 从历史文件读取
+      const historyDir = resolve(workspacePath, "history");
+      if (existsSync(historyDir)) {
+        const files = readdirSync(historyDir).filter((f) => f.endsWith(".jsonl")).sort().reverse();
+        for (const f of files.slice(0, 30)) {
+          const lines = readFileSync(resolve(historyDir, f), "utf-8").split("\n").filter(Boolean);
+          for (const line of lines) {
+            try {
+              const record = JSON.parse(line);
+              const sid = record._session;
+              if (!sid) continue;
+              if (!sessionMap.has(sid)) {
+                const preview = typeof record.content === "string"
+                  ? record.content.slice(0, 60)
+                  : Array.isArray(record.content) && record.content[0]?.text
+                    ? record.content[0].text.slice(0, 60)
+                    : "";
+                sessionMap.set(sid, { id: sid, lastActivity: 0, preview });
+              }
+              const entry = sessionMap.get(sid)!;
+              if (record.role === "user") {
+                entry.lastActivity = Math.max(entry.lastActivity, record._timestamp || Date.parse(f.replace(".jsonl", "")) || 0);
+              }
+            } catch { /* skip malformed */ }
+          }
         }
       }
-      const sessions = Array.from(sessionMap.values()).sort((a, b) => b.lastActivity - a.lastActivity);
-      sendJSON(res, 200, { sessions });
+
+      // 合并活跃会话（新创建的但还未写入历史文件的）
+      for (const [id, session] of sessions) {
+        if (!sessionMap.has(id)) {
+          sessionMap.set(id, { id, lastActivity: session.lastActivity, preview: "" });
+        }
+      }
+
+      const result = Array.from(sessionMap.values()).sort((a, b) => b.lastActivity - a.lastActivity);
+      sendJSON(res, 200, { sessions: result });
       return;
     }
 
@@ -663,7 +663,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     appendLog(workspacePath, "info", msg);
     if (viteChild) viteChild.kill();
     if (webServer) webServer.close();
-    await destroyPlugins(plugins);
+    await pm.destroy();
     server.close();
     if (isDaemonChild) {
       appendLog(workspacePath, "info", "Gateway 已停止");
