@@ -43,8 +43,16 @@ export interface Config {
   enabledPlugins?: string[];
   externalPlugins?: string[];
   plugins?: Record<string, Record<string, unknown>>;
+  subAgent?: SubAgentConfig;
   workspacePath: string;
   systemPrompt: string;
+}
+
+export interface SubAgentConfig {
+  allowedTools?: string[];
+  disabledTools?: string[];
+  maxIterations?: number;
+  maxConcurrency?: number;
 }
 
 // === Tool ===

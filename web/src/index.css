@@ -255,6 +255,21 @@ html, body, #root {
   background: rgba(126, 200, 227, 0.05);
 }
 
+.markdown-content {
+  min-width: 0;
+}
+
+.markdown-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.markdown-table-wrap table {
+  margin: 0;
+  min-width: max-content;
+}
+
 /* Streaming indicator */
 .streaming-cursor::after {
   content: "▊";

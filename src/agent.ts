@@ -63,12 +63,12 @@ export class AgentSession {
     return this.history.getRecentMessages(Infinity);
   }
 
-  constructor(id: string, workspacePath: string, pluginManager: PluginManager) {
+  constructor(id: string, workspacePath: string, pluginManager: PluginManager, configOverrides: Partial<Config> = {}) {
     this.id = id;
     this.workspacePath = workspacePath;
     ensureWorkspace(workspacePath);
 
-    this.config = loadConfig(workspacePath);
+    this.config = { ...loadConfig(workspacePath), ...configOverrides };
     this.client = new AnthropicClient(this.config);
     this.history = new MessageHistory();
     this.lastActivity = Date.now();

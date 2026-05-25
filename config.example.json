@@ -11,6 +11,12 @@
   "searchProvider": "duckduckgo",
   "searxngUrl": "http://localhost:8080",
   "braveApiKey": "YOUR_BRAVE_API_KEY",
+  "subAgent": {
+    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "skill_list", "skill_use"],
+    "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "sub_agent_run"],
+    "maxIterations": 3,
+    "maxConcurrency": 3
+  },
   "enabledPlugins": ["feishu"],
   "externalPlugins": [],
   "plugins": {

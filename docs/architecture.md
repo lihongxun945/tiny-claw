@@ -8,10 +8,10 @@
 
 ```
 基础能力（主链路）：  Loop → Model IO + Prompt → 工具调用 → History → 上下文压缩 → 配置管理
-高级能力：           Memory → Skill → 聊天工具(飞书/钉钉) → RAG
+高级能力：           Memory → Skill → Sub-agent → 聊天工具(飞书/钉钉) → RAG
 ```
 
-当前进度：已完成 Loop、Model IO + Prompt、工具调用、History、上下文压缩、配置管理、Memory、Skill、Gateway、飞书接入。
+当前进度：已完成 Loop、Model IO + Prompt、工具调用、History、上下文压缩、配置管理、Memory、Skill、Sub-agent、Gateway、飞书接入。
 
 ## 模块结构
 
@@ -25,13 +25,18 @@ src/
 ├── client.ts         # Anthropic Messages API 客户端（流式）
 ├── history.ts        # 滑动窗口消息历史
 ├── estimate-tokens.ts # Token 估算（供 compress 插件使用）
+├── sub-agent.ts      # 并行 sub-agent 执行器（受限工具 + 临时 AgentSession）
 ├── types.ts          # 共享类型定义
+├── prompts/          # 默认提示词模板
+│   ├── default.md    # 主 agent system prompt 模板
+│   └── sub_agent.md  # sub-agent 任务提示词模板
 ├── plugins/          # 插件系统
 │   ├── types.ts      # Plugin、PluginContext、PluginHooks、HookContext 接口
 │   ├── loader.ts     # 插件加载器（内置/外部动态加载）
 │   ├── core/         # 核心插件包（始终启用）
 │   │   ├── index.ts  # 聚合导出所有核心插件
-│   │   ├── tools.ts  # 工具注册插件（注册所有内置工具）
+│   │   ├── tools.ts  # 基础工具注册插件（文件、搜索、记忆、技能等）
+│   │   ├── sub-agent.ts # sub-agent 插件（注册 sub_agent_run 工具）
 │   │   ├── prompts.ts # 提示词构建插件（模板加载+占位符替换）
 │   │   ├── compress.ts # 上下文压缩插件（阈值判断+模型摘要）
 │   │   └── logger.ts # 日志插件（通过钩子记录所有事件）
@@ -39,7 +44,7 @@ src/
 │       ├── index.ts  # 插件入口
 │       ├── client.ts # FeishuClient
 │       └── handler.ts # 事件处理
-├── tools/            # 工具实现（工厂函数，供 core-tools 插件导入）
+├── tools/            # 工具实现（工厂函数，供核心插件导入）
 │   ├── registry.ts   # 工具注册中心（由 PluginManager 内部持有）
 │   ├── search.ts     # 网络搜索（多 provider）
 │   ├── web_fetch.ts  # 网页内容获取
@@ -48,7 +53,8 @@ src/
 │   ├── file_write.ts # 文件写入
 │   ├── file_edit.ts  # 文件精确替换
 │   ├── memory.ts     # 持久化记忆（读写 memory/*.md）
-│   └── skill.ts      # 技能系统（加载/激活 skills/*.md）
+│   ├── skill.ts      # 技能系统（加载/激活 skills/*.md）
+│   └── sub_agent.ts  # sub_agent_run 工具定义
 └── workspace/        # 工作目录相关
     ├── workspace.ts  # 目录初始化、身份加载
     └── logger.ts     # 追加式文件日志（history + 执行日志）
@@ -69,6 +75,7 @@ workspace/
 ├── config.json        # 配置（API key、模型、工具权限等）
 ├── identity.md        # 身份设定（注入 system prompt 模板 {{identity}} 占位符）
 ├── system_prompt.md   # 可选：自定义 system prompt 模板（不存在则使用默认模板）
+├── sub_agent_prompt.md # 可选：自定义 sub-agent 任务提示词模板
 ├── skills/            # 自定义技能（skills/<name>/SKILL.md）
 ├── memory/            # 跨会话长期记忆（TODO: 分层记忆系统）
 ├── history/           # 对话历史持久化，JSONL 格式，每日轮转
@@ -95,6 +102,7 @@ workspace/
 | enabledPlugins | 启用的内置插件列表 | [] |
 | externalPlugins | 外部插件模块路径列表 | [] |
 | plugins | 插件配置（按插件名命名空间） | {} |
+| subAgent | Sub-agent 配置（工具权限、迭代数、并发数） | 见下文 |
 
 ### identity.md
 
@@ -116,12 +124,46 @@ workspace/
 
 未匹配的占位符替换为空字符串。
 
+### sub_agent_prompt.md（可选）
+
+自定义 sub-agent 任务提示词模板，覆盖默认模板 `src/prompts/sub_agent.md`。该模板用于 `sub_agent_run` 工具内部创建的临时 AgentSession，和主 agent 的 system prompt 分开管理。
+
+**可用占位符：**
+
+| 占位符 | 替换内容 |
+|--------|----------|
+| `{{task}}` | 当前子任务描述 |
+| `{{context}}` | 子任务补充上下文 |
+| `{{allowed_tools}}` | 当前 sub-agent 可用工具列表 |
+| `{{current_date}}` | 当前日期（如 2026-05-22） |
+
+### subAgent 配置
+
+`sub_agent_run` 支持一次并行启动多个临时 sub-agent。默认只开放读取/检索类工具，不允许执行 shell、写文件或保存记忆。
+
+```json
+{
+  "subAgent": {
+    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "skill_list", "skill_use"],
+    "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "sub_agent_run"],
+    "maxIterations": 3,
+    "maxConcurrency": 3
+  }
+}
+```
+
+- `allowedTools`：sub-agent 允许注册的工具白名单；未配置时使用默认只读工具集
+- `disabledTools`：在白名单基础上额外禁用的工具
+- `maxIterations`：每个 sub-agent 的最大 Agent Loop 轮数，硬上限为 8
+- `maxConcurrency`：一次 `sub_agent_run` 最多并发的 sub-agent 数，硬上限为 8
+- `sub_agent_run` 始终禁用，避免 sub-agent 递归派生 sub-agent
+
 ## 核心数据流
 
 ```
 用户输入
   ↓
-PluginManager 加载核心插件（tools, prompts, compress, logger）
+PluginManager 加载核心插件（tools, sub-agent, prompts, compress, logger）
   ↓
 AgentSession 初始化 → PluginManager.setRuntimeDeps()
   ↓
@@ -188,9 +230,11 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 
 ### 工具注册：插件化
 
-工具通过 `ToolRegistry.register(tool)` 注册，由 `PluginManager` 内部持有 `ToolRegistry` 实例。核心插件 `plugins/core/tools.ts` 在初始化时通过 `ctx.registerTool()` 注册所有内置工具。
+工具通过 `ToolRegistry.register(tool)` 注册，由 `PluginManager` 内部持有 `ToolRegistry` 实例。核心插件 `plugins/core/tools.ts` 在初始化时通过 `ctx.registerTool()` 注册基础内置工具，`plugins/core/sub-agent.ts` 单独注册 `sub_agent_run`。
 
 插件也可以注册自己的工具，通过 `PluginContext.registerTool()` 方法。所有插件的工具统一合并到 PluginManager 的 ToolRegistry 中，模型调用时通过 `getTool(name)` 查找执行。新增工具只需：1) 在任意插件中实现 Tool 接口 2) 在插件 init 中注册。
+
+`PluginManager` 支持工具白名单/黑名单过滤（`allowedTools` / `disabledTools`），用于 sub-agent 等需要收敛权限的场景。工具在注册阶段被过滤，模型看不到被禁用的工具定义，也无法调用这些工具。
 
 ### 搜索引擎：多 Provider 架构
 
@@ -219,8 +263,74 @@ web_search 工具支持三个搜索引擎，通过 `config.json` 的 `searchProv
 | memory_list | 列出所有长期记忆 | 无参数 |
 | skill_use | 激活一个技能 | 技能不存在时返回可用列表 |
 | skill_list | 列出所有可用技能 | 无参数 |
+| sub_agent_run | 并行启动临时 sub-agent 执行子任务 | 默认只读工具集、权限可配置、禁止递归 |
 
 bash 工具用 `child_process.spawn` 执行，返回 `{ stdout, stderr, exitCode }`。file_edit 采用唯一匹配策略：`old_text` 在文件中必须只出现一次，否则报错，避免误修改。
+
+### Sub-agent
+
+Sub-agent 通过核心插件 `core-sub-agent` 提供，对主 agent 暴露为普通工具 `sub_agent_run`。从主 agent 的消息协议看，它和 `web_fetch`、`file_read` 一样是一次标准工具调用：主 agent 传入任务，工具返回 JSON 结果。区别在于工具内部会创建一个或多个临时 `AgentSession`，让它们独立执行子任务。
+
+**通信模型：**
+
+```
+主 AgentSession
+  ↓ tool_use: sub_agent_run({ tasks, max_iterations, max_concurrency })
+core-sub-agent 插件
+  ↓
+runSubAgents() 并发创建临时 AgentSession
+  ↓
+每个 sub-agent 使用受限工具集独立执行
+  ↓
+返回 { status, results[] } 作为 tool_result
+  ↓
+主 AgentSession 读取结果继续推理
+```
+
+**工具参数：**
+
+| 参数 | 说明 |
+|------|------|
+| `task` | 单个子任务描述；如果提供 `tasks` 则忽略 |
+| `context` | 单个子任务的补充上下文 |
+| `tasks` | 多个可并行执行的子任务，每项包含 `id`、`task`、`context` |
+| `max_iterations` | 本次调用覆盖每个 sub-agent 的最大迭代数 |
+| `max_concurrency` | 本次调用覆盖最大并发数 |
+
+**返回结构：**
+
+```json
+{
+  "status": "completed",
+  "results": [
+    {
+      "id": "task-1",
+      "status": "completed",
+      "summary": "子任务结论...",
+      "toolCalls": [
+        { "name": "file_read", "input": { "path": "src/agent.ts" } }
+      ]
+    }
+  ]
+}
+```
+
+**权限模型：**
+
+Sub-agent 默认只允许 `web_search`、`web_fetch`、`file_read`、`memory_list`、`skill_list`、`skill_use`。`bash`、`file_write`、`file_edit`、`memory_save`、`memory_append` 默认不可用。`sub_agent_run` 始终不可用，防止递归创建。
+
+权限通过 `config.json` 的 `subAgent.allowedTools` 和 `subAgent.disabledTools` 配置。实现上，sub-agent 创建专用 `PluginManager`，并在工具注册阶段过滤工具定义，因此被禁用的工具不会进入模型可见工具列表。
+
+**Prompt 模板：**
+
+Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prompt。默认模板为 `src/prompts/sub_agent.md`，可用 `workspace/sub_agent_prompt.md` 覆盖。模板支持 `{{task}}`、`{{context}}`、`{{allowed_tools}}`、`{{current_date}}`。
+
+**隔离边界：**
+
+- 每个 sub-agent 使用独立 `AgentSession` 和独立历史
+- Sub-agent 的历史不会直接合并进主 agent 历史
+- 主 agent 只接收 sub-agent 的结构化汇报结果
+- Sub-agent 当前不支持运行中双向对话，也不支持 sub-agent 之间通信
 
 ### 持久化记忆
 
@@ -361,7 +471,8 @@ interface Plugin {
 **插件分类：**
 
 1. **核心插件**（`plugins/core/`）：始终启用，实现基础功能
-   - `core-tools`：注册所有内置工具
+   - `core-tools`：注册基础内置工具（文件、搜索、记忆、技能等）
+   - `core-sub-agent`：注册 `sub_agent_run`，提供并行临时 sub-agent 能力
    - `core-prompts`：系统提示词模板加载与占位符替换
    - `core-compress`：上下文压缩（阈值判断 + 模型摘要）
    - `core-logger`：执行日志与对话历史写入

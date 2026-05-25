@@ -29,9 +29,20 @@ export default function MessageBubble({ message, isStreaming }: Props) {
               <ToolCallBlock key={i} toolCall={tc} />
             ))}
             {message.text && (
-              <span className={isStreaming ? "streaming-cursor" : ""}>
-                <Markdown remarkPlugins={[remarkGfm]}>{message.text}</Markdown>
-              </span>
+              <div className={`markdown-content ${isStreaming ? "streaming-cursor" : ""}`}>
+                <Markdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    table: ({ children }) => (
+                      <div className="markdown-table-wrap">
+                        <table>{children}</table>
+                      </div>
+                    ),
+                  }}
+                >
+                  {message.text}
+                </Markdown>
+              </div>
             )}
             {isStreaming && !message.text && message.toolCalls.length > 0 && (
               <span className="streaming-cursor" />

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { ToolRegistry } from "./tools/registry.js";
 import { loadPlugins, destroyPlugins } from "./plugins/loader.js";
 import { corePlugins } from "./plugins/core/index.js";
+import { loadConfig } from "./config.js";
 import type {
   Plugin,
   PluginContext,
@@ -22,6 +23,8 @@ export interface PluginManagerOptions {
   builtinPlugins?: string[];
   externalPlugins?: string[];
   pluginConfigs?: Record<string, Record<string, unknown>>;
+  allowedTools?: string[];
+  disabledTools?: string[];
 }
 
 export class PluginManager {
@@ -31,13 +34,26 @@ export class PluginManager {
   private routes: RegisteredRoute[] = [];
   private loadedPlugins: Plugin[] = [];
   private config?: Config;
+  private baseConfig?: Config;
   private client?: AnthropicClient;
   private sessionFactory?: {
     getOrCreateSession: (id: string, prefix?: string) => AgentSession;
     deleteSession: (id: string) => boolean;
   };
 
-  constructor(private workspacePath: string) {}
+  private allowedTools?: Set<string>;
+  private disabledTools: Set<string>;
+
+  constructor(private workspacePath: string, options: Pick<PluginManagerOptions, "allowedTools" | "disabledTools"> = {}) {
+    this.allowedTools = options.allowedTools ? new Set(options.allowedTools) : undefined;
+    this.disabledTools = new Set(options.disabledTools ?? []);
+    try {
+      this.baseConfig = loadConfig(workspacePath);
+      this.config = this.baseConfig;
+    } catch {
+      // AgentSession will surface configuration errors with the existing message.
+    }
+  }
 
   /** 设置运行时依赖（在 AgentSession 创建后调用） */
   setRuntimeDeps(config: Config, client: AnthropicClient): void {
@@ -104,12 +120,16 @@ export class PluginManager {
   private createPluginContext(pluginName: string): PluginContext {
     const pm = this;
     return {
-      config: pm.pluginConfigs?.[pluginName] ?? {},
+      config: pluginName.startsWith("core-")
+        ? ((pm.config ?? pm.baseConfig ?? {}) as unknown as Record<string, unknown>)
+        : (pm.pluginConfigs?.[pluginName] ?? {}),
       workspacePath: pm.workspacePath,
       registerRoute(route: RouteDefinition) {
         pm.routes.push({ ...route, pluginName });
       },
       registerTool(tool: Tool) {
+        if (pm.allowedTools && !pm.allowedTools.has(tool.name)) return;
+        if (pm.disabledTools.has(tool.name)) return;
         pm.registry.register(tool);
       },
       registerHooks(hooks: PluginHooks) {

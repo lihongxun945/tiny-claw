@@ -176,7 +176,8 @@ ctx.registerRoute({
 
 核心插件是学习插件开发的最佳参考：
 
-- [core-tools](../src/plugins/core/tools.ts) — 注册所有内置工具，演示 `registerTool` 用法
+- [core-tools](../src/plugins/core/tools.ts) — 注册基础内置工具，演示 `registerTool` 用法
+- [core-sub-agent](../src/plugins/core/sub-agent.ts) — 注册 `sub_agent_run`，演示将编排能力封装为独立核心插件
 - [core-prompts](../src/plugins/core/prompts.ts) — 系统提示词模板加载，演示 `extendPrompt` 和 `onBuildPrompt` 钩子
 - [core-compress](../src/plugins/core/compress.ts) — 上下文压缩，演示 `onBeforeModelCall` 钩子
 - [core-logger](../src/plugins/core/logger.ts) — 日志和对话历史写入，演示完整的钩子使用
