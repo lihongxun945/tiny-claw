@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentSession } from "../agent.js";
+import type { MessageHistory } from "../history.js";
 import type { Tool, ToolDefinition, Config, Message, ChatResponse } from "../types.js";
 import type { AnthropicClient } from "../client.js";
 
@@ -32,6 +33,7 @@ export interface PluginHooks {
     { input?: string; abort?: string } | Promise<{ input?: string; abort?: string } | void> | void;
   onBuildPrompt?: (ctx: HookContext, prompt: string) =>
     string | Promise<string> | void;
+  onUserMessage?: (ctx: HookContext, input: string) => void | Promise<void>;
   onBeforeModelCall?: (ctx: HookContext, messages: Message[]) =>
     Message[] | Promise<Message[]> | void;
   onChatResponse?: (ctx: HookContext, response: ChatResponse) =>
@@ -49,6 +51,7 @@ export interface HookContext {
   iteration: number;
   config: Config;
   client: AnthropicClient;
+  history: MessageHistory;
   turnStartIndex: number;
   getToolDefinitions(): ToolDefinition[];
 }

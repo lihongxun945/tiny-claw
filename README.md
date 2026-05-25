@@ -64,6 +64,30 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 
 `sub:` 开头的临时 sub-agent 会话默认不生成摘要，避免额外消耗。
 
+### Debug 模式
+
+需要查看大模型调用的原始输入/输出时，可以在 `workspace/config.json` 中开启：
+
+```json
+{
+  "debug": {
+    "enabled": true,
+    "modelIO": true,
+    "rawStreamEvents": true
+  }
+}
+```
+
+开启后会写入 `workspace/logs/YYYY-MM-DD.log`，Web UI 的日志页也能看到：
+
+- `model_request`：发送给模型的请求体，包括 system prompt、messages、tools
+- `model_stream_event`：流式接口返回的原始 SSE JSON 事件
+- `model_response`：非流式接口返回的原始 JSON
+- `model_parsed_response`：tiny-claw 解析后的文本和工具调用
+- `model_error`：模型接口错误响应
+
+Debug 日志可能包含用户输入、工具结果和提示词内容，建议只在本地排查时开启。
+
 ### CLI 模式
 
 ```bash
@@ -184,6 +208,7 @@ tiny-claw 采用插件化架构，所有业务逻辑由插件实现。框架通�
 10. [ ] **多Agent** - 多agent，互相隔离，不同的工作目录和上下文
 11. [x] **SubAgent** - 并行执行子任务的临时 sub-agent，默认只读权限，可配置工具白名单/黑名单
 12. [ ] **RAG** — 检索增强生成
+13. [ ] **沙箱** — 通过沙箱执行脚本
 
 
 ## 难点记录

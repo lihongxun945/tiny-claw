@@ -74,7 +74,7 @@ export class AgentSession {
     this.lastActivity = Date.now();
 
     this.pluginManager = pluginManager;
-    this.pluginManager.setRuntimeDeps(this.config, this.client);
+    this.pluginManager.setRuntimeDeps(this.config, this.client, this.history);
 
     this.systemPrompt = "";
   }
@@ -95,11 +95,9 @@ export class AgentSession {
       this.systemPrompt = await this.pluginManager.callOnBuildPrompt("", this.id);
     }
 
-    // 3. 推送用户消息
+    // 3. User Message Hook：由插件决定如何写入当前会话历史
     const input = beforeResult.input;
-    const userMsg: Message = { role: "user", content: input, _timestamp: Date.now() };
-    this.history.markTurnStart();
-    this.history.push(userMsg);
+    await this.pluginManager.callOnUserMessage(input, this.id);
 
     const maxIterations = this.config.maxAgentIterations > 0 ? this.config.maxAgentIterations : Infinity;
     let agentIteration = 0;

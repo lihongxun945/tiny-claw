@@ -38,6 +38,7 @@ src/
 │   │   ├── tools.ts  # 基础工具注册插件（文件、搜索、记忆、技能等）
 │   │   ├── sub-agent.ts # sub-agent 插件（注册 sub_agent_run 工具）
 │   │   ├── prompts.ts # 提示词构建插件（模板加载+占位符替换）
+│   │   ├── history.ts # 会话历史插件（用户消息进入 MessageHistory）
 │   │   ├── session-summary.ts # 会话滚动摘要插件（摘要 + 最近几轮原文）
 │   │   ├── compress.ts # 上下文压缩插件（阈值判断+模型摘要）
 │   │   └── logger.ts # 日志插件（通过钩子记录所有事件）
@@ -98,6 +99,7 @@ workspace/
 | historyWindowSize | 历史窗口（轮） | 5 |
 | maxAgentIterations | Agent Loop 最大迭代次数 | 0（不限） |
 | sessionSummary | 会话滚动摘要配置 | enabled=true, recentTurns=3 |
+| debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
 | searchProvider | 搜索引擎 (searxng/brave/duckduckgo) | duckduckgo |
 | searxngUrl | SearXNG 实例地址 | - |
 | braveApiKey | Brave Search API key | - |
@@ -165,7 +167,7 @@ workspace/
 ```
 用户输入
   ↓
-PluginManager 加载核心插件（tools, sub-agent, prompts, session-summary, compress, logger）
+PluginManager 加载核心插件（tools, sub-agent, prompts, history, session-summary, compress, logger）
   ↓
 AgentSession 初始化 → PluginManager.setRuntimeDeps()
   ↓
@@ -174,7 +176,7 @@ AgentSession 初始化 → PluginManager.setRuntimeDeps()
 │       ↓                                          │
 │  onBuildPrompt 钩子 → 构建系统提示词（懒加载）   │
 │       ↓                                          │
-│  history.push(user message)                       │
+│  onUserMessage 钩子 → 推送用户消息到 MessageHistory│
 │       ↓                                          │
 │  history.getRecentMessages(N)                     │
 │       ↓                                          │
@@ -215,6 +217,30 @@ Node 22 内置 fetch、readline/promises、TextDecoder，不需要额外 HTTP/IO
 - 认证用 `x-api-key` header（与标准 Anthropic 一致）
 - base_url 不含版本号，客户端拼接 `/v1/messages`
 - 部分模型（如 kimi-k2.6）有 thinking 输出，client.ts 过滤 thinking_delta，只输出 text_delta
+
+### Debug 模式
+
+`config.json` 支持开启 Debug 模式，用于排查模型调用：
+
+```json
+{
+  "debug": {
+    "enabled": true,
+    "modelIO": true,
+    "rawStreamEvents": true
+  }
+}
+```
+
+开启后 `AnthropicClient` 会写入 `workspace/logs/YYYY-MM-DD.log`：
+
+- `model_request`：发送给模型的原始请求体
+- `model_stream_event`：流式接口返回的原始 SSE JSON 事件
+- `model_response`：非流式接口返回的原始 JSON
+- `model_parsed_response`：解析后的文本与工具调用
+- `model_error`：模型接口错误响应
+
+Debug 日志可能包含用户输入、工具结果、system prompt 和记忆摘要，仅建议本地排查时开启。
 
 ### 消息历史：滑动窗口
 
@@ -502,6 +528,7 @@ interface Plugin {
    - `core-tools`：注册基础内置工具（文件、搜索、记忆、技能等）
    - `core-sub-agent`：注册 `sub_agent_run`，提供并行临时 sub-agent 能力
    - `core-prompts`：系统提示词模板加载与占位符替换
+   - `core-history`：将用户输入写入当前会话 `MessageHistory`
    - `core-session-summary`：维护普通会话滚动摘要，减少旧消息原文进入上下文
    - `core-compress`：上下文压缩（阈值判断 + 模型摘要）
    - `core-logger`：执行日志与对话历史写入
@@ -517,6 +544,7 @@ interface Plugin {
 |------|----------|------|
 | `onBeforeChat` | 用户输入进入 Loop 前 | 日志、输入修改、阻断 |
 | `onBuildPrompt` | 构建系统提示词 | 模板填充、内容注入 |
+| `onUserMessage` | 用户输入完成预处理后 | 写入当前会话 MessageHistory |
 | `onBeforeModelCall` | 调用模型 API 前 | 上下文压缩、消息修改 |
 | `onChatResponse` | 模型返回后 | 响应拦截/修改 |
 | `onBeforeTool` | 工具执行前 | 日志、阻断 |

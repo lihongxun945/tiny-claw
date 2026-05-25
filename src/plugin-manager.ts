@@ -16,6 +16,7 @@ import type {
 import type { Config, Tool, ToolDefinition, Message, ChatResponse } from "./types.js";
 import type { AnthropicClient } from "./client.js";
 import type { AgentSession } from "./agent.js";
+import type { MessageHistory } from "./history.js";
 
 type PluginModule = { default: Plugin };
 
@@ -36,6 +37,7 @@ export class PluginManager {
   private config?: Config;
   private baseConfig?: Config;
   private client?: AnthropicClient;
+  private history?: MessageHistory;
   private sessionFactory?: {
     getOrCreateSession: (id: string, prefix?: string) => AgentSession;
     deleteSession: (id: string) => boolean;
@@ -56,9 +58,10 @@ export class PluginManager {
   }
 
   /** 设置运行时依赖（在 AgentSession 创建后调用） */
-  setRuntimeDeps(config: Config, client: AnthropicClient): void {
+  setRuntimeDeps(config: Config, client: AnthropicClient, history: MessageHistory): void {
     this.config = config;
     this.client = client;
+    this.history = history;
   }
 
   // ========== Core Plugins ==========
@@ -197,7 +200,7 @@ export class PluginManager {
   // ========== Hook Dispatch ==========
 
   private buildHookContext(iteration: number, turnStartIndex = 0): HookContext {
-    if (!this.config || !this.client) {
+    if (!this.config || !this.client || !this.history) {
       throw new Error("PluginManager: 未设置运行时依赖，请先调用 setRuntimeDeps");
     }
     return {
@@ -206,6 +209,7 @@ export class PluginManager {
       turnStartIndex,
       config: this.config,
       client: this.client,
+      history: this.history,
       getToolDefinitions: () => this.getToolDefinitions(),
     };
   }
@@ -239,6 +243,17 @@ export class PluginManager {
       }
     }
     return result;
+  }
+
+  async callOnUserMessage(input: string, sessionId: string): Promise<void> {
+    for (const hooks of this.hooks) {
+      if (hooks.onUserMessage) {
+        await hooks.onUserMessage(
+          { ...this.buildHookContext(0), sessionId },
+          input,
+        );
+      }
+    }
   }
 
   async callOnBeforeModelCall(messages: Message[], turnStartIndex: number, iteration: number, sessionId: string): Promise<Message[]> {

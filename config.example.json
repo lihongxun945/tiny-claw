@@ -13,6 +13,11 @@
     "recentTurns": 3,
     "maxChars": 4000
   },
+  "debug": {
+    "enabled": false,
+    "modelIO": true,
+    "rawStreamEvents": true
+  },
   "searchProvider": "duckduckgo",
   "searxngUrl": "http://localhost:8080",
   "braveApiKey": "YOUR_BRAVE_API_KEY",

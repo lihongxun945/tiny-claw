@@ -45,6 +45,7 @@ export interface Config {
   plugins?: Record<string, Record<string, unknown>>;
   subAgent?: SubAgentConfig;
   sessionSummary?: SessionSummaryConfig;
+  debug?: boolean | DebugConfig;
   workspacePath: string;
   systemPrompt: string;
 }
@@ -60,6 +61,12 @@ export interface SessionSummaryConfig {
   enabled?: boolean;
   recentTurns?: number;
   maxChars?: number;
+}
+
+export interface DebugConfig {
+  enabled?: boolean;
+  modelIO?: boolean;
+  rawStreamEvents?: boolean;
 }
 
 // === Tool ===

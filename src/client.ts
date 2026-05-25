@@ -8,9 +8,37 @@ import type {
   ContentBlockStartEvent,
   ContentBlockDeltaEvent,
 } from "./types.js";
+import { appendLog } from "./workspace/logger.js";
+
+function debugEnabled(config: Config): boolean {
+  return config.debug === true || (typeof config.debug === "object" && config.debug.enabled === true);
+}
+
+function debugObject(config: Config): Exclude<Config["debug"], boolean | undefined> | null {
+  return typeof config.debug === "object" ? config.debug : null;
+}
+
+function modelIODebugEnabled(config: Config): boolean {
+  if (!debugEnabled(config)) return false;
+  return config.debug === true || debugObject(config)?.modelIO !== false;
+}
+
+function rawStreamDebugEnabled(config: Config): boolean {
+  if (!modelIODebugEnabled(config)) return false;
+  return config.debug === true || debugObject(config)?.rawStreamEvents !== false;
+}
 
 export class AnthropicClient {
   constructor(private config: Config) {}
+
+  private debugLog(event: string, data: unknown): void {
+    if (!modelIODebugEnabled(this.config)) return;
+    try {
+      appendLog(this.config.workspacePath, "DEBUG", `${event}: ${JSON.stringify(data)}`);
+    } catch {
+      // Debug logging must never affect model calls.
+    }
+  }
 
   /** 非流式调用，用于上下文压缩等内部用途 */
   async complete(messages: Message[], systemPrompt?: string): Promise<string> {
@@ -26,6 +54,12 @@ export class AnthropicClient {
       body.system = systemPrompt;
     }
 
+    this.debugLog("model_request", {
+      mode: "complete",
+      url,
+      body,
+    });
+
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -38,12 +72,22 @@ export class AnthropicClient {
 
     if (!response.ok) {
       const errorText = await response.text();
+      this.debugLog("model_error", {
+        mode: "complete",
+        status: response.status,
+        body: errorText,
+      });
       throw new Error(`API 请求失败 (${response.status}): ${errorText}`);
     }
 
     const data = await response.json() as {
       content: Array<{ type: string; text?: string }>;
     };
+    this.debugLog("model_response", {
+      mode: "complete",
+      status: response.status,
+      data,
+    });
 
     return data.content
       .filter((b) => b.type === "text")
@@ -72,6 +116,12 @@ export class AnthropicClient {
       body.tools = tools;
     }
 
+    this.debugLog("model_request", {
+      mode: "chat",
+      url,
+      body,
+    });
+
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -84,6 +134,11 @@ export class AnthropicClient {
 
     if (!response.ok) {
       const errorText = await response.text();
+      this.debugLog("model_error", {
+        mode: "chat",
+        status: response.status,
+        body: errorText,
+      });
       throw new Error(`API 请求失败 (${response.status}): ${errorText}`);
     }
 
@@ -119,6 +174,9 @@ export class AnthropicClient {
         const jsonStr = dataLine.slice(6);
         try {
           const event: StreamEvent = JSON.parse(jsonStr);
+          if (rawStreamDebugEnabled(this.config)) {
+            this.debugLog("model_stream_event", event);
+          }
 
           if (event.type === "content_block_start") {
             const e = event as ContentBlockStartEvent;
@@ -168,6 +226,8 @@ export class AnthropicClient {
       }
     }
 
-    return { text: fullText, toolCalls };
+    const parsed = { text: fullText, toolCalls };
+    this.debugLog("model_parsed_response", parsed);
+    return parsed;
   }
 }
