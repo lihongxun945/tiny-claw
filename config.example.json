@@ -3,6 +3,7 @@
   "apiUrl": "https://ark.cn-beijing.volces.com/api/coding",
   "apiKey": "YOUR_API_KEY",
   "model": "deepseek-v4-flash",
+  "modelProvider": "anthropic-messages",
   "maxTokens": 4096,
   "maxContextTokens": 128000,
   "contextCompressionThreshold": 0.7,

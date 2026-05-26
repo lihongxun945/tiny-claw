@@ -1,5 +1,5 @@
 import type { Message, Config } from "./types.js";
-import { AnthropicClient } from "./client.js";
+import type { ModelClient } from "./model/index.js";
 import { estimateTokens } from "./estimate-tokens.js";
 
 const COMPRESS_PROMPT = `请将以下对话历史压缩为一段简洁的摘要，保留关键信息（事实、决策、结论），省略细节和中间过程。用中文输出，不超过 500 字。`;
@@ -13,7 +13,7 @@ const COMPRESS_PROMPT = `请将以下对话历史压缩为一段简洁的摘要�
 export async function compressIfNeeded(
   messages: Message[],
   config: Config,
-  client: AnthropicClient,
+  client: ModelClient,
   turnStartIndex: number,
 ): Promise<Message[]> {
   const tokens = estimateTokens(messages);
@@ -44,7 +44,7 @@ export async function compressIfNeeded(
 
 async function compressMessages(
   messages: Message[],
-  client: AnthropicClient,
+  client: ModelClient,
 ): Promise<Message[]> {
   // 将消息格式化为可读文本供模型压缩
   const text = messages

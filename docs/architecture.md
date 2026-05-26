@@ -22,7 +22,11 @@ src/
 ├── agent.ts          # AgentSession 类（核心 Agent Loop，仅编排流程+调用钩子）
 ├── plugin-manager.ts # 插件管理器（生命周期、工具注册、钩子调度）
 ├── config.ts         # 配置加载（从 workspace 读取）
-├── client.ts         # Anthropic Messages API 客户端（流式）
+├── client.ts         # 模型客户端兼容导出
+├── model/            # 模型协议适配层
+│   ├── types.ts      # ModelClient 接口
+│   ├── index.ts      # createModelClient 工厂
+│   └── anthropic.ts  # Anthropic Messages 兼容协议实现
 ├── history.ts        # 滑动窗口消息历史
 ├── estimate-tokens.ts # Token 估算（供 compress 插件使用）
 ├── sub-agent.ts      # 并行 sub-agent 执行器（受限工具 + 临时 AgentSession）
@@ -93,6 +97,7 @@ workspace/
 | apiUrl | API 基础地址 | 必填 |
 | apiKey | API 密钥 | 必填 |
 | model | 模型标识 | 必填 |
+| modelProvider | 模型协议适配器 | anthropic-messages |
 | maxTokens | 单次响应最大 token | 4096 |
 | maxContextTokens | 上下文最大 token 估计 | 128000 |
 | contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
@@ -211,12 +216,23 @@ Agent Loop 是核心：模型自主决定是否调用工具，工具执行结果
 
 Node 22 内置 fetch、readline/promises、TextDecoder，不需要额外 HTTP/IO 库。开发依赖仅 typescript、@types/node、tsx。
 
-### API 兼容层
+### 模型协议适配层
 
-火山方舟 Coding Plan 兼容 Anthropic Messages API，但有两个差异：
+模型接入封装在 `src/model/` 中，Agent 和插件只依赖统一的 `ModelClient` 接口：
+
+```ts
+interface ModelClient {
+  complete(messages, systemPrompt?): Promise<string>;
+  chat(messages, onDelta, tools?, systemPrompt?): Promise<ChatResponse>;
+}
+```
+
+`createModelClient(config)` 根据 `config.modelProvider` 创建具体协议适配器。当前支持 `anthropic-messages`，实现位于 `src/model/anthropic.ts`。旧的 `src/client.ts` 保留为兼容导出。
+
+火山方舟 Coding Plan 兼容 Anthropic Messages API，但有几个差异：
 - 认证用 `x-api-key` header（与标准 Anthropic 一致）
 - base_url 不含版本号，客户端拼接 `/v1/messages`
-- 部分模型（如 kimi-k2.6）有 thinking 输出，client.ts 过滤 thinking_delta，只输出 text_delta
+- 部分模型（如 kimi-k2.6）有 thinking 输出，适配器过滤 thinking_delta，只输出 text_delta
 
 ### Debug 模式
 
@@ -232,7 +248,7 @@ Node 22 内置 fetch、readline/promises、TextDecoder，不需要额外 HTTP/IO
 }
 ```
 
-开启后 `AnthropicClient` 会写入 `workspace/logs/YYYY-MM-DD.log`：
+开启后模型适配器会写入 `workspace/logs/YYYY-MM-DD.log`：
 
 - `model_request`：发送给模型的原始请求体
 - `model_stream_event`：流式接口返回的原始 SSE JSON 事件
@@ -562,7 +578,7 @@ interface Plugin {
 - 维护 `ToolRegistry`（所有插件的工具合并注册）
 - 维护钩子列表（负责调度）
 - 维护路由注册表（Gateway 使用）
-- 提供 `setRuntimeDeps()` 在 AgentSession 创建后注入 `Config` 和 `AnthropicClient`
+- 提供 `setRuntimeDeps()` 在 AgentSession 创建后注入 `Config` 和 `ModelClient`
 
 **路由注册表：** Gateway 启动时通过 PluginManager 加载插件，插件通过 `registerRoute()` 注册路由。请求匹配时插件路由优先于核心路由。
 

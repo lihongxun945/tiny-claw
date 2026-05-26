@@ -14,7 +14,7 @@ import type {
   RouteDefinition,
 } from "./plugins/types.js";
 import type { Config, Tool, ToolDefinition, Message, ChatResponse } from "./types.js";
-import type { AnthropicClient } from "./client.js";
+import type { ModelClient } from "./model/index.js";
 import type { AgentSession } from "./agent.js";
 import type { MessageHistory } from "./history.js";
 
@@ -36,7 +36,7 @@ export class PluginManager {
   private loadedPlugins: Plugin[] = [];
   private config?: Config;
   private baseConfig?: Config;
-  private client?: AnthropicClient;
+  private client?: ModelClient;
   private history?: MessageHistory;
   private sessionFactory?: {
     getOrCreateSession: (id: string, prefix?: string) => AgentSession;
@@ -58,7 +58,7 @@ export class PluginManager {
   }
 
   /** 设置运行时依赖（在 AgentSession 创建后调用） */
-  setRuntimeDeps(config: Config, client: AnthropicClient, history: MessageHistory): void {
+  setRuntimeDeps(config: Config, client: ModelClient, history: MessageHistory): void {
     this.config = config;
     this.client = client;
     this.history = history;

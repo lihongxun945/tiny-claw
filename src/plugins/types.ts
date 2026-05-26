@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentSession } from "../agent.js";
 import type { MessageHistory } from "../history.js";
 import type { Tool, ToolDefinition, Config, Message, ChatResponse } from "../types.js";
-import type { AnthropicClient } from "../client.js";
+import type { ModelClient } from "../model/index.js";
 
 // === 插件接口 ===
 
@@ -50,7 +50,7 @@ export interface HookContext {
   sessionId: string;
   iteration: number;
   config: Config;
-  client: AnthropicClient;
+  client: ModelClient;
   history: MessageHistory;
   turnStartIndex: number;
   getToolDefinitions(): ToolDefinition[];

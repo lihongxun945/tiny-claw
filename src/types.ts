@@ -32,6 +32,7 @@ export interface Config {
   apiUrl: string;
   apiKey: string;
   model: string;
+  modelProvider?: string;
   maxTokens: number;
   maxContextTokens: number;
   contextCompressionThreshold: number;

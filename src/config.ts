@@ -30,6 +30,7 @@ export function loadConfig(workspacePath: string): Config {
     apiUrl: raw.apiUrl as string,
     apiKey: raw.apiKey as string,
     model: raw.model as string,
+    modelProvider: (raw.modelProvider as string | undefined) ?? "anthropic-messages",
     maxTokens: (raw.maxTokens as number) ?? DEFAULTS.maxTokens!,
     maxContextTokens: (raw.maxContextTokens as number) ?? DEFAULTS.maxContextTokens!,
     contextCompressionThreshold: (raw.contextCompressionThreshold as number) ?? DEFAULTS.contextCompressionThreshold!,

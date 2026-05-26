@@ -1,5 +1,5 @@
 import { loadConfig } from "./config.js";
-import { AnthropicClient } from "./client.js";
+import { createModelClient, type ModelClient } from "./model/index.js";
 import { MessageHistory } from "./history.js";
 import { PluginManager } from "./plugin-manager.js";
 import { ensureWorkspace } from "./workspace/workspace.js";
@@ -52,7 +52,7 @@ class EventQueue {
 export class AgentSession {
   readonly id: string;
   private config: Config;
-  private client: AnthropicClient;
+  private client: ModelClient;
   private history: MessageHistory;
   private pluginManager: PluginManager;
   private systemPrompt: string;
@@ -69,7 +69,7 @@ export class AgentSession {
     ensureWorkspace(workspacePath);
 
     this.config = { ...loadConfig(workspacePath), ...configOverrides };
-    this.client = new AnthropicClient(this.config);
+    this.client = createModelClient(this.config);
     this.history = new MessageHistory();
     this.lastActivity = Date.now();
 

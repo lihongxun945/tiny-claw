@@ -25,9 +25,12 @@ cp config.example.json workspace/config.json
 {
   "apiUrl": "https://ark.cn-beijing.volces.com/api/coding",
   "apiKey": "YOUR_API_KEY",
-  "model": "glm-5.1"
+  "model": "glm-5.1",
+  "modelProvider": "anthropic-messages"
 }
 ```
+
+`modelProvider` 用于选择模型协议适配器。当前支持 `anthropic-messages`，后续可在 `src/model/` 下新增适配器。
 
 ### Sub-agent 配置
 
