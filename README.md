@@ -30,7 +30,12 @@ cp config.example.json workspace/config.json
 }
 ```
 
-`modelProvider` 用于选择模型协议适配器。当前支持 `anthropic-messages`，后续可在 `src/model/` 下新增适配器。
+`modelProvider` 用于选择模型协议适配器。当前支持：
+
+| modelProvider | 协议 |
+|---|---|
+| `anthropic-messages` | Anthropic Messages API 兼容协议 |
+| `openai-chat` / `chatgpt` | OpenAI Chat Completions 兼容协议 |
 
 ### Sub-agent 配置
 

@@ -26,7 +26,8 @@ src/
 ├── model/            # 模型协议适配层
 │   ├── types.ts      # ModelClient 接口
 │   ├── index.ts      # createModelClient 工厂
-│   └── anthropic.ts  # Anthropic Messages 兼容协议实现
+│   ├── anthropic.ts  # Anthropic Messages 兼容协议实现
+│   └── openai.ts     # OpenAI Chat Completions 兼容协议实现
 ├── history.ts        # 滑动窗口消息历史
 ├── estimate-tokens.ts # Token 估算（供 compress 插件使用）
 ├── sub-agent.ts      # 并行 sub-agent 执行器（受限工具 + 临时 AgentSession）
@@ -227,12 +228,19 @@ interface ModelClient {
 }
 ```
 
-`createModelClient(config)` 根据 `config.modelProvider` 创建具体协议适配器。当前支持 `anthropic-messages`，实现位于 `src/model/anthropic.ts`。旧的 `src/client.ts` 保留为兼容导出。
+`createModelClient(config)` 根据 `config.modelProvider` 创建具体协议适配器。旧的 `src/client.ts` 保留为兼容导出。
 
-火山方舟 Coding Plan 兼容 Anthropic Messages API，但有几个差异：
+| modelProvider | 协议 | 实现 |
+|---|---|---|
+| `anthropic-messages` | Anthropic Messages API 兼容协议 | `src/model/anthropic.ts` |
+| `openai-chat` / `chatgpt` | OpenAI Chat Completions 兼容协议 | `src/model/openai.ts` |
+
+Anthropic Messages 兼容实现的注意点：
 - 认证用 `x-api-key` header（与标准 Anthropic 一致）
 - base_url 不含版本号，客户端拼接 `/v1/messages`
 - 部分模型（如 kimi-k2.6）有 thinking 输出，适配器过滤 thinking_delta，只输出 text_delta
+
+OpenAI Chat 兼容实现会将内部消息格式转换为 `system/user/assistant/tool` messages，并把内部工具定义转换为 OpenAI `tools: [{ type: "function", function: ... }]` 格式。
 
 ### Debug 模式
 

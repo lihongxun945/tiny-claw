@@ -10,4 +10,4 @@ export interface ModelClient {
   ): Promise<ChatResponse>;
 }
 
-export type ModelProvider = "anthropic-messages";
+export type ModelProvider = "anthropic-messages" | "openai-chat" | "chatgpt";

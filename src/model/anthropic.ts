@@ -32,6 +32,13 @@ function rawStreamDebugEnabled(config: Config): boolean {
 export class AnthropicMessagesClient implements ModelClient {
   constructor(private config: Config) {}
 
+  private endpoint(): string {
+    const base = this.config.apiUrl.replace(/\/+$/, "");
+    if (base.endsWith("/messages")) return base;
+    if (/\/v\d+$/.test(base)) return `${base}/messages`;
+    return `${base}/v1/messages`;
+  }
+
   private debugLog(event: string, data: unknown): void {
     if (!modelIODebugEnabled(this.config)) return;
     try {
@@ -43,7 +50,7 @@ export class AnthropicMessagesClient implements ModelClient {
 
   /** 非流式调用，用于上下文压缩等内部用途 */
   async complete(messages: Message[], systemPrompt?: string): Promise<string> {
-    const url = `${this.config.apiUrl}/v1/messages`;
+    const url = this.endpoint();
 
     const body: Record<string, unknown> = {
       model: this.config.model,
@@ -105,7 +112,7 @@ export class AnthropicMessagesClient implements ModelClient {
     tools?: ToolDefinition[],
     systemPrompt?: string,
   ): Promise<ChatResponse> {
-    const url = `${this.config.apiUrl}/v1/messages`;
+    const url = this.endpoint();
 
     const body: Record<string, unknown> = {
       model: this.config.model,
