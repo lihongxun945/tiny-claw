@@ -11,7 +11,7 @@
 高级能力：           Memory → Skill → Sub-agent → 聊天工具(飞书/钉钉) → RAG
 ```
 
-当前进度：已完成 Loop、Model IO + Prompt、工具调用、History、上下文压缩、配置管理、Memory、Skill、Sub-agent、Gateway、飞书接入。
+当前进度：已完成 Loop、Model IO + Prompt、工具调用、History、上下文压缩、配置管理、Memory、自动记忆、Skill、Sub-agent、Gateway、飞书接入。
 
 ## 模块结构
 
@@ -45,6 +45,7 @@ src/
 │   │   ├── prompts.ts # 提示词构建插件（模板加载+占位符替换）
 │   │   ├── history.ts # 会话历史插件（用户消息进入 MessageHistory）
 │   │   ├── session-summary.ts # 会话滚动摘要插件（摘要 + 最近几轮原文）
+│   │   ├── auto-memory.ts # 自动记忆插件（每 10 轮批量整理长期记忆）
 │   │   ├── compress.ts # 上下文压缩插件（阈值判断+模型摘要）
 │   │   └── logger.ts # 日志插件（通过钩子记录所有事件）
 │   └── feishu/       # 飞书插件（平台适配器）
@@ -84,7 +85,8 @@ workspace/
 ├── system_prompt.md   # 可选：自定义 system prompt 模板（不存在则使用默认模板）
 ├── sub_agent_prompt.md # 可选：自定义 sub-agent 任务提示词模板
 ├── skills/            # 自定义技能（skills/<name>/SKILL.md）
-├── memory/            # 跨会话长期记忆（TODO: 分层记忆系统）
+├── memory/            # 跨会话长期记忆（Markdown + frontmatter）
+│   └── pending/       # 自动记忆候选，等待确认或后续处理
 ├── history/           # 对话历史持久化，JSONL 格式，每日轮转
 │   └── 2026-05-19.jsonl
 └── logs/              # 执行日志，[时间] [级别] 消息，每日轮转
@@ -104,7 +106,8 @@ workspace/
 | contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
 | historyWindowSize | 历史窗口（轮） | 5 |
 | maxAgentIterations | Agent Loop 最大迭代次数 | 0（不限） |
-| sessionSummary | 会话滚动摘要配置 | enabled=true, recentTurns=3 |
+| sessionSummary | 会话滚动摘要配置 | enabled=true, turnThreshold=5, recentTurns=3 |
+| autoMemory | 自动记忆配置 | enabled=true, turnThreshold=10 |
 | debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
 | searchProvider | 搜索引擎 (searxng/brave/duckduckgo) | duckduckgo |
 | searxngUrl | SearXNG 实例地址 | - |
@@ -168,12 +171,38 @@ workspace/
 - `maxConcurrency`：一次 `sub_agent_run` 最多并发的 sub-agent 数，硬上限为 8
 - `sub_agent_run` 始终禁用，避免 sub-agent 递归派生 sub-agent
 
+### autoMemory 配置
+
+`core-auto-memory` 插件在主会话最终回复后统计完整对话轮数，默认每 10 轮触发一次模型整理。它不会每轮额外调用模型；只有达到阈值时，才把这 10 轮增量对话、已有记忆摘要索引交给模型，生成长期记忆候选。
+
+```json
+{
+  "autoMemory": {
+    "enabled": true,
+    "mode": "hybrid",
+    "turnThreshold": 10,
+    "minConfidence": 0.75,
+    "maxCandidates": 5,
+    "maxBatchChars": 8000
+  }
+}
+```
+
+- `enabled`：是否启用自动记忆；默认启用，设置为 `false` 可关闭
+- `mode`：`auto` 直接保存高置信非敏感候选；`hybrid` 保存高置信候选并将不确定候选写入 `memory/pending/`；`suggest` 只写 pending
+- `turnThreshold`：触发模型整理的完整对话轮数，默认 10
+- `minConfidence`：自动保存最低置信度，默认 0.75
+- `maxCandidates`：单次最多生成的记忆候选数量，默认 5
+- `maxBatchChars`：传给记忆整理模型的增量对话字符上限，默认 8000
+
+自动记忆会跳过 `sub:` 开头的 sub-agent 会话，也会跳过模型中间工具调用，只在最终回复时计入一轮。模型输出 `save / pending / ignore` 三类决策；敏感内容不会自动保存为正式长期记忆。
+
 ## 核心数据流
 
 ```
 用户输入
   ↓
-PluginManager 加载核心插件（tools, sub-agent, prompts, history, session-summary, compress, logger）
+PluginManager 加载核心插件（tools, sub-agent, prompts, history, session-summary, auto-memory, compress, logger）
   ↓
 AgentSession 初始化 → PluginManager.setRuntimeDeps()
   ↓
@@ -192,6 +221,8 @@ AgentSession 初始化 → PluginManager.setRuntimeDeps()
 │              systemPrompt)                        │
 │       ↓                                          │
 │  response = { text, toolCalls }                   │
+│       ↓                                          │
+│  onChatResponse 钩子 → 会话摘要 / 自动记忆整理    │
 │       ↓                                          │
 │  push assistant message + appendHistory           │
 │       ↓                                          │
@@ -282,11 +313,12 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 
 ### 会话滚动摘要
 
-核心插件 `core-session-summary` 为每个普通会话维护一份内存中的滚动摘要，减少旧消息原文进入模型上下文：
+核心插件 `core-session-summary` 为每个普通会话维护一份内存中的滚动摘要，减少旧消息原文进入模型上下文。摘要默认每 5 个完整对话轮次更新一次，不会每轮额外调用模型：
 
-1. `onBeforeModelCall`：移除旧摘要消息，保留最近 `recentTurns` 轮原文和当前轮消息；如果已有摘要，将摘要合并进下一条 user 消息前部。
-2. `onChatResponse`：当模型给出最终回复（没有 tool_calls）后，调用 `client.complete()`，用“已有摘要 + 本次上下文 + 最终回复”更新会话摘要。
-3. `sub:` 开头的临时 sub-agent 会话跳过摘要，避免额外模型调用。
+1. `onBeforeModelCall`：移除旧摘要消息；如果已有摘要，优先保留上次摘要后尚未沉淀的增量消息和当前轮消息，并将摘要合并进下一条 user 消息前部。没有未沉淀增量时，回退保留最近 `recentTurns` 轮原文。
+2. 摘要尚未生成时，不会因为 `recentTurns` 提前裁掉历史，仍由 `historyWindowSize` 控制底层历史窗口。
+3. `onChatResponse`：当模型给出最终回复（没有 tool_calls）后，累计本轮增量消息；达到 `turnThreshold` 后调用 `client.complete()`，用“已有摘要 + 累计增量上下文”更新会话摘要。
+4. `sub:` 开头的临时 sub-agent 会话跳过摘要，避免额外模型调用。
 
 默认配置：
 
@@ -294,11 +326,14 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 {
   "sessionSummary": {
     "enabled": true,
+    "turnThreshold": 5,
     "recentTurns": 3,
     "maxChars": 4000
   }
 }
 ```
+
+其中 `turnThreshold` 是摘要刷新频率，`recentTurns` 是已有摘要后仍保留的近期原文窗口，二者不需要和 `historyWindowSize` 相同。
 
 完整原始历史仍写入 `workspace/history/*.jsonl`，用于回放和审计；滚动摘要只影响模型上下文，不写入长期 memory。
 

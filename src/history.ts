@@ -17,6 +17,10 @@ export class MessageHistory {
     return this._buildContext(windowSize).messages;
   }
 
+  getCurrentTurnMessages(): Message[] {
+    return this.messages.slice(this.currentTurnStart);
+  }
+
   /** 返回上下文消息中当前轮消息的起始索引 */
   getTurnStartIndexInContext(windowSize: number): number {
     return this._buildContext(windowSize).turnStartIndex;

@@ -46,6 +46,7 @@ export interface Config {
   plugins?: Record<string, Record<string, unknown>>;
   subAgent?: SubAgentConfig;
   sessionSummary?: SessionSummaryConfig;
+  autoMemory?: AutoMemoryConfig;
   debug?: boolean | DebugConfig;
   workspacePath: string;
   systemPrompt: string;
@@ -60,8 +61,18 @@ export interface SubAgentConfig {
 
 export interface SessionSummaryConfig {
   enabled?: boolean;
+  turnThreshold?: number;
   recentTurns?: number;
   maxChars?: number;
+}
+
+export interface AutoMemoryConfig {
+  enabled?: boolean;
+  mode?: "auto" | "hybrid" | "suggest";
+  turnThreshold?: number;
+  minConfidence?: number;
+  maxCandidates?: number;
+  maxBatchChars?: number;
 }
 
 export interface DebugConfig {

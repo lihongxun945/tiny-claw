@@ -50,8 +50,9 @@ interface Plugin {
 |------|----------|------|
 | `onBeforeChat` | 用户输入进入 Loop 前 | 日志记录、输入修改、阻断 |
 | `onBuildPrompt` | 构建系统提示词时 | 追加或修改提示词 |
+| `onUserMessage` | 用户消息写入会话历史时 | 历史管理、当前轮状态初始化 |
 | `onBeforeModelCall` | 调用模型前 | 上下文压缩、消息修改 |
-| `onChatResponse` | 模型响应后 | 响应后处理 |
+| `onChatResponse` | 模型响应后、写入 assistant 历史前 | 响应后处理、会话摘要、自动记忆 |
 | `onBeforeTool` | 工具执行前 | 权限校验、阻断 |
 | `onAfterTool` | 工具执行后 | 结果处理、日志 |
 | `onAfterIteration` | 每轮迭代结束 | 进度追踪 |
@@ -180,6 +181,7 @@ ctx.registerRoute({
 - [core-sub-agent](../src/plugins/core/sub-agent.ts) — 注册 `sub_agent_run`，演示将编排能力封装为独立核心插件
 - [core-prompts](../src/plugins/core/prompts.ts) — 系统提示词模板加载，演示 `extendPrompt` 和 `onBuildPrompt` 钩子
 - [core-compress](../src/plugins/core/compress.ts) — 上下文压缩，演示 `onBeforeModelCall` 钩子
+- [core-auto-memory](../src/plugins/core/auto-memory.ts) — 每 10 轮批量整理长期记忆，演示 `onChatResponse` 中的阈值触发后台整理
 - [core-logger](../src/plugins/core/logger.ts) — 日志和对话历史写入，演示完整的钩子使用
 
 ## 参考：飞书插件

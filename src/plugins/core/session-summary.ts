@@ -3,6 +3,7 @@ import type { ChatResponse, ContentBlock, Message, ToolUseBlock } from "../../ty
 
 const SUMMARY_MARKER = "[当前会话摘要]";
 const DEFAULT_RECENT_TURNS = 3;
+const DEFAULT_TURN_THRESHOLD = 5;
 const DEFAULT_MAX_CHARS = 4000;
 
 const UPDATE_SUMMARY_PROMPT = `请更新当前会话的滚动摘要。
@@ -16,7 +17,8 @@ const UPDATE_SUMMARY_PROMPT = `请更新当前会话的滚动摘要。
 
 interface SessionState {
   summary: string;
-  lastMessages: Message[];
+  pendingMessages: Message[];
+  turnsSinceSummary: number;
 }
 
 function isEnabled(ctx: HookContext): boolean {
@@ -31,6 +33,12 @@ function getRecentTurns(ctx: HookContext): number {
   const value = ctx.config.sessionSummary?.recentTurns;
   if (!Number.isFinite(value) || !value || value < 1) return DEFAULT_RECENT_TURNS;
   return Math.min(Math.floor(value), 20);
+}
+
+function getTurnThreshold(ctx: HookContext): number {
+  const value = ctx.config.sessionSummary?.turnThreshold;
+  if (!Number.isFinite(value) || !value || value < 1) return DEFAULT_TURN_THRESHOLD;
+  return Math.min(Math.floor(value), 100);
 }
 
 function getMaxChars(ctx: HookContext): number {
@@ -121,21 +129,24 @@ export const coreSessionSummaryPlugin: Plugin = {
         const stripped = stripSummaryMessages(messages, hookCtx.turnStartIndex);
         const previousMessages = stripped.messages.slice(0, stripped.turnStartIndex);
         const currentMessages = stripped.messages.slice(stripped.turnStartIndex);
+        const state = states.get(hookCtx.sessionId) ?? { summary: "", pendingMessages: [], turnsSinceSummary: 0 };
+
+        if (!state.summary) {
+          states.set(hookCtx.sessionId, state);
+          return stripped.messages.length === messages.length ? messages : stripped.messages;
+        }
+
         const maxPrevious = getRecentTurns(hookCtx) * 2;
-        let recentPrevious = previousMessages.slice(-maxPrevious);
+        let recentPrevious = state.pendingMessages.length > 0
+          ? state.pendingMessages
+          : previousMessages.slice(-maxPrevious);
 
         if (recentPrevious.length > 0 && recentPrevious[0].role === "assistant") {
           recentPrevious = recentPrevious.slice(1);
         }
 
-        const state = states.get(hookCtx.sessionId) ?? { summary: "", lastMessages: [] };
         const cleanContext = [...recentPrevious, ...currentMessages];
-        state.lastMessages = cleanContext;
         states.set(hookCtx.sessionId, state);
-
-        if (!state.summary) {
-          return cleanContext.length === stripped.messages.length ? messages : cleanContext;
-        }
 
         return withSummaryMessage(state.summary, cleanContext);
       },
@@ -144,10 +155,20 @@ export const coreSessionSummaryPlugin: Plugin = {
         if (!isEnabled(hookCtx) || isSubAgentSession(hookCtx.sessionId)) return response;
         if (response.toolCalls.length > 0) return response;
 
-        const state = states.get(hookCtx.sessionId);
-        if (!state) return response;
+        const state = states.get(hookCtx.sessionId) ?? { summary: "", pendingMessages: [], turnsSinceSummary: 0 };
+        const currentTurnMessages = stripSummaryMessages(
+          hookCtx.history.getCurrentTurnMessages(),
+          0,
+        ).messages;
+        state.pendingMessages.push(...currentTurnMessages, responseToMessage(response));
+        state.turnsSinceSummary += 1;
+        states.set(hookCtx.sessionId, state);
 
-        const newMessages = [...state.lastMessages, responseToMessage(response)];
+        if (state.turnsSinceSummary < getTurnThreshold(hookCtx)) {
+          return response;
+        }
+
+        const newMessages = [...state.pendingMessages];
         const text = newMessages.map(messageToText).join("\n");
         const existingSummary = state.summary || "暂无";
         const prompt = `${UPDATE_SUMMARY_PROMPT}
@@ -164,7 +185,8 @@ ${truncateText(text, getMaxChars(hookCtx))}`;
             "你是会话状态摘要器。只输出新的会话摘要，不要输出解释。",
           );
           state.summary = truncateText(summary.trim(), getMaxChars(hookCtx));
-          state.lastMessages = [];
+          state.pendingMessages = [];
+          state.turnsSinceSummary = 0;
           states.set(hookCtx.sessionId, state);
         } catch {
           // 摘要失败不应影响主回答。

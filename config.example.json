@@ -11,8 +11,17 @@
   "maxAgentIterations": 0,
   "sessionSummary": {
     "enabled": true,
+    "turnThreshold": 5,
     "recentTurns": 3,
     "maxChars": 4000
+  },
+  "autoMemory": {
+    "enabled": true,
+    "mode": "hybrid",
+    "turnThreshold": 10,
+    "minConfidence": 0.75,
+    "maxCandidates": 5,
+    "maxBatchChars": 8000
   },
   "debug": {
     "enabled": false,

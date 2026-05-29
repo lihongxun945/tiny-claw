@@ -44,6 +44,7 @@ export function loadConfig(workspacePath: string): Config {
     plugins: raw.plugins as Record<string, Record<string, unknown>> | undefined,
     subAgent: raw.subAgent as Config["subAgent"] | undefined,
     sessionSummary: raw.sessionSummary as Config["sessionSummary"] | undefined,
+    autoMemory: raw.autoMemory as Config["autoMemory"] | undefined,
     debug: raw.debug as Config["debug"] | undefined,
     workspacePath,
     systemPrompt: loadIdentity(workspacePath),
