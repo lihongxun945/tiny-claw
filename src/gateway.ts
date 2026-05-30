@@ -296,6 +296,7 @@ function cleanupSessions(): void {
   for (const [id, session] of sessions) {
     if (now - session.lastActivity > SESSION_TIMEOUT) {
       sessions.delete(id);
+      globalPluginManager?.clearRuntimeDeps(id);
     }
   }
 }
@@ -321,7 +322,11 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
   // 为用户插件设置 Session 工厂（Gateway 特有）
   pm.setSessionFactory({
     getOrCreateSession: (id, prefix) => getOrCreateSession(prefix ? `${prefix}:${id}` : id, workspacePath, pm),
-    deleteSession: (id) => sessions.delete(id),
+    deleteSession: (id) => {
+      const deleted = sessions.delete(id);
+      pm.clearRuntimeDeps(id);
+      return deleted;
+    },
   });
   await pm.loadUserPlugins({
     builtinPlugins: config.enabledPlugins,
@@ -429,6 +434,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     if (req.method === "DELETE" && url.pathname.startsWith("/sessions/")) {
       const id = decodeURIComponent(url.pathname.slice("/sessions/".length));
       const deletedActive = sessions.delete(id);
+      pm.clearRuntimeDeps(id);
       const deletedHistoryRecords = deleteSessionHistory(workspacePath, id);
       if (deletedActive || deletedHistoryRecords > 0) {
         appendLog(workspacePath, "INFO", `会话已删除，历史记录 ${deletedHistoryRecords} 条`, id);

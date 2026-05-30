@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { createModelClient, type ModelClient } from "./model/index.js";
 import { MessageHistory } from "./history.js";
@@ -49,6 +51,32 @@ class EventQueue {
 
 // === AgentSession ===
 
+function loadPersistedSessionMessages(workspacePath: string, sessionId: string): Message[] {
+  const historyDir = resolve(workspacePath, "history");
+  if (!existsSync(historyDir)) return [];
+
+  const messages: Message[] = [];
+  const files = readdirSync(historyDir).filter((file) => file.endsWith(".jsonl")).sort();
+  for (const file of files) {
+    const lines = readFileSync(resolve(historyDir, file), "utf-8").split("\n").filter(Boolean);
+    for (const line of lines) {
+      try {
+        const record = JSON.parse(line) as Message & { _session?: string };
+        if (record._session !== sessionId) continue;
+        if (record.role !== "user" && record.role !== "assistant") continue;
+        messages.push({
+          role: record.role,
+          content: record.content,
+          _timestamp: record._timestamp,
+        });
+      } catch {
+        // 忽略损坏的历史行，避免影响会话创建。
+      }
+    }
+  }
+  return messages;
+}
+
 export class AgentSession {
   readonly id: string;
   private config: Config;
@@ -70,11 +98,11 @@ export class AgentSession {
 
     this.config = { ...loadConfig(workspacePath), ...configOverrides };
     this.client = createModelClient(this.config);
-    this.history = new MessageHistory();
+    this.history = new MessageHistory(loadPersistedSessionMessages(workspacePath, id));
     this.lastActivity = Date.now();
 
     this.pluginManager = pluginManager;
-    this.pluginManager.setRuntimeDeps(this.config, this.client, this.history);
+    this.pluginManager.setRuntimeDeps(this.config, this.client, this.history, this.id);
 
     this.systemPrompt = "";
   }

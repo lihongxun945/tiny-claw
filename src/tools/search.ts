@@ -168,9 +168,13 @@ function createProvider(config: Config): SearchProvider {
 }
 
 export function createWebSearchTool(config: Config): Tool {
+  const description = config.searchProvider === "duckduckgo"
+    ? "搜索互联网获取信息。当前使用 DuckDuckGo Instant Answer，query 适合输入1-3个简短英文实体关键词（如 'JavaScript'、'iPhone 17'），不要输入完整句子或长查询。搜索结果由你负责总结。"
+    : "搜索互联网获取信息。query 可以使用清晰、具体的常规搜索查询；搜索结果由你负责总结。";
+
   return {
     name: "web_search",
-    description: "搜索互联网获取信息。输入1-3个简短英文关键词（如 'JavaScript'、'iPhone 17'），不要输入完整句子或长查询。搜索结果由你负责总结。",
+    description,
     inputSchema: {
       type: "object",
       properties: {

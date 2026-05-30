@@ -38,6 +38,7 @@ export class PluginManager {
   private baseConfig?: Config;
   private client?: ModelClient;
   private history?: MessageHistory;
+  private runtimeDepsBySession = new Map<string, { config: Config; client: ModelClient; history: MessageHistory }>();
   private sessionFactory?: {
     getOrCreateSession: (id: string, prefix?: string) => AgentSession;
     deleteSession: (id: string) => boolean;
@@ -58,10 +59,17 @@ export class PluginManager {
   }
 
   /** 设置运行时依赖（在 AgentSession 创建后调用） */
-  setRuntimeDeps(config: Config, client: ModelClient, history: MessageHistory): void {
+  setRuntimeDeps(config: Config, client: ModelClient, history: MessageHistory, sessionId?: string): void {
     this.config = config;
     this.client = client;
     this.history = history;
+    if (sessionId) {
+      this.runtimeDepsBySession.set(sessionId, { config, client, history });
+    }
+  }
+
+  clearRuntimeDeps(sessionId: string): void {
+    this.runtimeDepsBySession.delete(sessionId);
   }
 
   // ========== Core Plugins ==========
@@ -199,17 +207,21 @@ export class PluginManager {
 
   // ========== Hook Dispatch ==========
 
-  private buildHookContext(iteration: number, turnStartIndex = 0): HookContext {
-    if (!this.config || !this.client || !this.history) {
+  private buildHookContext(iteration: number, sessionId: string, turnStartIndex = 0): HookContext {
+    const deps = this.runtimeDepsBySession.get(sessionId);
+    const config = deps?.config ?? this.config;
+    const client = deps?.client ?? this.client;
+    const history = deps?.history ?? this.history;
+    if (!config || !client || !history) {
       throw new Error("PluginManager: 未设置运行时依赖，请先调用 setRuntimeDeps");
     }
     return {
-      sessionId: "",
+      sessionId,
       iteration,
       turnStartIndex,
-      config: this.config,
-      client: this.client,
-      history: this.history,
+      config,
+      client,
+      history,
       getToolDefinitions: () => this.getToolDefinitions(),
     };
   }
@@ -219,7 +231,7 @@ export class PluginManager {
     for (const hooks of this.hooks) {
       if (hooks.onBeforeChat) {
         const r = await hooks.onBeforeChat(
-          { ...this.buildHookContext(0), sessionId },
+          this.buildHookContext(0, sessionId),
           result.input,
         );
         if (r) {
@@ -236,7 +248,7 @@ export class PluginManager {
     for (const hooks of this.hooks) {
       if (hooks.onBuildPrompt) {
         const r = await hooks.onBuildPrompt(
-          { ...this.buildHookContext(0), sessionId },
+          this.buildHookContext(0, sessionId),
           result,
         );
         if (r !== undefined) result = r;
@@ -249,7 +261,7 @@ export class PluginManager {
     for (const hooks of this.hooks) {
       if (hooks.onUserMessage) {
         await hooks.onUserMessage(
-          { ...this.buildHookContext(0), sessionId },
+          this.buildHookContext(0, sessionId),
           input,
         );
       }
@@ -261,7 +273,7 @@ export class PluginManager {
     for (const hooks of this.hooks) {
       if (hooks.onBeforeModelCall) {
         const r = await hooks.onBeforeModelCall(
-          { ...this.buildHookContext(iteration, turnStartIndex), sessionId },
+          this.buildHookContext(iteration, sessionId, turnStartIndex),
           result,
         );
         if (r !== undefined) result = r;
@@ -275,7 +287,7 @@ export class PluginManager {
     for (const hooks of this.hooks) {
       if (hooks.onChatResponse) {
         const r = await hooks.onChatResponse(
-          { ...this.buildHookContext(iteration), sessionId },
+          this.buildHookContext(iteration, sessionId),
           result,
         );
         if (r !== undefined) result = r;
@@ -288,7 +300,7 @@ export class PluginManager {
     for (const hooks of this.hooks) {
       if (hooks.onBeforeTool) {
         const r = await hooks.onBeforeTool(
-          { ...this.buildHookContext(iteration), sessionId },
+          this.buildHookContext(iteration, sessionId),
           name,
           args,
         );
@@ -303,7 +315,7 @@ export class PluginManager {
     for (const hooks of this.hooks) {
       if (hooks.onAfterTool) {
         const updated = await hooks.onAfterTool(
-          { ...this.buildHookContext(iteration), sessionId },
+          this.buildHookContext(iteration, sessionId),
           name,
           r,
         );
@@ -317,7 +329,7 @@ export class PluginManager {
     for (const hooks of this.hooks) {
       if (hooks.onAfterIteration) {
         await hooks.onAfterIteration(
-          { ...this.buildHookContext(iteration), sessionId },
+          this.buildHookContext(iteration, sessionId),
         );
       }
     }
@@ -327,7 +339,7 @@ export class PluginManager {
     for (const hooks of this.hooks) {
       if (hooks.onError) {
         await hooks.onError(
-          { ...this.buildHookContext(iteration), sessionId },
+          this.buildHookContext(iteration, sessionId),
           error,
         );
       }

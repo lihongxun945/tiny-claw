@@ -355,7 +355,7 @@ web_search 工具支持三个搜索引擎，通过 `config.json` 的 `searchProv
 | searxng | 自建 SearXNG 实例，返回完整搜索结果 | 需配置 `searxngUrl` |
 | brave | Brave Search API，结果质量好 | 需配置 `braveApiKey` |
 
-注意：DuckDuckGo provider 使用 Instant Answer API（返回摘要/定义），不是完整搜索结果列表，但无需配置即可使用。如需完整搜索结果，推荐使用 SearXNG 或 Brave。
+注意：DuckDuckGo provider 使用 Instant Answer API（返回摘要/定义），不是完整搜索结果列表，但无需配置即可使用。仅在使用 DuckDuckGo 时，系统提示词和工具描述会要求模型优先使用 1-3 个简短英文实体关键词；SearXNG 和 Brave 使用常规搜索查询即可。如需完整搜索结果，推荐使用 SearXNG 或 Brave。
 
 ### 内置工具
 

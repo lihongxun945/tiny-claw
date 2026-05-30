@@ -16,7 +16,15 @@ function loadTemplate(workspacePath: string): string {
   return readFileSync(resolve(__dirname, "default.md"), "utf-8");
 }
 
-export function buildSystemPrompt(workspacePath: string, tools: ToolDefinition[]): string {
+function buildSearchGuidance(provider: string): string {
+  if (provider === "duckduckgo") {
+    return "使用 web_search 时，当前搜索 provider 是 DuckDuckGo Instant Answer，query 必须是 1-3 个简短英文实体关键词（如 'iPhone 17'、'Python'），不要加限定词、描述词或完整句子。先用最短关键词搜索，搜索到的信息由你负责总结回答。";
+  }
+
+  return "使用 web_search 时，根据用户问题构造清晰、具体的搜索 query；当前搜索 provider 支持常规搜索查询，不要求压缩成 1-3 个英文实体关键词。搜索结果由你负责总结回答。";
+}
+
+export function buildSystemPrompt(workspacePath: string, tools: ToolDefinition[], searchProvider = "duckduckgo"): string {
   const template = loadTemplate(workspacePath);
 
   const identity = loadIdentity(workspacePath);
@@ -36,5 +44,6 @@ export function buildSystemPrompt(workspacePath: string, tools: ToolDefinition[]
     .replace(/\{\{skills}}/g, skillsText)
     .replace(/\{\{tools}}/g, toolsText)
     .replace(/\{\{current_date}}/g, currentDate)
+    .replace(/\{\{search_guidance}}/g, buildSearchGuidance(searchProvider))
     .replace(/\{\{[^}]+}}/g, "");
 }

@@ -4,6 +4,11 @@ export class MessageHistory {
   private messages: Message[] = [];
   private currentTurnStart: number = 0;
 
+  constructor(initialMessages: Message[] = []) {
+    this.messages = [...initialMessages];
+    this.currentTurnStart = this.messages.length;
+  }
+
   /** 标记新一轮用户对话的开始（当前 Agent Loop 的消息不应被截断） */
   markTurnStart(): void {
     this.currentTurnStart = this.messages.length;
