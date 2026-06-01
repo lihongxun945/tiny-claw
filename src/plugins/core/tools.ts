@@ -1,5 +1,4 @@
 import type { Plugin } from "../types.js";
-import type { Config } from "../../types.js";
 import { createWebSearchTool } from "../../tools/search.js";
 import { createWebFetchTool } from "../../tools/web_fetch.js";
 import { createBashTool } from "../../tools/bash.js";
@@ -15,13 +14,12 @@ import {
   createMemoryDeleteTool,
 } from "../../tools/memory.js";
 import { createSkillUseTool, createSkillListTool } from "../../tools/skill.js";
+import { loadConfig } from "../../config.js";
 
 export const coreToolsPlugin: Plugin = {
   name: "core-tools",
   async init(ctx) {
-    const config = ctx.config as unknown as Config;
-
-    ctx.registerTool(createWebSearchTool(config));
+    ctx.registerTool(createWebSearchTool(() => loadConfig(ctx.workspacePath)));
     ctx.registerTool(createWebFetchTool());
     ctx.registerTool(createBashTool());
     ctx.registerTool(createFileReadTool());

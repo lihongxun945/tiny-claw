@@ -7,21 +7,38 @@ import type { Tool } from "../types.js";
 const SAFE_NAME = /^[a-zA-Z0-9_-]+$/;
 const SUMMARY_LIMIT = 300;
 
-interface MemoryMeta {
+export type MemorySource = "manual" | "tool" | "auto";
+
+export interface MemoryMeta {
   name: string;
   tags: string[];
   createdAt: string;
   updatedAt: string;
   sensitive: boolean;
+  disabled: boolean;
   scope: string;
+  source: MemorySource;
   summary?: string;
 }
 
-interface MemoryEntry {
+export interface MemoryEntry {
   name: string;
   meta: MemoryMeta;
   content: string;
   filePath: string;
+}
+
+export interface MemoryRecord {
+  name: string;
+  summary: string;
+  content: string;
+  tags: string[];
+  scope: string;
+  sensitive: boolean;
+  disabled: boolean;
+  source: MemorySource;
+  createdAt: string;
+  updatedAt: string;
 }
 
 function sanitizeName(name: string): string {
@@ -66,6 +83,12 @@ function parseBoolValue(value: string): boolean {
   return value.trim().toLowerCase() === "true";
 }
 
+function parseSourceValue(value: string): MemorySource {
+  const source = value.trim().toLowerCase();
+  if (source === "manual" || source === "tool" || source === "auto") return source;
+  return "tool";
+}
+
 function parseFrontmatter(raw: string, name: string): { meta: MemoryMeta; content: string } {
   const fallbackTime = nowIso();
   const meta: MemoryMeta = {
@@ -74,7 +97,9 @@ function parseFrontmatter(raw: string, name: string): { meta: MemoryMeta; conten
     createdAt: fallbackTime,
     updatedAt: fallbackTime,
     sensitive: false,
+    disabled: false,
     scope: "global",
+    source: "tool",
   };
 
   if (!raw.startsWith("---\n")) {
@@ -109,8 +134,14 @@ function parseFrontmatter(raw: string, name: string): { meta: MemoryMeta; conten
       case "sensitive":
         meta.sensitive = parseBoolValue(value);
         break;
+      case "disabled":
+        meta.disabled = parseBoolValue(value);
+        break;
       case "scope":
         meta.scope = value || "global";
+        break;
+      case "source":
+        meta.source = parseSourceValue(value);
         break;
       case "summary":
         meta.summary = value;
@@ -129,7 +160,9 @@ function formatFrontmatter(meta: MemoryMeta): string {
     `createdAt: ${meta.createdAt}`,
     `updatedAt: ${meta.updatedAt}`,
     `sensitive: ${meta.sensitive}`,
+    `disabled: ${meta.disabled}`,
     `scope: ${meta.scope}`,
+    `source: ${meta.source}`,
   ];
   if (meta.summary?.trim()) {
     lines.push(`summary: ${meta.summary.trim().replace(/\n/g, " ")}`);
@@ -186,11 +219,76 @@ function listMemoryEntries(workspacePath: string): MemoryEntry[] {
   });
 }
 
+function toMemoryRecord(entry: MemoryEntry): MemoryRecord {
+  return {
+    name: entry.name,
+    summary: buildSummary(entry.content, entry.meta.summary),
+    content: entry.content,
+    tags: entry.meta.tags,
+    scope: entry.meta.scope,
+    sensitive: entry.meta.sensitive,
+    disabled: entry.meta.disabled,
+    source: entry.meta.source,
+    createdAt: entry.meta.createdAt,
+    updatedAt: entry.meta.updatedAt,
+  };
+}
+
+export function listMemoryRecords(workspacePath: string, options: { includeSensitive?: boolean; includeDisabled?: boolean } = {}): MemoryRecord[] {
+  return listMemoryEntries(workspacePath)
+    .filter((entry) => options.includeSensitive || !entry.meta.sensitive)
+    .filter((entry) => options.includeDisabled || !entry.meta.disabled)
+    .map(toMemoryRecord);
+}
+
+export function getMemoryRecord(workspacePath: string, name: string, includeSensitive = true): MemoryRecord | null {
+  const entry = readMemoryEntry(workspacePath, name);
+  if (!entry) return null;
+  if (entry.meta.sensitive && !includeSensitive) return null;
+  return toMemoryRecord(entry);
+}
+
+export function updateMemoryRecord(
+  workspacePath: string,
+  name: string,
+  updates: {
+    content?: string;
+    summary?: string;
+    tags?: string[];
+    sensitive?: boolean;
+    disabled?: boolean;
+    scope?: string;
+    source?: MemorySource;
+  },
+): MemoryRecord {
+  const existing = readMemoryEntry(workspacePath, name);
+  if (!existing) {
+    throw new Error(`记忆不存在: ${name}`);
+  }
+
+  const content = typeof updates.content === "string" ? updates.content : existing.content;
+  existing.content = content;
+  existing.meta.updatedAt = nowIso();
+  if (Array.isArray(updates.tags)) existing.meta.tags = updates.tags.map(String).filter(Boolean);
+  if (typeof updates.sensitive === "boolean") existing.meta.sensitive = updates.sensitive;
+  if (typeof updates.disabled === "boolean") existing.meta.disabled = updates.disabled;
+  if (typeof updates.scope === "string") existing.meta.scope = updates.scope.trim() || "global";
+  if (updates.source) existing.meta.source = updates.source;
+  existing.meta.summary = buildSummary(content, updates.summary ?? existing.meta.summary);
+
+  writeMemoryEntry(existing);
+  return toMemoryRecord(existing);
+}
+
+export function setMemoryDisabled(workspacePath: string, name: string, disabled: boolean): MemoryRecord {
+  return updateMemoryRecord(workspacePath, name, { disabled });
+}
+
 export function saveMemory(
   workspacePath: string,
   name: string,
   content: string,
-  options: { tags?: string[]; sensitive?: boolean; scope?: string; summary?: string } = {},
+  options: { tags?: string[]; sensitive?: boolean; disabled?: boolean; scope?: string; summary?: string; source?: MemorySource } = {},
 ): string {
   const filePath = memoryPath(workspacePath, name);
   const existing = readMemoryEntry(workspacePath, name);
@@ -201,7 +299,9 @@ export function saveMemory(
     createdAt: existing?.meta.createdAt ?? timestamp,
     updatedAt: timestamp,
     sensitive: options.sensitive ?? existing?.meta.sensitive ?? false,
+    disabled: options.disabled ?? existing?.meta.disabled ?? false,
     scope: options.scope ?? existing?.meta.scope ?? "global",
+    source: options.source ?? existing?.meta.source ?? "tool",
     summary: buildSummary(content, options.summary),
   };
 
@@ -244,6 +344,7 @@ export function deleteMemory(workspacePath: string, name: string): string {
 
 export function listMemories(workspacePath: string, includeSensitive = false): string {
   const entries = listMemoryEntries(workspacePath)
+    .filter((entry) => !entry.meta.disabled)
     .filter((entry) => includeSensitive || !entry.meta.sensitive);
 
   if (entries.length === 0) return "暂无记忆";
@@ -255,6 +356,8 @@ export function listMemories(workspacePath: string, includeSensitive = false): s
       scope: entry.meta.scope,
       updatedAt: entry.meta.updatedAt,
       sensitive: entry.meta.sensitive,
+      disabled: entry.meta.disabled,
+      source: entry.meta.source,
       summary: buildSummary(entry.content, entry.meta.summary),
     })),
   });
@@ -280,6 +383,7 @@ function scoreMemory(entry: MemoryEntry, query: string): number {
 
 export function searchMemories(workspacePath: string, query: string, limit = 5, includeSensitive = false): string {
   const entries = listMemoryEntries(workspacePath)
+    .filter((entry) => !entry.meta.disabled)
     .filter((entry) => includeSensitive || !entry.meta.sensitive)
     .map((entry) => ({ entry, score: scoreMemory(entry, query) }))
     .filter((item) => item.score > 0)
@@ -298,13 +402,15 @@ export function searchMemories(workspacePath: string, query: string, limit = 5, 
       scope: entry.meta.scope,
       updatedAt: entry.meta.updatedAt,
       sensitive: entry.meta.sensitive,
+      disabled: entry.meta.disabled,
+      source: entry.meta.source,
       summary: buildSummary(entry.content, entry.meta.summary),
     })),
   });
 }
 
 export function loadAllMemories(workspacePath: string): string {
-  const entries = listMemoryEntries(workspacePath).filter((entry) => !entry.meta.sensitive);
+  const entries = listMemoryEntries(workspacePath).filter((entry) => !entry.meta.sensitive && !entry.meta.disabled);
   if (entries.length === 0) return "";
 
   const parts = entries.map((entry) => {

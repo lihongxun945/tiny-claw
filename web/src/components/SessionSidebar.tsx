@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import type { Session } from "../types.js";
 import { fetchHistorySessions, deleteSession } from "../lib/api.js";
 
-type View = "chat" | "logs" | "config";
+type View = "chat" | "memory" | "logs" | "config";
 
 interface Props {
   activeSessionId: string | null;
@@ -101,6 +101,10 @@ export default function SessionSidebar({ activeSessionId, currentView, onSelectS
           className={`nav-btn ${currentView === "chat" ? "active" : ""}`}
           onClick={() => onViewChange("chat")}
         >对话</button>
+        <button
+          className={`nav-btn ${currentView === "memory" ? "active" : ""}`}
+          onClick={() => onViewChange("memory")}
+        >记忆</button>
         <button
           className={`nav-btn ${currentView === "logs" ? "active" : ""}`}
           onClick={() => onViewChange("logs")}

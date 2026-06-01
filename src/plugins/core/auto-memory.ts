@@ -293,6 +293,7 @@ ${truncateText(formatTurns(turnsToAnalyze), getMaxBatchChars(hookCtx))}`;
                 sensitive: false,
                 scope: candidate.scope || "global",
                 summary: candidate.summary,
+                source: "auto",
               });
               saved += 1;
             } else if (shouldKeepPending(hookCtx, candidate)) {

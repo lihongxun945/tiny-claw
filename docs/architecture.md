@@ -109,7 +109,8 @@ workspace/
 | sessionSummary | 会话滚动摘要配置 | enabled=true, turnThreshold=5, recentTurns=3 |
 | autoMemory | 自动记忆配置 | enabled=true, turnThreshold=10 |
 | debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
-| searchProvider | 搜索引擎 (searxng/brave/duckduckgo) | duckduckgo |
+| searchProvider | 搜索引擎 (ollama/searxng/brave/duckduckgo) | ollama |
+| ollamaApiKey | Ollama Web Search API key | - |
 | searxngUrl | SearXNG 实例地址 | - |
 | braveApiKey | Brave Search API key | - |
 | enabledPlugins | 启用的内置插件列表 | [] |
@@ -347,15 +348,16 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 
 ### 搜索引擎：多 Provider 架构
 
-web_search 工具支持三个搜索引擎，通过 `config.json` 的 `searchProvider` 字段切换：
+web_search 工具支持四个搜索引擎，通过 `config.json` 的 `searchProvider` 字段切换：
 
 | Provider | 说明 | 配置 |
 |----------|------|------|
-| duckduckgo（默认） | DuckDuckGo Instant Answer API，无需 key | 无额外配置 |
+| ollama（默认） | Ollama Web Search API，支持常规查询和网页摘要 | 需配置 `ollamaApiKey` |
+| duckduckgo | DuckDuckGo Instant Answer API，无需 key，适合简短英文实体查询 | 无额外配置 |
 | searxng | 自建 SearXNG 实例，返回完整搜索结果 | 需配置 `searxngUrl` |
 | brave | Brave Search API，结果质量好 | 需配置 `braveApiKey` |
 
-注意：DuckDuckGo provider 使用 Instant Answer API（返回摘要/定义），不是完整搜索结果列表，但无需配置即可使用。仅在使用 DuckDuckGo 时，系统提示词和工具描述会要求模型优先使用 1-3 个简短英文实体关键词；SearXNG 和 Brave 使用常规搜索查询即可。如需完整搜索结果，推荐使用 SearXNG 或 Brave。
+注意：DuckDuckGo provider 使用 Instant Answer API（返回摘要/定义），不是完整搜索结果列表，但无需配置即可使用。仅在使用 DuckDuckGo 时，系统提示词和工具描述会要求模型优先使用 1-3 个简短英文实体关键词；Ollama、SearXNG 和 Brave 使用常规搜索查询即可。如需完整搜索结果，优先推荐 Ollama。
 
 ### 内置工具
 
@@ -453,6 +455,8 @@ Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prom
 - **文件格式**：带 frontmatter 的 Markdown，名称语义化（如 `user-preferences.md`、`project-context.md`）
 - **安全**：文件名仅允许字母、数字、下划线、连字符，防止路径遍历
 - **敏感过滤**：`sensitive: true` 的记忆默认不进入 prompt，也不会被 `memory_list` / `memory_search` 返回，除非显式传入 `include_sensitive`
+- **启停控制**：`disabled: true` 的记忆保留在磁盘中，但不进入 system prompt，也不参与默认 `memory_list` / `memory_search`
+- **来源标记**：`source` 记录记忆来源，取值为 `auto`、`tool`、`manual`，便于 Web UI 审计和人工整理
 
 对比"自动提取"方案，工具驱动的优势是实现简单、透明可控，适合早期阶段。后续可在此基础上叠加自动提取（Phase 2）。
 
@@ -499,6 +503,12 @@ Gateway 是一个 HTTP 服务器，让外部客户端（Web UI、聊天机器人
 | GET | /sessions | 列出活跃会话 |
 | GET | /sessions/:id/messages | 获取会话消息历史 |
 | DELETE | /sessions/:id | 销毁会话 |
+| GET | /memory | 列出长期记忆 |
+| GET | /memory/:name | 读取单条长期记忆 |
+| PUT | /memory/:name | 更新单条长期记忆 |
+| POST | /memory/:name/enable | 启用单条长期记忆 |
+| POST | /memory/:name/disable | 禁用单条长期记忆 |
+| DELETE | /memory/:name | 删除单条长期记忆 |
 
 **POST /chat 请求：**
 ```json
@@ -542,10 +552,13 @@ web/
         ├── MessageBubble.tsx # 单条消息（ReactMarkdown）
         ├── ToolCallBlock.tsx # 工具调用折叠（details/summary）
         ├── ChatInput.tsx     # 输入框 + 发送按钮
+        ├── MemoryManager.tsx  # 长期记忆管理面板
         └── SessionSidebar.tsx # 会话列表 + 新建
 ```
 
 **SSE 消费：** POST /chat 返回 SSE 流，无法使用 `EventSource`（仅支持 GET）。使用 `fetch` + `ReadableStream` 手动解析 SSE 帧，实现为 async generator。
+
+**记忆管理：** Web UI 提供"记忆"页签，支持搜索、刷新、查看、编辑、保存、删除、启用/禁用长期记忆。面板直接调用 `/memory` API，不通过 agent tool，以避免管理操作被模型行为影响。
 
 **开发模式：** `npm run web:dev` 启动 Vite dev server（:5173），通过代理转发 API 请求到 Gateway（:3000）。
 

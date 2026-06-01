@@ -30,7 +30,8 @@ const FIELD_GROUPS: Array<{ title: string; fields: FieldDef[] }> = [
   {
     title: "搜索",
     fields: [
-      { key: "searchProvider", label: "搜索引擎", type: "select", options: ["duckduckgo", "searxng", "brave"] },
+      { key: "searchProvider", label: "搜索引擎", type: "select", options: ["ollama", "duckduckgo", "searxng", "brave"] },
+      { key: "ollamaApiKey", label: "Ollama API Key", type: "text" },
       { key: "searxngUrl", label: "SearXNG URL", type: "text" },
       { key: "braveApiKey", label: "Brave API Key", type: "text" },
     ],

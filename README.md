@@ -117,6 +117,9 @@ npm run gateway -- --port 3000
 | POST | /chat | 发送消息（SSE 流式响应） |
 | GET | /sessions | 列出活跃会话 |
 | DELETE | /sessions/:id | 销毁会话 |
+| GET | /memory | 列出长期记忆 |
+| PUT | /memory/:name | 更新长期记忆 |
+| DELETE | /memory/:name | 删除长期记忆 |
 
 POST /chat 请求示例：
 
@@ -220,7 +223,7 @@ tiny-claw 采用插件化架构，所有业务逻辑由插件实现。框架通�
 
 
 ## 难点记录
-1. 搜索问题：DuckDuckGo 虽然免费，但 Instant Answer API 本质不是搜索引擎，只能搜短英文实体关键词。Brave Search 是搜索引擎，但需绑定银行卡。SearXNG 需要自建服务器。当前默认 DuckDuckGo + 系统提示词约束模型使用简短关键词搜索。
+1. 搜索问题：默认使用 Ollama Web Search API，支持常规查询和网页摘要，需配置 `ollamaApiKey`。DuckDuckGo 保留为免配置兜底，但 Instant Answer API 本质不是完整搜索引擎，只适合简短英文实体关键词。Brave Search 需要 API key，SearXNG 需要自建服务器。
 2. 插件系统：官方 `@larksuite/openclaw-lark` 依赖 openclaw/plugin-sdk 的 18 个子模块，无法直接使用。当前实现了简化版插件系统和飞书插件（WebSocket 长连接），后续逐步兼容 openclaw 插件生态。
 
 ## 与 Open-Claw 的对比

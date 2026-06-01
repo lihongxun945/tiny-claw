@@ -24,7 +24,7 @@ function buildSearchGuidance(provider: string): string {
   return "使用 web_search 时，根据用户问题构造清晰、具体的搜索 query；当前搜索 provider 支持常规搜索查询，不要求压缩成 1-3 个英文实体关键词。搜索结果由你负责总结回答。";
 }
 
-export function buildSystemPrompt(workspacePath: string, tools: ToolDefinition[], searchProvider = "duckduckgo"): string {
+export function buildSystemPrompt(workspacePath: string, tools: ToolDefinition[], searchProvider = "ollama"): string {
   const template = loadTemplate(workspacePath);
 
   const identity = loadIdentity(workspacePath);

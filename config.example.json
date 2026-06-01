@@ -28,7 +28,8 @@
     "modelIO": true,
     "rawStreamEvents": true
   },
-  "searchProvider": "duckduckgo",
+  "searchProvider": "ollama",
+  "ollamaApiKey": "YOUR_OLLAMA_API_KEY",
   "searxngUrl": "http://localhost:8080",
   "braveApiKey": "YOUR_BRAVE_API_KEY",
   "subAgent": {

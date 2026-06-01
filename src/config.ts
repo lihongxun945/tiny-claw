@@ -9,7 +9,7 @@ const DEFAULTS: Partial<Config> = {
   contextCompressionThreshold: 0.7,
   historyWindowSize: 5,
   maxAgentIterations: 0,
-  searchProvider: "duckduckgo",
+  searchProvider: "ollama",
 };
 
 export function loadConfig(workspacePath: string): Config {
@@ -37,6 +37,7 @@ export function loadConfig(workspacePath: string): Config {
     historyWindowSize: (raw.historyWindowSize as number) ?? DEFAULTS.historyWindowSize!,
     maxAgentIterations: (raw.maxAgentIterations as number) ?? DEFAULTS.maxAgentIterations!,
     searchProvider: (raw.searchProvider as Config["searchProvider"]) ?? DEFAULTS.searchProvider!,
+    ollamaApiKey: raw.ollamaApiKey as string | undefined,
     searxngUrl: raw.searxngUrl as string | undefined,
     braveApiKey: raw.braveApiKey as string | undefined,
     enabledPlugins: raw.enabledPlugins as string[] | undefined,

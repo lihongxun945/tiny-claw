@@ -16,17 +16,48 @@ const SEARCH_UA =
 const SEARCH_TIMEOUT = 3_000;
 
 /** 带超时和 User-Agent 的 fetch 封装 */
-async function searchFetch(url: string, headers?: Record<string, string>): Promise<Response> {
+async function searchFetch(url: string, options: { headers?: Record<string, string>; method?: string; body?: string } = {}): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEARCH_TIMEOUT);
   try {
     const resp = await fetch(url, {
-      headers: { "user-agent": SEARCH_UA, ...headers },
+      method: options.method,
+      headers: { "user-agent": SEARCH_UA, ...options.headers },
+      body: options.body,
       signal: controller.signal,
     });
     return resp;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+// === Ollama Web Search ===
+
+class OllamaProvider implements SearchProvider {
+  name = "ollama";
+  constructor(private apiKey: string) {}
+
+  async search(query: string, count: number): Promise<SearchResult[]> {
+    const resp = await searchFetch("https://ollama.com/api/web_search", {
+      method: "POST",
+      headers: {
+        "authorization": `Bearer ${this.apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ query, max_results: count }),
+    });
+    if (!resp.ok) {
+      throw new Error(`Ollama Web Search 请求失败 (${resp.status})`);
+    }
+    const data = (await resp.json()) as {
+      results?: Array<{ title?: string; url?: string; content?: string }>;
+    };
+    return (data.results ?? []).slice(0, count).map((r) => ({
+      title: r.title ?? "",
+      url: r.url ?? "",
+      snippet: r.content ?? "",
+    }));
   }
 }
 
@@ -37,9 +68,7 @@ class SearXNGProvider implements SearchProvider {
   constructor(private url: string) {}
 
   async search(query: string, count: number): Promise<SearchResult[]> {
-    const resp = await searchFetch(
-      `${this.url}/search?q=${encodeURIComponent(query)}&format=json`,
-    );
+    const resp = await searchFetch(`${this.url}/search?q=${encodeURIComponent(query)}&format=json`);
     if (!resp.ok) {
       throw new Error(`SearXNG 请求失败 (${resp.status})`);
     }
@@ -63,7 +92,7 @@ class BraveProvider implements SearchProvider {
   async search(query: string, count: number): Promise<SearchResult[]> {
     const resp = await searchFetch(
       `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`,
-      { "X-Subscription-Token": this.apiKey },
+      { headers: { "X-Subscription-Token": this.apiKey } },
     );
     if (!resp.ok) {
       throw new Error(`Brave Search 请求失败 (${resp.status})`);
@@ -149,6 +178,12 @@ class DuckDuckGoProvider implements SearchProvider {
 
 function createProvider(config: Config): SearchProvider {
   switch (config.searchProvider) {
+    case "ollama": {
+      if (!config.ollamaApiKey) {
+        throw new Error("使用 Ollama Web Search 需要配置 ollamaApiKey");
+      }
+      return new OllamaProvider(config.ollamaApiKey);
+    }
     case "brave": {
       if (!config.braveApiKey) {
         throw new Error("使用 Brave Search 需要配置 braveApiKey");
@@ -167,8 +202,10 @@ function createProvider(config: Config): SearchProvider {
   }
 }
 
-export function createWebSearchTool(config: Config): Tool {
-  const description = config.searchProvider === "duckduckgo"
+export function createWebSearchTool(configOrLoader: Config | (() => Config)): Tool {
+  const getConfig = typeof configOrLoader === "function" ? configOrLoader : () => configOrLoader;
+  const initialConfig = getConfig();
+  const description = initialConfig.searchProvider === "duckduckgo"
     ? "搜索互联网获取信息。当前使用 DuckDuckGo Instant Answer，query 适合输入1-3个简短英文实体关键词（如 'JavaScript'、'iPhone 17'），不要输入完整句子或长查询。搜索结果由你负责总结。"
     : "搜索互联网获取信息。query 可以使用清晰、具体的常规搜索查询；搜索结果由你负责总结。";
 
@@ -197,7 +234,7 @@ export function createWebSearchTool(config: Config): Tool {
 
       let provider: SearchProvider;
       try {
-        provider = createProvider(config);
+        provider = createProvider(getConfig());
       } catch (err) {
         return JSON.stringify({
           error: err instanceof Error ? err.message : String(err),

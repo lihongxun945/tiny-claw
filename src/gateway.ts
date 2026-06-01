@@ -8,6 +8,7 @@ import { loadConfig } from "./config.js";
 import { AgentSession, type AgentEvent } from "./agent.js";
 import { PluginManager } from "./plugin-manager.js";
 import { appendLog } from "./workspace/logger.js";
+import { deleteMemory, getMemoryRecord, listMemoryRecords, setMemoryDisabled, updateMemoryRecord, type MemorySource } from "./tools/memory.js";
 import type { RegisteredRoute, RouteContext } from "./plugins/types.js";
 
 const SESSION_TIMEOUT = 30 * 60 * 1000;
@@ -259,6 +260,49 @@ function sendJSON(res: ServerResponse, status: number, data: unknown): void {
   res.end(body);
 }
 
+const CONFIG_SECRET_KEY = /(key|secret|token|password)$/i;
+
+function maskConfigSecrets(value: unknown, key = ""): unknown {
+  if (typeof value === "string") {
+    return CONFIG_SECRET_KEY.test(key) && value ? `${value.slice(0, 4)}***` : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => maskConfigSecrets(item));
+  }
+  if (value && typeof value === "object") {
+    const masked: Record<string, unknown> = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      masked[childKey] = maskConfigSecrets(childValue, childKey);
+    }
+    return masked;
+  }
+  return value;
+}
+
+function restoreMaskedSecrets(value: unknown, existing: unknown, key = ""): unknown {
+  if (typeof value === "string") {
+    if (CONFIG_SECRET_KEY.test(key) && value.endsWith("***")) return existing;
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const existingItems = Array.isArray(existing) ? existing : [];
+    return value.map((item, index) => restoreMaskedSecrets(item, existingItems[index]));
+  }
+  if (value && typeof value === "object") {
+    const existingRecord = existing && typeof existing === "object" ? existing as Record<string, unknown> : {};
+    const restored: Record<string, unknown> = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      restored[childKey] = restoreMaskedSecrets(childValue, existingRecord[childKey], childKey);
+    }
+    return restored;
+  }
+  return value;
+}
+
+function isMemorySource(value: unknown): value is MemorySource {
+  return value === "manual" || value === "tool" || value === "auto";
+}
+
 function sendSSEHeader(res: ServerResponse): void {
   res.writeHead(200, {
     "content-type": "text/event-stream",
@@ -346,7 +390,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
         "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
         "access-control-allow-headers": "content-type",
       });
       res.end();
@@ -430,6 +474,78 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       return;
     }
 
+    // GET /memory — 长期记忆列表
+    if (req.method === "GET" && url.pathname === "/memory") {
+      try {
+        const includeSensitive = url.searchParams.get("include_sensitive") === "true";
+        const includeDisabled = url.searchParams.get("include_disabled") !== "false";
+        const memories = listMemoryRecords(workspacePath, { includeSensitive, includeDisabled });
+        sendJSON(res, 200, { memories });
+      } catch (err) {
+        sendJSON(res, 500, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
+    // GET /memory/:name — 读取单条长期记忆
+    if (req.method === "GET" && url.pathname.startsWith("/memory/")) {
+      const name = decodeURIComponent(url.pathname.slice("/memory/".length));
+      const memory = getMemoryRecord(workspacePath, name, true);
+      if (!memory) {
+        sendJSON(res, 404, { error: "记忆不存在" });
+        return;
+      }
+      sendJSON(res, 200, { memory });
+      return;
+    }
+
+    // PUT /memory/:name — 更新单条长期记忆
+    if (req.method === "PUT" && url.pathname.startsWith("/memory/")) {
+      try {
+        const name = decodeURIComponent(url.pathname.slice("/memory/".length));
+        const body = JSON.parse(await readBody(req));
+        const memory = updateMemoryRecord(workspacePath, name, {
+          content: typeof body.content === "string" ? body.content : undefined,
+          summary: typeof body.summary === "string" ? body.summary : undefined,
+          tags: Array.isArray(body.tags) ? body.tags.map(String) : undefined,
+          sensitive: typeof body.sensitive === "boolean" ? body.sensitive : undefined,
+          disabled: typeof body.disabled === "boolean" ? body.disabled : undefined,
+          scope: typeof body.scope === "string" ? body.scope : undefined,
+          source: isMemorySource(body.source) ? body.source : undefined,
+        });
+        sendJSON(res, 200, { memory });
+      } catch (err) {
+        sendJSON(res, 500, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
+    // POST /memory/:name/disable 或 /memory/:name/enable
+    if (req.method === "POST" && url.pathname.startsWith("/memory/") && (url.pathname.endsWith("/disable") || url.pathname.endsWith("/enable"))) {
+      try {
+        const disabled = url.pathname.endsWith("/disable");
+        const suffix = disabled ? "/disable" : "/enable";
+        const name = decodeURIComponent(url.pathname.slice("/memory/".length, -suffix.length));
+        const memory = setMemoryDisabled(workspacePath, name, disabled);
+        sendJSON(res, 200, { memory });
+      } catch (err) {
+        sendJSON(res, 500, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
+    // DELETE /memory/:name — 删除单条长期记忆
+    if (req.method === "DELETE" && url.pathname.startsWith("/memory/")) {
+      try {
+        const name = decodeURIComponent(url.pathname.slice("/memory/".length));
+        const result = deleteMemory(workspacePath, name);
+        sendJSON(res, result.startsWith("记忆不存在") ? 404 : 200, { deleted: !result.startsWith("记忆不存在"), message: result });
+      } catch (err) {
+        sendJSON(res, 500, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
     // DELETE /sessions/:id
     if (req.method === "DELETE" && url.pathname.startsWith("/sessions/")) {
       const id = decodeURIComponent(url.pathname.slice("/sessions/".length));
@@ -500,8 +616,8 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         return;
       }
       const raw = JSON.parse(readFileSync(configPath, "utf-8"));
-      if (raw.apiKey) raw.apiKey = raw.apiKey.slice(0, 4) + "***";
-      sendJSON(res, 200, { config: raw });
+      raw.searchProvider ??= "ollama";
+      sendJSON(res, 200, { config: maskConfigSecrets(raw) });
       return;
     }
 
@@ -510,12 +626,10 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       try {
         const configPath = resolve(workspacePath, "config.json");
         const existing = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf-8")) : {};
-        const updates = JSON.parse(await readBody(req));
-        delete updates.apiKey;
+        const updates = restoreMaskedSecrets(JSON.parse(await readBody(req)), existing) as Record<string, unknown>;
         const merged = { ...existing, ...updates };
         writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n", "utf-8");
-        merged.apiKey = (merged.apiKey ?? "").slice(0, 4) + "***";
-        sendJSON(res, 200, { config: merged });
+        sendJSON(res, 200, { config: maskConfigSecrets(merged) });
       } catch (err) {
         sendJSON(res, 500, { error: `更新配置失败: ${err instanceof Error ? err.message : String(err)}` });
       }
@@ -598,7 +712,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const url = new URL(req.url ?? "/", `http://localhost:${webPort}`);
 
       // 代理 API 请求到 gateway
-      if (url.pathname === "/chat" || url.pathname === "/sessions" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|logs|history\/sessions)\/[^/]+/)) {
+      if (url.pathname === "/chat" || url.pathname === "/sessions" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|logs|history\/sessions|memory)\/[^/]+/)) {
         try {
           const proxyRes = await fetch(`http://localhost:${port}${url.pathname}${url.search}`, {
             method: req.method,

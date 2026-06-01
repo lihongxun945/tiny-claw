@@ -11,6 +11,7 @@ export default defineConfig({
       "/sessions": `http://localhost:${gatewayPort}`,
       "/logs": `http://localhost:${gatewayPort}`,
       "/config": `http://localhost:${gatewayPort}`,
+      "/memory": `http://localhost:${gatewayPort}`,
       "/history": `http://localhost:${gatewayPort}`,
     },
   },

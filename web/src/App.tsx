@@ -6,8 +6,9 @@ import ChatInput from "./components/ChatInput.js";
 import SessionSidebar from "./components/SessionSidebar.js";
 import LogViewer from "./components/LogViewer.js";
 import ConfigEditor from "./components/ConfigEditor.js";
+import MemoryManager from "./components/MemoryManager.js";
 
-type View = "chat" | "logs" | "config";
+type View = "chat" | "memory" | "logs" | "config";
 
 function readHashSession(): string | null {
   const hash = location.hash;
@@ -193,6 +194,7 @@ export default function App() {
             <ChatInput onSend={handleSend} disabled={isStreaming} />
           </>
         )}
+        {view === "memory" && <MemoryManager />}
         {view === "logs" && <LogViewer />}
         {view === "config" && <ConfigEditor />}
       </div>

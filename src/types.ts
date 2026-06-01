@@ -38,7 +38,8 @@ export interface Config {
   contextCompressionThreshold: number;
   historyWindowSize: number;
   maxAgentIterations: number;
-  searchProvider: "searxng" | "brave" | "duckduckgo";
+  searchProvider: "ollama" | "searxng" | "brave" | "duckduckgo";
+  ollamaApiKey?: string;
   searxngUrl?: string;
   braveApiKey?: string;
   enabledPlugins?: string[];
