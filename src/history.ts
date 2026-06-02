@@ -41,7 +41,7 @@ export class MessageHistory {
     const currentTurn = this.messages.slice(this.currentTurnStart);
     const previousMessages = this.messages.slice(0, this.currentTurnStart);
     const maxPrevious = windowSize * 2;
-    let trimmed = previousMessages.slice(-maxPrevious);
+    let trimmed = maxPrevious > 0 ? previousMessages.slice(-maxPrevious) : [];
 
     if (trimmed.length > 0 && trimmed[0].role === "assistant") {
       trimmed = trimmed.slice(1);

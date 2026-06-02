@@ -8,15 +8,25 @@
     "start": "tsx src/index.ts",
     "gateway": "tsx src/gateway.ts",
     "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:all": "npm run typecheck && npm run test:coverage && npm run web:build && npm run test:e2e",
     "web:dev": "cd web && npm run dev",
     "web:build": "cd web && npm install && npm run build"
   },
   "author": "lihongxun",
   "license": "ISC",
   "devDependencies": {
+    "@playwright/test": "^1.56.1",
     "@types/node": "^25.9.0",
+    "@vitest/coverage-v8": "^4.1.8",
     "tsx": "^4.22.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vite": "^6.4.3",
+    "vitest": "^4.1.8"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.65.0"

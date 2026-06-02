@@ -91,13 +91,19 @@ export class AgentSession {
     return this.history.getRecentMessages(Infinity);
   }
 
-  constructor(id: string, workspacePath: string, pluginManager: PluginManager, configOverrides: Partial<Config> = {}) {
+  constructor(
+    id: string,
+    workspacePath: string,
+    pluginManager: PluginManager,
+    configOverrides: Partial<Config> = {},
+    client?: ModelClient,
+  ) {
     this.id = id;
     this.workspacePath = workspacePath;
     ensureWorkspace(workspacePath);
 
     this.config = { ...loadConfig(workspacePath), ...configOverrides };
-    this.client = createModelClient(this.config);
+    this.client = client ?? createModelClient(this.config);
     this.history = new MessageHistory(loadPersistedSessionMessages(workspacePath, id));
     this.lastActivity = Date.now();
 

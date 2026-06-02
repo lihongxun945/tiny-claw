@@ -689,6 +689,42 @@ const session = new AgentSession(id, workspacePath, pm);
 - 支持 `onReady`/`onError`/`onReconnecting`/`onReconnected` 生命周期回调
 - 插件销毁时自动关闭 WebSocket 连接
 
+## 自动化测试
+
+项目使用 Vitest + V8 coverage 建立自动化测试底座。测试统一使用临时 workspace，不读写真实 `workspace/`，默认不依赖模型服务、Ollama、飞书或外网。
+
+```bash
+npm test              # 执行测试
+npm run test:watch    # 监听模式
+npm run test:coverage # 执行测试并检查覆盖率
+npm run test:e2e      # 执行 Playwright WebUI E2E
+npm run test:all      # 类型检查 + coverage + WebUI build + E2E
+```
+
+当前覆盖范围：
+
+- `MessageHistory`：历史窗口、当前轮保护、压缩替换
+- 长期记忆：CRUD、敏感过滤、禁用过滤、旧文件兼容、工具包装器
+- 配置加载：默认值、搜索配置、必填字段校验
+- 搜索 provider：Ollama、DuckDuckGo、Brave、SearXNG、动态 key 刷新
+- `ToolRegistry`：注册、定义导出、同名覆盖
+- `PluginManager`：生命周期管道、阻断、结果修改、多 session 隔离、工具权限过滤
+- 插件加载器：外部插件加载、非法插件拒绝、销毁容错
+- `AgentSession`：直接回复、工具回环、未知工具、工具异常、模型异常、最大迭代次数
+- Gateway HTTP API：配置脱敏、Memory CRUD、会话过滤和删除、WebUI 静态代理
+- WebUI E2E：Markdown 表格、记忆编辑和启停、API 错误空态
+
+覆盖率门槛：
+
+| 指标 | 最低要求 |
+|------|----------|
+| statements | 75% |
+| branches | 65% |
+| functions | 75% |
+| lines | 75% |
+
+`.github/workflows/test.yml` 在 push 和 pull request 时安装 Chromium 并执行 `npm run test:all`。
+
 ## 待实现
 
 - **安全沙箱**：工具执行权限控制
