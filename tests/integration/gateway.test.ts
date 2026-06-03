@@ -65,6 +65,19 @@ describe("Gateway HTTP API", () => {
     });
   });
 
+  it("rejects invalid config updates without writing them to disk", async () => {
+    const configPath = resolve(workspacePath, "config.json");
+    const before = readFileSync(configPath, "utf-8");
+    const result = await json(`${gateway.apiUrl}/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ maxTokens: 0 }),
+    });
+    expect(result.status).toBe(400);
+    expect(result.body.error).toContain("配置字段 maxTokens 超出允许范围");
+    expect(readFileSync(configPath, "utf-8")).toBe(before);
+  });
+
   it("supports memory CRUD and enable/disable operations", async () => {
     writeFileSync(resolve(workspacePath, "memory", "project.md"), [
       "---",
@@ -128,6 +141,39 @@ describe("Gateway HTTP API", () => {
     expect(readFileSync(historyPath, "utf-8")).toContain("{malformed");
   });
 
+  it("restores persisted tool results after a page refresh", async () => {
+    const historyPath = resolve(workspacePath, "history", "2026-06-02.jsonl");
+    writeFileSync(historyPath, [
+      JSON.stringify({ role: "user", content: "run pwd", _session: "tool-history", _timestamp: 1 }),
+      JSON.stringify({
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "pwd" } }],
+        _session: "tool-history",
+        _timestamp: 2,
+      }),
+      JSON.stringify({
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call-1", content: "{\"error\":\"bash 执行已禁用\"}" }],
+        _session: "tool-history",
+        _timestamp: 3,
+      }),
+      "",
+    ].join("\n"), "utf-8");
+
+    expect((await json(`${gateway.apiUrl}/history/sessions/tool-history/messages`)).body.messages).toEqual([
+      expect.objectContaining({ role: "user", text: "run pwd" }),
+      expect.objectContaining({
+        role: "assistant",
+        toolCalls: [{
+          id: "call-1",
+          name: "bash",
+          input: { command: "pwd" },
+          result: "{\"error\":\"bash 执行已禁用\"}",
+        }],
+      }),
+    ]);
+  });
+
   it("serves WebUI static files and proxies memory API", async () => {
     const page = await fetch(`${gateway.webUrl}/`);
     expect(page.status).toBe(200);
@@ -135,5 +181,45 @@ describe("Gateway HTTP API", () => {
 
     const proxied = await json(`${gateway.webUrl}/memory?include_sensitive=true&include_disabled=true`);
     expect(proxied).toEqual({ status: 200, body: { memories: [] } });
+  });
+
+  it("exposes approval API and proxies it through the WebUI server", async () => {
+    expect(await json(`${gateway.apiUrl}/approvals`)).toEqual({ status: 200, body: { approvals: [] } });
+    expect(await json(`${gateway.webUrl}/approvals`)).toEqual({ status: 200, body: { approvals: [] } });
+    expect((await json(`${gateway.apiUrl}/approvals/missing/approve`, { method: "POST" })).status).toBe(404);
+    expect((await json(`${gateway.apiUrl}/approvals/missing/reject`, { method: "POST" })).status).toBe(404);
+  });
+
+  it("returns not found when cancelling an unknown session", async () => {
+    expect((await json(`${gateway.apiUrl}/sessions/missing/cancel`, { method: "POST" })).status).toBe(404);
+  });
+});
+
+describe("Gateway token authentication", () => {
+  let workspacePath: string;
+  let gateway: TestGateway;
+
+  beforeEach(async () => {
+    workspacePath = createTempWorkspace({
+      security: {
+        gateway: {
+          token: "gateway-secret",
+        },
+      },
+    });
+    gateway = await startTestGateway(workspacePath, "gateway-secret");
+  });
+
+  afterEach(async () => {
+    await gateway.stop();
+    removeTempWorkspace(workspacePath);
+  });
+
+  it("rejects unauthenticated API requests and keeps the local WebUI proxy working", async () => {
+    expect((await json(`${gateway.apiUrl}/sessions`)).status).toBe(401);
+    expect((await json(`${gateway.apiUrl}/sessions`, {
+      headers: { authorization: "Bearer gateway-secret" },
+    })).status).toBe(200);
+    expect((await json(`${gateway.webUrl}/sessions`)).status).toBe(200);
   });
 });

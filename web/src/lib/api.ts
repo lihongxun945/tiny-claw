@@ -1,4 +1,4 @@
-import type { Session, Message, MemoryRecord } from "../types.js";
+import type { Session, Message, MemoryRecord, ApprovalRequest } from "../types.js";
 
 export { streamChat } from "./sse-client.js";
 
@@ -10,6 +10,14 @@ export async function fetchSessions(): Promise<Session[]> {
 
 export async function deleteSession(id: string): Promise<void> {
   await fetch(`/sessions/${id}`, { method: "DELETE" });
+}
+
+export async function cancelSession(id: string): Promise<void> {
+  const res = await fetch(`/sessions/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+  if (!res.ok && res.status !== 409) {
+    const data = await res.json();
+    throw new Error(data.error ?? `HTTP ${res.status}`);
+  }
 }
 
 export async function fetchMessages(id: string): Promise<Message[]> {
@@ -52,7 +60,7 @@ export async function updateConfig(config: Record<string, unknown>): Promise<Rec
     headers: { "content-type": "application/json" },
     body: JSON.stringify(config),
   });
-  const data = await res.json();
+  const data = await parseJSON<{ config: Record<string, unknown> }>(res);
   return data.config ?? {};
 }
 
@@ -96,5 +104,22 @@ export async function setMemoryEnabled(name: string, enabled: boolean): Promise<
 
 export async function deleteMemory(name: string): Promise<void> {
   const res = await fetch(`/memory/${encodeURIComponent(name)}`, { method: "DELETE" });
+  await parseJSON(res);
+}
+
+export async function fetchApprovals(): Promise<ApprovalRequest[]> {
+  const res = await fetch("/approvals");
+  const data = await parseJSON<{ approvals: ApprovalRequest[] }>(res);
+  return data.approvals ?? [];
+}
+
+export async function approveCommand(id: string): Promise<ApprovalRequest> {
+  const res = await fetch(`/approvals/${encodeURIComponent(id)}/approve`, { method: "POST" });
+  const data = await parseJSON<{ approval: ApprovalRequest }>(res);
+  return data.approval;
+}
+
+export async function rejectCommand(id: string): Promise<void> {
+  const res = await fetch(`/approvals/${encodeURIComponent(id)}/reject`, { method: "POST" });
   await parseJSON(res);
 }

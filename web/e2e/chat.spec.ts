@@ -29,3 +29,23 @@ test("renders markdown tables from persisted messages", async ({ page }) => {
   await expect(table.getByRole("cell", { name: "名称" })).toBeVisible();
   await expect(table.getByRole("cell", { name: "web_search" })).toBeVisible();
 });
+
+test("shows a stop button while streaming and cancels the request", async ({ page }) => {
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({ json: { sessions: [] } });
+  });
+  await page.route("**/chat", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await route.fulfill({
+      contentType: "text/event-stream",
+      body: 'event: done\ndata: {"text":"","session_id":"session-1"}\n\n',
+    }).catch(() => {});
+  });
+
+  await page.goto("/");
+  await page.getByRole("textbox").fill("long task");
+  await page.getByRole("button", { name: "↑" }).click();
+  await expect(page.getByRole("button", { name: "停止" })).toBeVisible();
+  await page.getByRole("button", { name: "停止" }).click();
+  await expect(page.getByRole("button", { name: "停止" })).not.toBeVisible();
+});

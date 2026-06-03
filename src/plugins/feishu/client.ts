@@ -45,9 +45,10 @@ export class FeishuClient {
     return this.tokenCache.token;
   }
 
-  async replyMessage(messageId: string, text: string): Promise<void> {
+  async replyMessage(messageId: string, text: string): Promise<string[]> {
     const token = await this.getTenantToken();
     const chunks = splitMessage(text);
+    const messageIds: string[] = [];
 
     for (const chunk of chunks) {
       const card = buildMarkdownCard(chunk);
@@ -66,13 +67,17 @@ export class FeishuClient {
       if (!res.ok) {
         const body = await res.text();
         console.error(`飞书回复消息失败: ${res.status} ${body}`);
+        continue;
       }
+      messageIds.push(extractMessageId(await res.json()));
     }
+    return messageIds.filter(Boolean);
   }
 
-  async sendMessage(chatId: string, text: string): Promise<void> {
+  async sendMessage(chatId: string, text: string): Promise<string[]> {
     const token = await this.getTenantToken();
     const chunks = splitMessage(text);
+    const messageIds: string[] = [];
 
     for (const chunk of chunks) {
       const card = buildMarkdownCard(chunk);
@@ -92,7 +97,30 @@ export class FeishuClient {
       if (!res.ok) {
         const body = await res.text();
         console.error(`飞书发送消息失败: ${res.status} ${body}`);
+        continue;
       }
+      messageIds.push(extractMessageId(await res.json()));
+    }
+    return messageIds.filter(Boolean);
+  }
+
+  async updateMessageCard(messageId: string, text: string): Promise<void> {
+    const token = await this.getTenantToken();
+    const card = buildMarkdownCard(splitMessage(text)[0] ?? text);
+    const res = await fetch(`${FEISHU_BASE}/im/v1/messages/${messageId}`, {
+      method: "PATCH",
+      headers: {
+        "authorization": `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        content: JSON.stringify(card),
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`飞书更新消息卡片失败: ${res.status} ${body}`);
     }
   }
 
@@ -167,7 +195,19 @@ function buildMarkdownCard(markdown: string): Record<string, unknown> {
   }
   flushText();
 
-  return { elements };
+  return { config: { update_multi: true }, elements };
+}
+
+function extractMessageId(response: unknown): string {
+  const data = response && typeof response === "object" ? (response as Record<string, unknown>).data : undefined;
+  if (!data || typeof data !== "object") return "";
+  const record = data as Record<string, unknown>;
+  if (typeof record.message_id === "string") return record.message_id;
+  const message = record.message;
+  if (message && typeof message === "object" && typeof (message as Record<string, unknown>).message_id === "string") {
+    return (message as Record<string, unknown>).message_id as string;
+  }
+  return "";
 }
 
 function isTableRow(line: string): boolean {
@@ -200,7 +240,7 @@ function createRowElement(cells: string[], isHeader: boolean): Record<string, un
   };
 }
 
-function splitMessage(text: string): string[] {
+export function splitMessage(text: string): string[] {
   if (text.length <= MESSAGE_CHAR_LIMIT) return [text];
 
   const chunks: string[] = [];

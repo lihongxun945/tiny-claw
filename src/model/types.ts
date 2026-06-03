@@ -1,12 +1,13 @@
 import type { ChatResponse, Message, ToolDefinition } from "../types.js";
 
 export interface ModelClient {
-  complete(messages: Message[], systemPrompt?: string): Promise<string>;
+  complete(messages: Message[], systemPrompt?: string, signal?: AbortSignal): Promise<string>;
   chat(
     messages: Message[],
     onDelta: (text: string) => void,
     tools?: ToolDefinition[],
     systemPrompt?: string,
+    signal?: AbortSignal,
   ): Promise<ChatResponse>;
 }
 

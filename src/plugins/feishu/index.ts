@@ -2,6 +2,7 @@ import { WSClient, EventDispatcher } from "@larksuiteoapi/node-sdk";
 import type { Plugin, PluginContext } from "../types.js";
 import { FeishuClient } from "./client.js";
 import { processFeishuMessage } from "./handler.js";
+import type { AgentActor } from "../../types.js";
 
 interface FeishuConfig {
   appId?: string;
@@ -43,11 +44,14 @@ const feishuPlugin: Plugin = {
 
         const chatId = data.message.chat_id;
         const messageId = data.message.message_id;
+        const requesterId = data.sender.sender_id?.open_id;
+        if (!requesterId) return;
         const session = ctx.getOrCreateSession(chatId, "feishu");
+        const actor: AgentActor = { channel: "feishu", requesterId, chatId };
 
         feishuClient.addReaction(messageId, "THINKING").catch(() => {});
 
-        processFeishuMessage(session, userText, messageId, feishuClient).then(() => {
+        processFeishuMessage(session, userText, messageId, feishuClient, ctx.workspacePath, actor).then(() => {
           feishuClient.deleteReaction(messageId, "THINKING").catch(() => {});
           feishuClient.addReaction(messageId, "DONE").catch(() => {});
         }).catch((err) => {

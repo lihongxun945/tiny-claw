@@ -6,6 +6,24 @@ interface FieldDef {
   label: string;
   type: "text" | "number" | "select" | "readonly";
   options?: string[];
+  defaultValue?: unknown;
+}
+
+function getValue(config: Record<string, unknown>, path: string): unknown {
+  return path.split(".").reduce<unknown>((current, key) => {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    return (current as Record<string, unknown>)[key];
+  }, config);
+}
+
+function setValue(config: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
+  const [key, ...rest] = path.split(".");
+  if (rest.length === 0) return { ...config, [key]: value };
+  const current = config[key];
+  const nested = current && typeof current === "object" && !Array.isArray(current)
+    ? current as Record<string, unknown>
+    : {};
+  return { ...config, [key]: setValue(nested, rest.join("."), value) };
 }
 
 const FIELD_GROUPS: Array<{ title: string; fields: FieldDef[] }> = [
@@ -25,6 +43,12 @@ const FIELD_GROUPS: Array<{ title: string; fields: FieldDef[] }> = [
       { key: "contextCompressionThreshold", label: "压缩阈值", type: "number" },
       { key: "historyWindowSize", label: "历史窗口", type: "number" },
       { key: "maxAgentIterations", label: "最大迭代 (0=不限)", type: "number" },
+    ],
+  },
+  {
+    title: "权限",
+    fields: [
+      { key: "security.bash.mode", label: "Shell 权限模式", type: "select", options: ["deny", "ask", "allow"], defaultValue: "deny" },
     ],
   },
   {
@@ -59,7 +83,7 @@ export default function ConfigEditor() {
   }, []);
 
   const handleChange = (key: string, value: unknown) => {
-    setEdited((prev) => ({ ...prev, [key]: value }));
+    setEdited((prev) => setValue(prev, key, value));
   };
 
   const handleSave = async () => {
@@ -92,21 +116,21 @@ export default function ConfigEditor() {
         <div key={group.title} className="config-group">
           <h3>{group.title}</h3>
           {group.fields.map((field) => {
-            const val = edited[field.key];
+            const val = getValue(edited, field.key) ?? field.defaultValue;
             const displayVal = Array.isArray(val) ? val.join(", ") : String(val ?? "");
             if (field.type === "readonly") {
               return (
                 <div key={field.key} className="config-field">
-                  <label>{field.label}</label>
-                  <input type="text" value={displayVal} disabled />
+                  <label htmlFor={field.key}>{field.label}</label>
+                  <input id={field.key} type="text" value={displayVal} disabled />
                 </div>
               );
             }
             if (field.type === "select") {
               return (
                 <div key={field.key} className="config-field">
-                  <label>{field.label}</label>
-                  <select value={String(val ?? "")} onChange={(e) => handleChange(field.key, e.target.value)}>
+                  <label htmlFor={field.key}>{field.label}</label>
+                  <select id={field.key} value={String(val ?? "")} onChange={(e) => handleChange(field.key, e.target.value)}>
                     {field.options?.map((o) => <option key={o} value={o}>{o}</option>)}
                   </select>
                 </div>
@@ -115,8 +139,9 @@ export default function ConfigEditor() {
             if (field.type === "number") {
               return (
                 <div key={field.key} className="config-field">
-                  <label>{field.label}</label>
+                  <label htmlFor={field.key}>{field.label}</label>
                   <input
+                    id={field.key}
                     type="number"
                     value={val as number ?? 0}
                     onChange={(e) => handleChange(field.key, Number(e.target.value))}
@@ -126,8 +151,9 @@ export default function ConfigEditor() {
             }
             return (
               <div key={field.key} className="config-field">
-                <label>{field.label}</label>
+                <label htmlFor={field.key}>{field.label}</label>
                 <input
+                  id={field.key}
                   type="text"
                   value={val as string ?? ""}
                   onChange={(e) => handleChange(field.key, e.target.value)}

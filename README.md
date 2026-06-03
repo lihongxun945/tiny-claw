@@ -96,6 +96,21 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 
 Debug 日志可能包含用户输入、工具结果和提示词内容，建议只在本地排查时开启。
 
+### 安全边界
+
+文件工具支持读取和修改 workspace 之外的文件：相对路径以 workspace 为基准，也可以传入绝对路径。`bash` 也可以通过 `cwd` 在任意目录执行命令，但默认禁用；需要执行 shell 时显式开启：
+
+```json
+{
+  "security": {
+    "bash": { "mode": "allow" },
+    "auditTools": true
+  }
+}
+```
+
+`bash.mode` 支持 `deny`、`ask` 和 `allow`。该策略同时控制 `bash` 工具和技能文件中的动态 shell 注入。`ask` 会创建一次性审批记录；在 Web UI 的“审批”页面或飞书中允许后，重新发起原任务即可执行一次。工具调用默认写入审计日志，可通过 `auditTools: false` 关闭。
+
 ### CLI 模式
 
 ```bash
@@ -110,6 +125,21 @@ npm start
 npm run gateway -- --port 3000
 ```
 
+Gateway 默认只监听 `127.0.0.1`。如需暴露到其他机器，请同时配置 Bearer token：
+
+```json
+{
+  "security": {
+    "gateway": {
+      "host": "0.0.0.0",
+      "token": "YOUR_GATEWAY_TOKEN"
+    }
+  }
+}
+```
+
+外部 API 请求需携带 `Authorization: Bearer YOUR_GATEWAY_TOKEN`。Web UI 仍只监听本机回环地址。
+
 启动 HTTP API 服务，支持外部客户端通过 SSE 流式调用 Agent：
 
 | 方法 | 路径 | 说明 |
@@ -117,6 +147,10 @@ npm run gateway -- --port 3000
 | POST | /chat | 发送消息（SSE 流式响应） |
 | GET | /sessions | 列出活跃会话 |
 | DELETE | /sessions/:id | 销毁会话 |
+| POST | /sessions/:id/cancel | 取消会话中正在运行的任务 |
+| GET | /approvals | 列出命令审批记录 |
+| POST | /approvals/:id/approve | 允许相同命令执行一次 |
+| POST | /approvals/:id/reject | 拒绝命令执行 |
 | GET | /memory | 列出长期记忆 |
 | PUT | /memory/:name | 更新长期记忆 |
 | DELETE | /memory/:name | 删除长期记忆 |
@@ -126,6 +160,8 @@ POST /chat 请求示例：
 ```json
 { "message": "你好", "session_id": "optional" }
 ```
+
+同一 session 同一时间只允许执行一个任务。客户端断开 SSE 连接时，Gateway 会自动取消后台任务；已知 session 也可以通过 `/sessions/:id/cancel` 主动取消。默认最多执行 20 次 Agent Loop 迭代，可通过 `maxAgentIterations` 调整，显式配置 `0` 表示不限。
 
 ### 飞书机器人配置
 
@@ -165,6 +201,16 @@ npm run gateway -- --port 3000
 ```
 
 启动后日志显示 `飞书长连接已建立` 即表示连接成功，可以在飞书中给机器人发消息测试。
+
+当 `security.bash.mode` 为 `ask` 时，飞书用户可以直接发送文字命令处理自己发起的审批：
+
+| 命令 | 说明 |
+|------|------|
+| `/approvals` | 列出当前用户在当前会话中可以处理的审批 |
+| `/approve <审批 ID>` | 允许相同命令执行一次 |
+| `/reject <审批 ID>` | 拒绝命令执行 |
+
+飞书审批绑定发起用户和会话。批准后需要重新发送原任务；其他用户无法查看、批准或拒绝该审批。
 
 ## 插件开发
 
@@ -211,7 +257,7 @@ tiny-claw 采用插件化架构，所有业务逻辑由插件实现。框架通�
 2. [x] **Skill** — 技能系统，支持可插拔的专项能力（skills/<name>/SKILL.md）
 3. [x] **网关** — HTTP Gateway（SSE 流式 API、会话管理）
 4. [x] **插件系统** — 内置/外部插件加载，路由注册，生命周期管理
-5. [ ] **权限管理** — 可配置bash执行、文件读写等权限
+5. [x] **基础权限边界** — 文件工具支持 workspace 外路径；bash 默认禁用；Gateway 默认仅本机监听并支持 token 鉴权
 6. [ ] **模式切换** — 可以以不同模式执行任务，比如 询问模式、自动模式、计划模式等。
 7. [x] **飞书接入** — 飞书机器人（WebSocket 长连接模式）
 8. [ ] **心跳** — 定时启动，执行定期任务
@@ -219,7 +265,7 @@ tiny-claw 采用插件化架构，所有业务逻辑由插件实现。框架通�
 10. [ ] **多Agent** - 多agent，互相隔离，不同的工作目录和上下文
 11. [x] **SubAgent** - 并行执行子任务的临时 sub-agent，默认只读权限，可配置工具白名单/黑名单
 12. [ ] **RAG** — 检索增强生成
-13. [ ] **沙箱** — 通过沙箱执行脚本
+13. [ ] **进程沙箱** — 通过容器或受限进程执行脚本
 
 
 ## 难点记录

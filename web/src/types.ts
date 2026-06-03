@@ -15,11 +15,28 @@ export interface Session {
   id: string;
   lastActivity: number;
   preview?: string;
+  busy?: boolean;
 }
 
 export interface SSEEvent {
   event: string;
   data: unknown;
+}
+
+export interface ApprovalRequest {
+  id: string;
+  source: "bash" | "skill";
+  command: string;
+  cwd: string;
+  status: "pending" | "approved";
+  createdAt: string;
+  expiresAt: string;
+  actor?: {
+    channel: "cli" | "web" | "feishu";
+    requesterId?: string;
+    chatId?: string;
+  };
+  sessionId?: string;
 }
 
 export type MemorySource = "manual" | "tool" | "auto";

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { AgentSession } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { PluginManager } from "./plugin-manager.js";
-import type { Config } from "./types.js";
+import type { AgentActor, Config } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +35,7 @@ export interface SubAgentTask {
 export interface SubAgentRunOptions {
   workspacePath: string;
   parentSessionId?: string;
+  actor?: AgentActor;
   tasks: SubAgentTask[];
   maxIterations?: number;
   maxConcurrency?: number;
@@ -95,6 +96,7 @@ async function runOneSubAgent(
   workspacePath: string,
   config: Config,
   parentSessionId: string | undefined,
+  actor: AgentActor | undefined,
   task: SubAgentTask,
   maxIterations: number,
 ): Promise<SubAgentTaskResult> {
@@ -119,7 +121,7 @@ async function runOneSubAgent(
     let sawDone = false;
     const toolCalls: SubAgentTaskResult["toolCalls"] = [];
 
-    for await (const event of session.chat(buildSubAgentPrompt(workspacePath, task, allowedTools))) {
+    for await (const event of session.chat(buildSubAgentPrompt(workspacePath, task, allowedTools), actor)) {
       if (event.type === "tool_call") {
         toolCalls.push({ name: event.name, input: event.input });
       } else if (event.type === "done") {
@@ -200,6 +202,7 @@ export async function runSubAgents(options: SubAgentRunOptions): Promise<SubAgen
       options.workspacePath,
       config,
       options.parentSessionId,
+      options.actor,
       task,
       maxIterations,
     ),

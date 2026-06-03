@@ -6,7 +6,7 @@ import { MessageHistory } from "./history.js";
 import { PluginManager } from "./plugin-manager.js";
 import { ensureWorkspace } from "./workspace/workspace.js";
 import { appendHistory } from "./workspace/logger.js";
-import type { Config, Message, ToolUseBlock, ToolResultBlock } from "./types.js";
+import type { AgentActor, Config, Message, ToolUseBlock, ToolResultBlock } from "./types.js";
 
 // === 事件类型 ===
 
@@ -74,7 +74,57 @@ function loadPersistedSessionMessages(workspacePath: string, sessionId: string):
       }
     }
   }
-  return messages;
+  return sanitizePersistedMessages(messages);
+}
+
+function sanitizePersistedMessages(messages: Message[]): Message[] {
+  const sanitized: Message[] = [];
+
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (!Array.isArray(message.content)) {
+      sanitized.push(message);
+      continue;
+    }
+
+    if (message.role === "user" && message.content.some((block) => block.type === "tool_result")) {
+      // Orphaned tool results cannot be sent to OpenAI-compatible APIs.
+      continue;
+    }
+
+    const toolUses = message.role === "assistant"
+      ? message.content.filter((block): block is ToolUseBlock => block.type === "tool_use")
+      : [];
+    if (toolUses.length === 0) {
+      sanitized.push(message);
+      continue;
+    }
+
+    const expectedIds = new Set(toolUses.map((block) => block.id));
+    const toolResultMessages: Message[] = [];
+    const seenIds = new Set<string>();
+    let nextIndex = index + 1;
+    while (nextIndex < messages.length) {
+      const next = messages[nextIndex];
+      if (next.role !== "user" || !Array.isArray(next.content) || next.content.length === 0) break;
+      if (!next.content.every((block) => block.type === "tool_result" && expectedIds.has(block.tool_use_id))) break;
+      toolResultMessages.push(next);
+      for (const block of next.content) {
+        if (block.type === "tool_result") seenIds.add(block.tool_use_id);
+      }
+      nextIndex++;
+    }
+
+    if (seenIds.size === expectedIds.size) {
+      sanitized.push(message, ...toolResultMessages);
+    } else {
+      const readableContent = message.content.filter((block) => block.type !== "tool_use");
+      if (readableContent.length > 0) sanitized.push({ ...message, content: readableContent });
+    }
+    index = nextIndex - 1;
+  }
+
+  return sanitized;
 }
 
 export class AgentSession {
@@ -85,10 +135,29 @@ export class AgentSession {
   private pluginManager: PluginManager;
   private systemPrompt: string;
   private workspacePath: string;
+  private activeController?: AbortController;
   lastActivity: number;
 
   getMessages(): Message[] {
     return this.history.getRecentMessages(Infinity);
+  }
+
+  isBusy(): boolean {
+    return this.activeController !== undefined;
+  }
+
+  cancel(): boolean {
+    if (!this.activeController) return false;
+    this.activeController.abort();
+    return true;
+  }
+
+  private async notifyError(error: Error, iteration: number): Promise<void> {
+    try {
+      await this.pluginManager.callOnError(error, iteration, this.id);
+    } catch {
+      // Error hooks must never hide the original failure.
+    }
   }
 
   constructor(
@@ -114,7 +183,16 @@ export class AgentSession {
   }
 
   /** 执行一轮对话，返回事件流 */
-  async *chat(userInput: string): AsyncGenerator<AgentEvent> {
+  async *chat(userInput: string, actor?: AgentActor): AsyncGenerator<AgentEvent> {
+    if (this.activeController) {
+      yield { type: "error", message: "会话正在执行中，请等待完成或先取消当前任务" };
+      return;
+    }
+    const controller = new AbortController();
+    this.activeController = controller;
+    let agentIteration = 0;
+
+    try {
     this.lastActivity = Date.now();
 
     // 1. Before Chat Hook：日志记录 + 可能的阻断或输入修改
@@ -134,10 +212,10 @@ export class AgentSession {
     await this.pluginManager.callOnUserMessage(input, this.id);
 
     const maxIterations = this.config.maxAgentIterations > 0 ? this.config.maxAgentIterations : Infinity;
-    let agentIteration = 0;
     let fullText = "";
 
     while (agentIteration < maxIterations) {
+      if (controller.signal.aborted) throw new Error("会话已取消");
       agentIteration++;
 
       // 4. 获取上下文
@@ -168,6 +246,7 @@ export class AgentSession {
         },
         toolDefs.length > 0 ? toolDefs : undefined,
         this.systemPrompt,
+        controller.signal,
       ).then(
         (response) => {
           eventQueue.close();
@@ -191,7 +270,9 @@ export class AgentSession {
       const response = await chatPromise;
 
       if (chatError || !response) {
-        yield { type: "error", message: chatError || "未知错误" };
+        const error = new Error(controller.signal.aborted ? "会话已取消" : chatError || "未知错误");
+        await this.notifyError(error, agentIteration);
+        yield { type: "error", message: error.message };
         return;
       }
 
@@ -234,6 +315,7 @@ export class AgentSession {
 
       // 10. 执行工具调用
       for (const toolCall of response.toolCalls) {
+        if (controller.signal.aborted) throw new Error("会话已取消");
         // Before Tool Hook
         const beforeTool = await this.pluginManager.callOnBeforeTool(
           toolCall.name, toolCall.input, agentIteration, this.id,
@@ -249,8 +331,9 @@ export class AgentSession {
         let result: string;
         if (tool) {
           try {
-            result = await tool.execute(toolCall.input);
+            result = await tool.execute(toolCall.input, { signal: controller.signal, sessionId: this.id, actor });
           } catch (err) {
+            await this.notifyError(err instanceof Error ? err : new Error(String(err)), agentIteration);
             result = JSON.stringify({
               error: `工具执行失败: ${err instanceof Error ? err.message : String(err)}`,
             });
@@ -272,12 +355,20 @@ export class AgentSession {
           content: result,
         };
         const toolResultMsg: Message = { role: "user", content: [toolResult], _timestamp: Date.now() };
+        appendHistory(this.workspacePath, toolResultMsg, this.id);
         this.history.push(toolResultMsg);
       }
     }
 
     if (this.config.maxAgentIterations > 0 && agentIteration >= maxIterations) {
       yield { type: "done", text: fullText };
+    }
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      await this.notifyError(error, agentIteration);
+      yield { type: "error", message: error.message };
+    } finally {
+      if (this.activeController === controller) this.activeController = undefined;
     }
   }
 }

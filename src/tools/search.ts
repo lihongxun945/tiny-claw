@@ -8,7 +8,7 @@ interface SearchResult {
 
 interface SearchProvider {
   name: string;
-  search(query: string, count: number): Promise<SearchResult[]>;
+  search(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]>;
 }
 
 const SEARCH_UA =
@@ -16,9 +16,12 @@ const SEARCH_UA =
 const SEARCH_TIMEOUT = 3_000;
 
 /** 带超时和 User-Agent 的 fetch 封装 */
-async function searchFetch(url: string, options: { headers?: Record<string, string>; method?: string; body?: string } = {}): Promise<Response> {
+async function searchFetch(url: string, options: { headers?: Record<string, string>; method?: string; body?: string; signal?: AbortSignal } = {}): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEARCH_TIMEOUT);
+  const onAbort = () => controller.abort();
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) controller.abort();
   try {
     const resp = await fetch(url, {
       method: options.method,
@@ -29,6 +32,7 @@ async function searchFetch(url: string, options: { headers?: Record<string, stri
     return resp;
   } finally {
     clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -38,7 +42,7 @@ class OllamaProvider implements SearchProvider {
   name = "ollama";
   constructor(private apiKey: string) {}
 
-  async search(query: string, count: number): Promise<SearchResult[]> {
+  async search(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
     const resp = await searchFetch("https://ollama.com/api/web_search", {
       method: "POST",
       headers: {
@@ -46,6 +50,7 @@ class OllamaProvider implements SearchProvider {
         "content-type": "application/json",
       },
       body: JSON.stringify({ query, max_results: count }),
+      signal,
     });
     if (!resp.ok) {
       throw new Error(`Ollama Web Search 请求失败 (${resp.status})`);
@@ -67,8 +72,8 @@ class SearXNGProvider implements SearchProvider {
   name = "searxng";
   constructor(private url: string) {}
 
-  async search(query: string, count: number): Promise<SearchResult[]> {
-    const resp = await searchFetch(`${this.url}/search?q=${encodeURIComponent(query)}&format=json`);
+  async search(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
+    const resp = await searchFetch(`${this.url}/search?q=${encodeURIComponent(query)}&format=json`, { signal });
     if (!resp.ok) {
       throw new Error(`SearXNG 请求失败 (${resp.status})`);
     }
@@ -89,10 +94,10 @@ class BraveProvider implements SearchProvider {
   name = "brave";
   constructor(private apiKey: string) {}
 
-  async search(query: string, count: number): Promise<SearchResult[]> {
+  async search(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
     const resp = await searchFetch(
       `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`,
-      { headers: { "X-Subscription-Token": this.apiKey } },
+      { headers: { "X-Subscription-Token": this.apiKey }, signal },
     );
     if (!resp.ok) {
       throw new Error(`Brave Search 请求失败 (${resp.status})`);
@@ -115,9 +120,10 @@ class BraveProvider implements SearchProvider {
 class DuckDuckGoProvider implements SearchProvider {
   name = "duckduckgo";
 
-  async search(query: string, count: number): Promise<SearchResult[]> {
+  async search(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
     const resp = await searchFetch(
       `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`,
+      { signal },
     );
     if (!resp.ok) {
       throw new Error(`DuckDuckGo 请求失败 (${resp.status})`);
@@ -228,7 +234,7 @@ export function createWebSearchTool(configOrLoader: Config | (() => Config)): To
       },
       required: ["query"],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       const query = args.query as string;
       const count = (args.count as number) ?? 5;
 
@@ -242,7 +248,7 @@ export function createWebSearchTool(configOrLoader: Config | (() => Config)): To
       }
 
       try {
-        const results = await provider.search(query, count);
+        const results = await provider.search(query, count, context?.signal);
         if (results.length === 0) {
           return JSON.stringify({ error: "未找到相关结果" });
         }
@@ -252,7 +258,9 @@ export function createWebSearchTool(configOrLoader: Config | (() => Config)): To
         const isTimeout = err instanceof Error && err.name === "AbortError";
         return JSON.stringify({
           error: isTimeout
-            ? `搜索超时 (${provider.name}，${SEARCH_TIMEOUT / 1000}秒)`
+            ? context?.signal?.aborted
+              ? `搜索已取消 (${provider.name})`
+              : `搜索超时 (${provider.name}，${SEARCH_TIMEOUT / 1000}秒)`
             : `搜索失败 (${provider.name}): ${msg}`,
         });
       }

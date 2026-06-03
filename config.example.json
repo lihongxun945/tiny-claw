@@ -8,7 +8,7 @@
   "maxContextTokens": 128000,
   "contextCompressionThreshold": 0.7,
   "historyWindowSize": 20,
-  "maxAgentIterations": 0,
+  "maxAgentIterations": 20,
   "sessionSummary": {
     "enabled": true,
     "turnThreshold": 5,
@@ -27,6 +27,16 @@
     "enabled": false,
     "modelIO": true,
     "rawStreamEvents": true
+  },
+  "security": {
+    "bash": {
+      "mode": "deny"
+    },
+    "gateway": {
+      "host": "127.0.0.1",
+      "token": ""
+    },
+    "auditTools": true
   },
   "searchProvider": "ollama",
   "ollamaApiKey": "YOUR_OLLAMA_API_KEY",

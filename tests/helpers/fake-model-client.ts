@@ -4,7 +4,7 @@ import type { ChatResponse, Message, ToolDefinition } from "../../src/types.js";
 export type ScriptedChat =
   | ChatResponse
   | Error
-  | ((messages: Message[], tools?: ToolDefinition[], systemPrompt?: string) => ChatResponse | Promise<ChatResponse>);
+  | ((messages: Message[], tools?: ToolDefinition[], systemPrompt?: string, signal?: AbortSignal) => ChatResponse | Promise<ChatResponse>);
 
 export class FakeModelClient implements ModelClient {
   readonly calls: Array<{ messages: Message[]; tools?: ToolDefinition[]; systemPrompt?: string }> = [];
@@ -20,6 +20,7 @@ export class FakeModelClient implements ModelClient {
     onDelta: (text: string) => void,
     tools?: ToolDefinition[],
     systemPrompt?: string,
+    _signal?: AbortSignal,
   ): Promise<ChatResponse> {
     this.calls.push({ messages: [...messages], tools, systemPrompt });
     const scripted = this.scriptedChats.shift();
@@ -27,7 +28,7 @@ export class FakeModelClient implements ModelClient {
     if (scripted instanceof Error) throw scripted;
 
     const response = typeof scripted === "function"
-      ? await scripted(messages, tools, systemPrompt)
+      ? await scripted(messages, tools, systemPrompt, _signal)
       : scripted;
     if (response.text) onDelta(response.text);
     return response;

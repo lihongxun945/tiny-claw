@@ -1,0 +1,169 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { relative, resolve } from "node:path";
+import { createBashTool } from "../../src/tools/bash.js";
+import { createFileEditTool } from "../../src/tools/file_edit.js";
+import { createFileReadTool } from "../../src/tools/file_read.js";
+import { createFileWriteTool } from "../../src/tools/file_write.js";
+import { createSkillListTool, createSkillUseTool } from "../../src/tools/skill.js";
+import { loadConfig } from "../../src/config.js";
+import { PluginManager } from "../../src/plugin-manager.js";
+import { approveRequest, listApprovals, rejectRequest, requestApproval } from "../../src/tools/approval.js";
+import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
+
+describe("security boundary", () => {
+  const paths: string[] = [];
+
+  afterEach(() => {
+    for (const path of paths.splice(0)) removeTempWorkspace(path);
+  });
+
+  it("allows file tools to access paths outside the workspace", async () => {
+    const workspacePath = createTempWorkspace();
+    const outsidePath = mkdtempSync(resolve(tmpdir(), "tiny-claw-outside-"));
+    paths.push(workspacePath, outsidePath);
+    writeFileSync(resolve(workspacePath, "inside.txt"), "inside", "utf-8");
+    writeFileSync(resolve(outsidePath, "outside.txt"), "outside", "utf-8");
+    symlinkSync(outsidePath, resolve(workspacePath, "escape"));
+
+    const read = createFileReadTool(workspacePath);
+    const write = createFileWriteTool(workspacePath);
+    const edit = createFileEditTool(workspacePath);
+
+    expect(await read.execute({ path: "inside.txt" })).toContain("inside");
+    expect(await read.execute({ path: resolve(outsidePath, "outside.txt") })).toContain("outside");
+    expect(await read.execute({ path: relative(workspacePath, resolve(outsidePath, "outside.txt")) })).toContain("outside");
+    expect(await write.execute({ path: resolve(outsidePath, "new.txt"), content: "created" })).toContain('"bytesWritten":7');
+    expect(await edit.execute({ path: resolve(outsidePath, "outside.txt"), old_text: "outside", new_text: "edited" })).toContain('"replaced":true');
+    expect(await read.execute({ path: resolve(workspacePath, "escape", "outside.txt") })).toContain("edited");
+    expect(readFileSync(resolve(outsidePath, "new.txt"), "utf-8")).toBe("created");
+    expect(readFileSync(resolve(outsidePath, "outside.txt"), "utf-8")).toBe("edited");
+  });
+
+  it("denies bash by default and supports ask and allow modes", async () => {
+    const workspacePath = createTempWorkspace();
+    const outsidePath = mkdtempSync(resolve(tmpdir(), "tiny-claw-bash-outside-"));
+    paths.push(workspacePath, outsidePath);
+    const configPath = resolve(workspacePath, "config.json");
+    const bash = createBashTool(workspacePath, () => loadConfig(workspacePath));
+
+    expect(await bash.execute({ command: "pwd" })).toContain("bash 执行已禁用");
+
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    config.security = { bash: { mode: "ask" } };
+    writeFileSync(configPath, JSON.stringify(config), "utf-8");
+    const pending = JSON.parse(await bash.execute({ command: "pwd", cwd: outsidePath }));
+    expect(pending).toMatchObject({ requiresConfirmation: true, command: "pwd", cwd: outsidePath });
+    expect(approveRequest(workspacePath, pending.approvalId)).toMatchObject({ status: "approved" });
+    expect(await bash.execute({ command: "pwd", cwd: outsidePath })).toContain(outsidePath);
+    expect(await bash.execute({ command: "pwd", cwd: outsidePath })).toContain('"requiresConfirmation":true');
+
+    config.security.bash.mode = "allow";
+    writeFileSync(configPath, JSON.stringify(config), "utf-8");
+    expect(await bash.execute({ command: "pwd" })).toContain(workspacePath);
+    expect(await bash.execute({ command: "pwd", cwd: outsidePath })).toContain(outsidePath);
+  });
+
+  it("terminates an allowed bash command when cancelled", async () => {
+    const workspacePath = createTempWorkspace({ security: { bash: { mode: "allow" } } });
+    paths.push(workspacePath);
+    const bash = createBashTool(workspacePath, () => loadConfig(workspacePath));
+    const controller = new AbortController();
+    const running = bash.execute({ command: "sleep 5" }, { signal: controller.signal });
+    setTimeout(() => controller.abort(), 20);
+    expect(await running).toContain("[已取消: 命令执行被用户中止]");
+  });
+
+  it("audits tool calls without logging file contents", async () => {
+    const workspacePath = createTempWorkspace();
+    paths.push(workspacePath);
+    const manager = new PluginManager(workspacePath);
+    await manager.loadCorePlugins();
+
+    await manager.getTool("file_write")!.execute({
+      path: "audit.txt",
+      content: "do-not-log-this-content",
+    });
+    await manager.destroy();
+
+    const today = new Date().toISOString().slice(0, 10);
+    const log = readFileSync(resolve(workspacePath, "logs", `${today}.log`), "utf-8");
+    expect(log).toContain("[AUDIT] 工具调用 file_write");
+    expect(log).toContain('"path":"audit.txt"');
+    expect(log).toContain("[AUDIT] 工具完成 file_write");
+    expect(log).not.toContain("do-not-log-this-content");
+  });
+
+  it("applies the bash mode to dynamic commands in skills", async () => {
+    const workspacePath = createTempWorkspace();
+    paths.push(workspacePath);
+    const skillDir = resolve(workspacePath, "skills", "dynamic");
+    mkdirSync(skillDir);
+    writeFileSync(resolve(skillDir, "SKILL.md"), [
+      "---",
+      "description: dynamic test",
+      "---",
+      "result: !`printf executed`",
+      "```!",
+      "printf block-executed",
+      "```",
+    ].join("\n"), "utf-8");
+    const configPath = resolve(workspacePath, "config.json");
+    const skill = createSkillUseTool(workspacePath, () => loadConfig(workspacePath));
+
+    expect(await skill.execute({ name: "dynamic" })).toContain("动态命令已禁用");
+    expect(await skill.execute({ name: "../config" })).toContain("未找到技能");
+
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    config.security = { bash: { mode: "ask" } };
+    writeFileSync(configPath, JSON.stringify(config), "utf-8");
+    expect(await skill.execute({ name: "dynamic" })).toContain("动态命令需要用户确认");
+    for (const approval of listApprovals(workspacePath)) approveRequest(workspacePath, approval.id);
+    const approvedSkill = await skill.execute({ name: "dynamic" });
+    expect(approvedSkill).toContain("result: executed");
+    expect(approvedSkill).toContain("block-executed");
+
+    config.security.bash.mode = "allow";
+    writeFileSync(configPath, JSON.stringify(config), "utf-8");
+    expect(await skill.execute({ name: "dynamic" })).toContain("result: executed");
+    expect(await skill.execute({ name: "dynamic" })).toContain("block-executed");
+  });
+
+  it("skips skills that escape the workspace through symlinks", async () => {
+    const workspacePath = createTempWorkspace();
+    const outsidePath = mkdtempSync(resolve(tmpdir(), "tiny-claw-skill-outside-"));
+    paths.push(workspacePath, outsidePath);
+    writeFileSync(resolve(outsidePath, "SKILL.md"), [
+      "---",
+      "description: external skill",
+      "---",
+      "external",
+    ].join("\n"), "utf-8");
+    symlinkSync(outsidePath, resolve(workspacePath, "skills", "external"));
+
+    const skillList = createSkillListTool(workspacePath);
+    expect(await skillList.execute({})).toContain("暂无可用技能");
+  });
+
+  it("deduplicates, consumes, rejects and expires approvals", () => {
+    const workspacePath = createTempWorkspace();
+    paths.push(workspacePath);
+
+    const first = requestApproval(workspacePath, "bash", "pwd", workspacePath);
+    const duplicate = requestApproval(workspacePath, "bash", "pwd", workspacePath);
+    expect(duplicate.approval?.id).toBe(first.approval?.id);
+    expect(listApprovals(workspacePath)).toHaveLength(1);
+
+    expect(approveRequest(workspacePath, first.approval!.id)?.status).toBe("approved");
+    expect(requestApproval(workspacePath, "bash", "pwd", workspacePath)).toEqual({ approved: true });
+    expect(listApprovals(workspacePath)).toEqual([]);
+
+    const rejected = requestApproval(workspacePath, "bash", "ls", workspacePath);
+    expect(rejectRequest(workspacePath, rejected.approval!.id)).toBe(true);
+    expect(rejectRequest(workspacePath, rejected.approval!.id)).toBe(false);
+
+    requestApproval(workspacePath, "bash", "expired", workspacePath, -1);
+    expect(listApprovals(workspacePath)).toEqual([]);
+  });
+});

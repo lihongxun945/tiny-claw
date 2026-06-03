@@ -1,14 +1,15 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig } from "./config.js";
+import { loadConfig, validateConfig } from "./config.js";
 import { AgentSession, type AgentEvent } from "./agent.js";
 import { PluginManager } from "./plugin-manager.js";
 import { appendLog } from "./workspace/logger.js";
 import { deleteMemory, getMemoryRecord, listMemoryRecords, setMemoryDisabled, updateMemoryRecord, type MemorySource } from "./tools/memory.js";
+import { approveRequest, listApprovals, rejectRequest } from "./tools/approval.js";
 import type { RegisteredRoute, RouteContext } from "./plugins/types.js";
 
 const SESSION_TIMEOUT = 30 * 60 * 1000;
@@ -38,6 +39,14 @@ function parseWebPortArg(): number | undefined {
   }
   const envPort = process.env.TINY_CLAW_WEB_PORT;
   if (envPort) return parseInt(envPort, 10) || undefined;
+  return undefined;
+}
+
+function parseHostArg(): string | undefined {
+  const idx = process.argv.indexOf("--host");
+  if (idx !== -1 && idx + 1 < process.argv.length) {
+    return process.argv[idx + 1];
+  }
   return undefined;
 }
 
@@ -80,6 +89,8 @@ function startDaemon(port: number, workspacePath: string): void {
   const webPort = parseWebPortArg() || port + 1;
 
   const args = [process.argv[1]!, "--daemon-child", "--port", String(port), "--web-port", String(webPort), "--workspace", resolve(workspacePath)];
+  const host = parseHostArg();
+  if (host) args.push("--host", host);
 
   const child = spawn(tsxBin, args, { detached: true, stdio: "ignore" });
   child.unref();
@@ -146,13 +157,14 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-type FormattedMessage = { role: string; text: string; toolCalls: Array<{ name: string; input: Record<string, unknown>; result?: string }>; timestamp: number };
+type FormattedToolCall = { id?: string; name: string; input: Record<string, unknown>; result?: string };
+type FormattedMessage = { role: string; text: string; toolCalls: FormattedToolCall[]; timestamp: number };
 
 function isSubAgentSessionId(id: string): boolean {
   return id.startsWith("sub:");
 }
 
-function buildMessageListFromMessages(msgs: Array<{ role: string; content: string | Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>): FormattedMessage[] {
+function buildMessageListFromMessages(msgs: Array<{ role: string; content: string | Array<{ type: string; id?: string; tool_use_id?: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>): FormattedMessage[] {
   // 第一步：解析原始消息，将 tool_result 合并到前一条 assistant
   const parsed: FormattedMessage[] = [];
   for (const m of msgs) {
@@ -167,10 +179,9 @@ function buildMessageListFromMessages(msgs: Array<{ role: string; content: strin
     const toolCalls: FormattedMessage["toolCalls"] = [];
     for (const b of blocks) {
       if (b.type === "text" && b.text) text += b.text;
-      else if (b.type === "tool_use") toolCalls.push({ name: b.name ?? "", input: b.input ?? {} });
+      else if (b.type === "tool_use") toolCalls.push({ id: b.id, name: b.name ?? "", input: b.input ?? {} });
       else if (b.type === "tool_result") {
-        const tc = toolCalls.find((t) => t.result === undefined);
-        if (tc) tc.result = b.content ?? "";
+        toolCalls.push({ id: b.tool_use_id, name: "", input: {}, result: b.content ?? "" });
       }
     }
     // user 消息只有 tool_result → 合并到前一条 assistant
@@ -178,7 +189,7 @@ function buildMessageListFromMessages(msgs: Array<{ role: string; content: strin
       const lastAssistant = [...parsed].reverse().find((r) => r.role === "assistant");
       if (lastAssistant) {
         for (const tc of toolCalls) {
-          const existing = lastAssistant.toolCalls.find((t) => t.name === tc.name && t.result === undefined);
+          const existing = lastAssistant.toolCalls.find((t) => t.id === tc.id && t.result === undefined);
           if (existing) existing.result = tc.result;
           else lastAssistant.toolCalls.push(tc);
         }
@@ -217,7 +228,7 @@ function buildMessageListFromRecords(historyDir: string, sessionId: string): For
       } catch { /* skip */ }
     }
   }
-  return buildMessageListFromMessages(rawMsgs as Array<{ role: string; content: string | Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>);
+  return buildMessageListFromMessages(rawMsgs as Array<{ role: string; content: string | Array<{ type: string; id?: string; tool_use_id?: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>);
 }
 
 function deleteSessionHistory(workspacePath: string, sessionId: string): number {
@@ -316,6 +327,19 @@ function sendSSE(res: ServerResponse, event: string, data: unknown): void {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+function tokenMatches(actual: string | undefined, expected: string | undefined): boolean {
+  if (!expected) return true;
+  if (!actual) return false;
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+  return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+function isAuthorized(req: IncomingMessage, token: string | undefined): boolean {
+  const header = req.headers.authorization;
+  return tokenMatches(header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined, token);
+}
+
 // === 会话管理 ===
 
 const sessions = new Map<string, AgentSession>();
@@ -338,14 +362,15 @@ function getOrCreateSession(sessionId: string | undefined, wp?: string, pm?: Plu
 function cleanupSessions(): void {
   const now = Date.now();
   for (const [id, session] of sessions) {
-    if (now - session.lastActivity > SESSION_TIMEOUT) {
+    if (!session.isBusy() && now - session.lastActivity > SESSION_TIMEOUT) {
       sessions.delete(id);
       globalPluginManager?.clearRuntimeDeps(id);
     }
   }
 }
 
-setInterval(cleanupSessions, 5 * 60 * 1000);
+const cleanupTimer = setInterval(cleanupSessions, 5 * 60 * 1000);
+cleanupTimer.unref();
 
 // === HTTP 服务器 ===
 
@@ -358,6 +383,8 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 
   // 加载配置 + 初始化 PluginManager
   const config = loadConfig(workspacePath);
+  const gatewayHost = parseHostArg() || config.security?.gateway?.host || "127.0.0.1";
+  const gatewayToken = config.security?.gateway?.token;
   const pm = new PluginManager(workspacePath);
   globalPluginManager = pm;
   pm.setPluginConfigs(config.plugins ?? {});
@@ -367,6 +394,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
   pm.setSessionFactory({
     getOrCreateSession: (id, prefix) => getOrCreateSession(prefix ? `${prefix}:${id}` : id, workspacePath, pm),
     deleteSession: (id) => {
+      sessions.get(id)?.cancel();
       const deleted = sessions.delete(id);
       pm.clearRuntimeDeps(id);
       return deleted;
@@ -391,9 +419,14 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       res.writeHead(204, {
         "access-control-allow-origin": "*",
         "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
-        "access-control-allow-headers": "content-type",
+        "access-control-allow-headers": "content-type, authorization",
       });
       res.end();
+      return;
+    }
+
+    if (!isAuthorized(req, gatewayToken)) {
+      sendJSON(res, 401, { error: "Gateway token 无效或缺失" });
       return;
     }
 
@@ -432,6 +465,10 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 
         const session = getOrCreateSession(sessionId, workspacePath, pm);
         sendSSEHeader(res);
+        const cancelOnDisconnect = () => {
+          if (!res.writableEnded) session.cancel();
+        };
+        res.once("close", cancelOnDisconnect);
 
         for await (const event of session.chat(message)) {
           switch (event.type) {
@@ -453,6 +490,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
           }
         }
 
+        res.removeListener("close", cancelOnDisconnect);
         res.end();
       } catch (err) {
         if (!res.headersSent) {
@@ -469,8 +507,40 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         .map((s) => ({
           id: s.id,
           lastActivity: s.lastActivity,
+          busy: s.isBusy(),
         }));
       sendJSON(res, 200, { sessions: list });
+      return;
+    }
+
+    // GET /approvals — 待审批命令列表
+    if (req.method === "GET" && url.pathname === "/approvals") {
+      sendJSON(res, 200, { approvals: listApprovals(workspacePath) });
+      return;
+    }
+
+    // POST /approvals/:id/approve 或 /approvals/:id/reject
+    if (req.method === "POST" && url.pathname.startsWith("/approvals/") && (url.pathname.endsWith("/approve") || url.pathname.endsWith("/reject"))) {
+      const approved = url.pathname.endsWith("/approve");
+      const suffix = approved ? "/approve" : "/reject";
+      const id = decodeURIComponent(url.pathname.slice("/approvals/".length, -suffix.length));
+      if (approved) {
+        const approval = approveRequest(workspacePath, id);
+        if (!approval) {
+          sendJSON(res, 404, { error: "审批记录不存在或已过期" });
+          return;
+        }
+        appendLog(workspacePath, "AUDIT", `命令审批通过 ${approval.source} ${approval.id} ${JSON.stringify({ command: approval.command, cwd: approval.cwd })}`);
+        sendJSON(res, 200, { approval });
+      } else {
+        const rejected = rejectRequest(workspacePath, id);
+        if (!rejected) {
+          sendJSON(res, 404, { error: "审批记录不存在或已过期" });
+          return;
+        }
+        appendLog(workspacePath, "AUDIT", `命令审批拒绝 ${id}`);
+        sendJSON(res, 200, { rejected: true });
+      }
       return;
     }
 
@@ -546,9 +616,23 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       return;
     }
 
+    // POST /sessions/:id/cancel
+    if (req.method === "POST" && url.pathname.startsWith("/sessions/") && url.pathname.endsWith("/cancel")) {
+      const id = decodeURIComponent(url.pathname.slice("/sessions/".length, -"/cancel".length));
+      const session = sessions.get(id);
+      if (!session) {
+        sendJSON(res, 404, { error: "会话不存在" });
+        return;
+      }
+      const cancelled = session.cancel();
+      sendJSON(res, cancelled ? 200 : 409, cancelled ? { cancelled: true } : { error: "会话当前没有正在执行的任务" });
+      return;
+    }
+
     // DELETE /sessions/:id
     if (req.method === "DELETE" && url.pathname.startsWith("/sessions/")) {
       const id = decodeURIComponent(url.pathname.slice("/sessions/".length));
+      sessions.get(id)?.cancel();
       const deletedActive = sessions.delete(id);
       pm.clearRuntimeDeps(id);
       const deletedHistoryRecords = deleteSessionHistory(workspacePath, id);
@@ -628,10 +712,11 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         const existing = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf-8")) : {};
         const updates = restoreMaskedSecrets(JSON.parse(await readBody(req)), existing) as Record<string, unknown>;
         const merged = { ...existing, ...updates };
+        validateConfig(merged);
         writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n", "utf-8");
         sendJSON(res, 200, { config: maskConfigSecrets(merged) });
       } catch (err) {
-        sendJSON(res, 500, { error: `更新配置失败: ${err instanceof Error ? err.message : String(err)}` });
+        sendJSON(res, 400, { error: `更新配置失败: ${err instanceof Error ? err.message : String(err)}` });
       }
       return;
     }
@@ -712,11 +797,14 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const url = new URL(req.url ?? "/", `http://localhost:${webPort}`);
 
       // 代理 API 请求到 gateway
-      if (url.pathname === "/chat" || url.pathname === "/sessions" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|logs|history\/sessions|memory)\/[^/]+/)) {
+      if (url.pathname === "/chat" || url.pathname === "/sessions" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
         try {
-          const proxyRes = await fetch(`http://localhost:${port}${url.pathname}${url.search}`, {
+          const proxyRes = await fetch(`http://127.0.0.1:${port}${url.pathname}${url.search}`, {
             method: req.method,
-            headers: { "content-type": req.headers["content-type"] ?? "application/json" },
+            headers: {
+              "content-type": req.headers["content-type"] ?? "application/json",
+              ...(gatewayToken ? { authorization: `Bearer ${gatewayToken}` } : {}),
+            },
             body: req.method !== "GET" && req.method !== "HEAD" ? await readBody(req) : undefined,
           });
           const contentType = proxyRes.headers.get("content-type") ?? "application/json";
@@ -776,7 +864,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       res.writeHead(200, { "content-type": "text/html" });
       res.end(readFileSync(indexPath));
     });
-    webServer.listen(webPort);
+    webServer.listen(webPort, "127.0.0.1");
   } else if (!isDaemonChild) {
     // 开发模式：启动 Vite dev server
     const viteBin = resolve(webDir, "node_modules/.bin/vite");
@@ -784,7 +872,11 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       viteChild = spawn(viteBin, ["--port", String(webPort), "--strictPort"], {
         cwd: webDir,
         stdio: "inherit",
-        env: { ...process.env, TINY_CLAW_PORT: String(port) },
+        env: {
+          ...process.env,
+          TINY_CLAW_PORT: String(port),
+          ...(gatewayToken ? { TINY_CLAW_GATEWAY_TOKEN: gatewayToken } : {}),
+        },
       });
       viteChild.on("error", (err) => {
         console.error(`Vite dev server 启动失败: ${err.message}`);
@@ -796,12 +888,12 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
   // 启动日志
   if (isDaemonChild) {
     appendLog(workspacePath, "info", `Gateway daemon 已启动 (PID: ${process.pid})`);
-    appendLog(workspacePath, "info", `Gateway API: http://localhost:${port}`);
+    appendLog(workspacePath, "info", `Gateway API: http://${gatewayHost}:${port}`);
     if (hasDist) appendLog(workspacePath, "info", `Web UI: http://localhost:${webPort}`);
     appendLog(workspacePath, "info", `工作目录: ${workspacePath}`);
   } else {
     console.log(`tiny-claw 已启动`);
-    console.log(`  Gateway API: http://localhost:${port}`);
+    console.log(`  Gateway API: http://${gatewayHost}:${port}`);
     console.log(`  Web UI:      http://localhost:${webPort}${!hasDist && viteChild ? " (dev)" : ""}`);
     console.log(`  工作目录:    ${workspacePath}`);
   }
@@ -816,7 +908,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     process.exit(1);
   });
 
-  server.listen(port);
+  server.listen(port, gatewayHost);
 
   // 优雅关闭
   const shutdown = async () => {

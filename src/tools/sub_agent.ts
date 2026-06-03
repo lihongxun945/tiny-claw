@@ -1,5 +1,5 @@
 import { runSubAgents, type SubAgentTask } from "../sub-agent.js";
-import type { Tool } from "../types.js";
+import type { Tool, ToolExecutionContext } from "../types.js";
 
 function parseTasks(args: Record<string, unknown>): SubAgentTask[] {
   const rawTasks = args.tasks;
@@ -80,7 +80,7 @@ export function createSubAgentTool(workspacePath: string): Tool {
         },
       },
     },
-    execute: async (args) => {
+    execute: async (args, context?: ToolExecutionContext) => {
       const tasks = parseTasks(args);
       if (tasks.length === 0) {
         return JSON.stringify({
@@ -91,6 +91,8 @@ export function createSubAgentTool(workspacePath: string): Tool {
 
       const result = await runSubAgents({
         workspacePath,
+        parentSessionId: context?.sessionId,
+        actor: context?.actor,
         tasks,
         maxIterations: args.max_iterations as number | undefined,
         maxConcurrency: args.max_concurrency as number | undefined,

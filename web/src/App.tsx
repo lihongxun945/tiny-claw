@@ -1,14 +1,15 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { Message, ToolCallInfo } from "./types.js";
-import { streamChat, fetchHistoryMessages } from "./lib/api.js";
+import { streamChat, fetchHistoryMessages, cancelSession } from "./lib/api.js";
 import ChatView from "./components/ChatView.js";
 import ChatInput from "./components/ChatInput.js";
 import SessionSidebar from "./components/SessionSidebar.js";
 import LogViewer from "./components/LogViewer.js";
 import ConfigEditor from "./components/ConfigEditor.js";
 import MemoryManager from "./components/MemoryManager.js";
+import ApprovalManager from "./components/ApprovalManager.js";
 
-type View = "chat" | "memory" | "logs" | "config";
+type View = "chat" | "memory" | "approvals" | "logs" | "config";
 
 function readHashSession(): string | null {
   const hash = location.hash;
@@ -134,6 +135,12 @@ export default function App() {
     setIsStreaming(false);
   }, []);
 
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort();
+    if (activeSessionId) cancelSession(activeSessionId).catch(() => {});
+    setIsStreaming(false);
+  }, [activeSessionId]);
+
   const handleSelectSession = useCallback(async (id: string) => {
     abortRef.current?.abort();
     setIsStreaming(false);
@@ -191,10 +198,11 @@ export default function App() {
               isRefreshing={isRefreshingMessages}
               onRefreshMessages={handleRefreshMessages}
             />
-            <ChatInput onSend={handleSend} disabled={isStreaming} />
+            <ChatInput onSend={handleSend} onStop={handleStop} disabled={isStreaming} />
           </>
         )}
         {view === "memory" && <MemoryManager />}
+        {view === "approvals" && <ApprovalManager />}
         {view === "logs" && <LogViewer />}
         {view === "config" && <ConfigEditor />}
       </div>

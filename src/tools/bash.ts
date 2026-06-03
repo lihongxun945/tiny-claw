@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import type { Tool } from "../types.js";
+import type { Config } from "../types.js";
+import { requestApproval } from "./approval.js";
 
 const MAX_OUTPUT = 10000;
 const DEFAULT_TIMEOUT = 30;
 
-export function createBashTool(): Tool {
+export function createBashTool(workspacePath: string, getConfig: () => Config): Tool {
   return {
     name: "bash",
     description:
@@ -22,59 +25,98 @@ export function createBashTool(): Tool {
           minimum: 1,
           maximum: 300,
         },
+        cwd: {
+          type: "string",
+          description: "执行目录（相对 workspace 或绝对路径），默认 workspace",
+        },
       },
       required: ["command"],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       const command = args.command as string;
       const timeout = (args.timeout as number) ?? DEFAULT_TIMEOUT;
+      const cwd = resolve(workspacePath, (args.cwd as string | undefined) ?? ".");
+      const mode = getConfig().security?.bash?.mode ?? "deny";
 
-      return new Promise((resolve) => {
-        const proc = spawn("bash", ["-c", command], {
-          cwd: process.cwd(),
-          env: process.env,
+      if (mode === "deny") {
+        return JSON.stringify({ error: "bash 执行已禁用。需要在 security.bash.mode 中显式配置 allow。" });
+      }
+      if (mode === "ask") {
+        const approval = requestApproval(workspacePath, "bash", command, cwd, undefined, context?.actor, context?.sessionId);
+        if (approval.approved) return execute(command, timeout, cwd, context?.signal);
+        return JSON.stringify({
+          error: "bash 执行需要用户确认。批准后重新发起任务即可执行一次。",
+          requiresConfirmation: true,
+          approvalId: approval.approval!.id,
+          approvalCommand: context?.actor?.channel === "feishu"
+            ? `/approve ${approval.approval!.id}`
+            : undefined,
+          command,
+          cwd,
         });
+      }
 
-        let stdout = "";
-        let stderr = "";
-
-        proc.stdout.on("data", (data: Buffer) => {
-          stdout += data.toString();
-        });
-
-        proc.stderr.on("data", (data: Buffer) => {
-          stderr += data.toString();
-        });
-
-        const timer = setTimeout(() => {
-          proc.kill("SIGTERM");
-          stderr += "\n[超时: 命令执行超过指定时间]";
-        }, timeout * 1000);
-
-        proc.on("close", (code) => {
-          clearTimeout(timer);
-          resolve(
-            JSON.stringify({
-              stdout: truncate(stdout, MAX_OUTPUT),
-              stderr: truncate(stderr, MAX_OUTPUT),
-              exitCode: code ?? -1,
-            }),
-          );
-        });
-
-        proc.on("error", (err) => {
-          clearTimeout(timer);
-          resolve(
-            JSON.stringify({
-              stdout: "",
-              stderr: err.message,
-              exitCode: -1,
-            }),
-          );
-        });
-      });
+      return execute(command, timeout, cwd, context?.signal);
     },
   };
+}
+
+function execute(command: string, timeout: number, cwd: string, signal?: AbortSignal): Promise<string> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(JSON.stringify({ stdout: "", stderr: "命令执行已取消", exitCode: -1 }));
+      return;
+    }
+    const proc = spawn("bash", ["-c", command], {
+      cwd,
+      env: process.env,
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    const timer = setTimeout(() => {
+      proc.kill("SIGTERM");
+      stderr += "\n[超时: 命令执行超过指定时间]";
+    }, timeout * 1000);
+    const onAbort = () => {
+      proc.kill("SIGTERM");
+      stderr += "\n[已取消: 命令执行被用户中止]";
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(
+        JSON.stringify({
+          stdout: truncate(stdout, MAX_OUTPUT),
+          stderr: truncate(stderr, MAX_OUTPUT),
+          exitCode: code ?? -1,
+        }),
+      );
+    });
+
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(
+        JSON.stringify({
+          stdout: "",
+          stderr: err.message,
+          exitCode: -1,
+        }),
+      );
+    });
+  });
 }
 
 function truncate(str: string, max: number): string {

@@ -35,7 +35,7 @@ export function createWebFetchTool(): Tool {
       },
       required: ["url"],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       const url = args.url as string;
 
       try {
@@ -46,6 +46,9 @@ export function createWebFetchTool(): Tool {
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT);
+      const onAbort = () => controller.abort();
+      context?.signal?.addEventListener("abort", onAbort, { once: true });
+      if (context?.signal?.aborted) controller.abort();
       try {
         const resp = await fetch(url, {
           headers: { "user-agent": WEB_FETCH_UA },
@@ -74,11 +77,14 @@ export function createWebFetchTool(): Tool {
         const isTimeout = err instanceof Error && err.name === "AbortError";
         return JSON.stringify({
           error: isTimeout
-            ? `请求超时（${WEB_FETCH_TIMEOUT / 1000}秒）`
+            ? context?.signal?.aborted
+              ? "请求已取消"
+              : `请求超时（${WEB_FETCH_TIMEOUT / 1000}秒）`
             : `请求失败: ${err instanceof Error ? err.message : String(err)}`,
         });
       } finally {
         clearTimeout(timer);
+        context?.signal?.removeEventListener("abort", onAbort);
       }
     },
   };

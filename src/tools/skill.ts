@@ -1,7 +1,9 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { execSync } from "node:child_process";
-import type { Tool } from "../types.js";
+import type { Config, Tool, ToolExecutionContext } from "../types.js";
+import { resolveWorkspaceFile } from "./workspace-path.js";
+import { requestApproval } from "./approval.js";
 
 export interface SkillMeta {
   name: string;
@@ -41,8 +43,8 @@ export function listSkills(workspacePath: string): SkillMeta[] {
 
   const skills: SkillMeta[] = [];
   for (const entry of entries) {
-    const skillPath = resolve(dir, entry);
     try {
+      const skillPath = resolveWorkspaceFile(workspacePath, resolve(dir, entry));
       if (!statSync(skillPath).isDirectory()) continue;
       const mdPath = resolve(skillPath, "SKILL.md");
       const content = readFileSync(mdPath, "utf-8");
@@ -58,7 +60,7 @@ export function listSkills(workspacePath: string): SkillMeta[] {
 }
 
 /** 执行技能中的动态命令（`!`command`` 语法） */
-function executeDynamicCommands(body: string, skillDir: string, args: string): string {
+function executeDynamicCommands(workspacePath: string, body: string, skillDir: string, args: string, bashMode: "deny" | "ask" | "allow", context?: ToolExecutionContext): string {
   // 替换 $ARGUMENTS
   let result = body.replace(/\$ARGUMENTS/g, args);
   // 替换 ${CLAUDE_SKILL_DIR}
@@ -66,6 +68,11 @@ function executeDynamicCommands(body: string, skillDir: string, args: string): s
 
   // 处理 !`command` 语法：执行命令并替换为输出
   result = result.replace(/!`([^`]+)`/g, (_, cmd) => {
+    if (bashMode === "deny") return `[动态命令已禁用: ${cmd}]`;
+    if (bashMode === "ask") {
+      const approval = requestApproval(workspacePath, "skill", cmd, skillDir, undefined, context?.actor, context?.sessionId);
+      if (!approval.approved) return `[动态命令需要用户确认，批准后重新发起任务即可执行一次。审批 ID: ${approval.approval!.id}${approvalCommandHint(approval.approval!.id, context)}，命令: ${cmd}]`;
+    }
     try {
       return execSync(cmd, { encoding: "utf-8", timeout: 10_000, cwd: skillDir }).trim();
     } catch (err) {
@@ -75,6 +82,12 @@ function executeDynamicCommands(body: string, skillDir: string, args: string): s
 
   // 处理 ```! 代码块语法
   result = result.replace(/```!\n([\s\S]*?)```/g, (_, code) => {
+    if (bashMode === "deny") return `[动态命令已禁用: ${code.trim()}]`;
+    if (bashMode === "ask") {
+      const command = code.trim();
+      const approval = requestApproval(workspacePath, "skill", command, skillDir, undefined, context?.actor, context?.sessionId);
+      if (!approval.approved) return `[动态命令需要用户确认，批准后重新发起任务即可执行一次。审批 ID: ${approval.approval!.id}${approvalCommandHint(approval.approval!.id, context)}，命令: ${command}]`;
+    }
     try {
       return execSync(code.trim(), { encoding: "utf-8", timeout: 10_000, cwd: skillDir }).trim();
     } catch (err) {
@@ -85,24 +98,29 @@ function executeDynamicCommands(body: string, skillDir: string, args: string): s
   return result;
 }
 
+function approvalCommandHint(id: string, context?: ToolExecutionContext): string {
+  return context?.actor?.channel === "feishu" ? `，请发送 /approve ${id}` : "";
+}
+
 /** 加载技能的完整指令内容 */
-function loadSkill(workspacePath: string, name: string, args: string): string | null {
+function loadSkill(workspacePath: string, name: string, args: string, bashMode: "deny" | "ask" | "allow", context?: ToolExecutionContext): string | null {
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) return null;
   const dir = skillsDir(workspacePath);
-  const skillPath = resolve(dir, name);
-  const mdPath = resolve(skillPath, "SKILL.md");
 
   try {
+    const skillPath = resolveWorkspaceFile(workspacePath, resolve(dir, name));
+    const mdPath = resolve(skillPath, "SKILL.md");
     if (!statSync(skillPath).isDirectory()) return null;
     const content = readFileSync(mdPath, "utf-8");
     const parsed = parseSkillMd(content);
     if (!parsed) return null;
-    return executeDynamicCommands(parsed.body, skillPath, args);
+    return executeDynamicCommands(workspacePath, parsed.body, skillPath, args, bashMode, context);
   } catch {
     return null;
   }
 }
 
-export function createSkillUseTool(workspacePath: string): Tool {
+export function createSkillUseTool(workspacePath: string, getConfig: () => Config): Tool {
   return {
     name: "skill_use",
     description: "激活一个技能。激活后，按照技能的指令执行任务。",
@@ -120,10 +138,11 @@ export function createSkillUseTool(workspacePath: string): Tool {
       },
       required: ["name"],
     },
-    execute: async (toolArgs) => {
+    execute: async (toolArgs, context) => {
       const name = toolArgs.name as string;
       const args = (toolArgs.args as string) ?? "";
-      const body = loadSkill(workspacePath, name, args);
+      const bashMode = getConfig().security?.bash?.mode ?? "deny";
+      const body = loadSkill(workspacePath, name, args, bashMode, context);
       if (!body) {
         const available = listSkills(workspacePath).map((s) => s.name).join(", ");
         return JSON.stringify({

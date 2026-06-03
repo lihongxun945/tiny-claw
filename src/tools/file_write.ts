@@ -1,8 +1,8 @@
 import { writeFileSync, mkdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { Tool } from "../types.js";
 
-export function createFileWriteTool(): Tool {
+export function createFileWriteTool(workspacePath: string): Tool {
   return {
     name: "file_write",
     description: "创建或覆盖写入文件。自动创建不存在的父目录。",
@@ -21,10 +21,10 @@ export function createFileWriteTool(): Tool {
       required: ["path", "content"],
     },
     execute: async (args) => {
-      const filePath = resolve(args.path as string);
       const content = args.content as string;
 
       try {
+        const filePath = resolve(workspacePath, args.path as string);
         mkdirSync(dirname(filePath), { recursive: true });
         writeFileSync(filePath, content, "utf-8");
         return JSON.stringify({

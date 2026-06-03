@@ -8,9 +8,130 @@ const DEFAULTS: Partial<Config> = {
   maxContextTokens: 128000,
   contextCompressionThreshold: 0.7,
   historyWindowSize: 5,
-  maxAgentIterations: 0,
+  maxAgentIterations: 20,
   searchProvider: "ollama",
 };
+
+function assertString(value: unknown, key: string): asserts value is string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`配置字段 ${key} 必须是非空字符串`);
+}
+
+function assertNumber(value: unknown, key: string, options: { min: number; max?: number; integer?: boolean }): void {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`配置字段 ${key} 必须是数字`);
+  if (options.integer && !Number.isInteger(value)) throw new Error(`配置字段 ${key} 必须是整数`);
+  if (value < options.min || (options.max !== undefined && value > options.max)) {
+    throw new Error(`配置字段 ${key} 超出允许范围`);
+  }
+}
+
+function assertObject(value: unknown, key: string): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`配置字段 ${key} 必须是对象`);
+}
+
+function assertOptionalString(value: unknown, key: string): void {
+  if (value !== undefined && typeof value !== "string") throw new Error(`配置字段 ${key} 必须是字符串`);
+}
+
+function assertOptionalBoolean(value: unknown, key: string): void {
+  if (value !== undefined && typeof value !== "boolean") throw new Error(`配置字段 ${key} 必须是布尔值`);
+}
+
+function assertOptionalNumber(value: unknown, key: string, options: { min: number; max?: number; integer?: boolean }): void {
+  if (value !== undefined) assertNumber(value, key, options);
+}
+
+function assertOptionalStringArray(value: unknown, key: string): void {
+  if (value !== undefined && (!Array.isArray(value) || value.some((item) => typeof item !== "string"))) {
+    throw new Error(`配置字段 ${key} 必须是字符串数组`);
+  }
+}
+
+export function validateConfig(raw: Record<string, unknown>): void {
+  assertString(raw.apiUrl, "apiUrl");
+  assertString(raw.apiKey, "apiKey");
+  assertString(raw.model, "model");
+
+  const modelProvider = raw.modelProvider ?? "anthropic-messages";
+  if (!["anthropic-messages", "openai-chat", "chatgpt"].includes(String(modelProvider))) {
+    throw new Error("配置字段 modelProvider 不受支持");
+  }
+
+  assertNumber(raw.maxTokens ?? DEFAULTS.maxTokens, "maxTokens", { min: 1, max: 1_000_000, integer: true });
+  assertNumber(raw.maxContextTokens ?? DEFAULTS.maxContextTokens, "maxContextTokens", { min: 1, max: 10_000_000, integer: true });
+  assertNumber(raw.contextCompressionThreshold ?? DEFAULTS.contextCompressionThreshold, "contextCompressionThreshold", { min: 0.1, max: 1 });
+  assertNumber(raw.historyWindowSize ?? DEFAULTS.historyWindowSize, "historyWindowSize", { min: 0, max: 10_000, integer: true });
+  assertNumber(raw.maxAgentIterations ?? DEFAULTS.maxAgentIterations, "maxAgentIterations", { min: 0, max: 1_000, integer: true });
+
+  const searchProvider = raw.searchProvider ?? DEFAULTS.searchProvider;
+  if (!["ollama", "searxng", "brave", "duckduckgo"].includes(String(searchProvider))) {
+    throw new Error("配置字段 searchProvider 不受支持");
+  }
+
+  assertOptionalString(raw.ollamaApiKey, "ollamaApiKey");
+  assertOptionalString(raw.searxngUrl, "searxngUrl");
+  assertOptionalString(raw.braveApiKey, "braveApiKey");
+  assertOptionalStringArray(raw.enabledPlugins, "enabledPlugins");
+  assertOptionalStringArray(raw.externalPlugins, "externalPlugins");
+  if (raw.plugins !== undefined) assertObject(raw.plugins, "plugins");
+
+  if (raw.subAgent !== undefined) {
+    assertObject(raw.subAgent, "subAgent");
+    assertOptionalStringArray(raw.subAgent.allowedTools, "subAgent.allowedTools");
+    assertOptionalStringArray(raw.subAgent.disabledTools, "subAgent.disabledTools");
+    assertOptionalNumber(raw.subAgent.maxIterations, "subAgent.maxIterations", { min: 1, max: 8, integer: true });
+    assertOptionalNumber(raw.subAgent.maxConcurrency, "subAgent.maxConcurrency", { min: 1, max: 8, integer: true });
+  }
+
+  if (raw.sessionSummary !== undefined) {
+    assertObject(raw.sessionSummary, "sessionSummary");
+    assertOptionalBoolean(raw.sessionSummary.enabled, "sessionSummary.enabled");
+    assertOptionalNumber(raw.sessionSummary.turnThreshold, "sessionSummary.turnThreshold", { min: 1, integer: true });
+    assertOptionalNumber(raw.sessionSummary.recentTurns, "sessionSummary.recentTurns", { min: 0, integer: true });
+    assertOptionalNumber(raw.sessionSummary.maxChars, "sessionSummary.maxChars", { min: 1, integer: true });
+  }
+
+  if (raw.autoMemory !== undefined) {
+    assertObject(raw.autoMemory, "autoMemory");
+    assertOptionalBoolean(raw.autoMemory.enabled, "autoMemory.enabled");
+    if (raw.autoMemory.mode !== undefined && !["auto", "hybrid", "suggest"].includes(String(raw.autoMemory.mode))) {
+      throw new Error("配置字段 autoMemory.mode 不受支持");
+    }
+    assertOptionalNumber(raw.autoMemory.turnThreshold, "autoMemory.turnThreshold", { min: 1, integer: true });
+    assertOptionalNumber(raw.autoMemory.minConfidence, "autoMemory.minConfidence", { min: 0, max: 1 });
+    assertOptionalNumber(raw.autoMemory.maxCandidates, "autoMemory.maxCandidates", { min: 1, integer: true });
+    assertOptionalNumber(raw.autoMemory.maxBatchChars, "autoMemory.maxBatchChars", { min: 1, integer: true });
+  }
+
+  if (raw.debug !== undefined && typeof raw.debug !== "boolean") {
+    assertObject(raw.debug, "debug");
+    assertOptionalBoolean(raw.debug.enabled, "debug.enabled");
+    assertOptionalBoolean(raw.debug.modelIO, "debug.modelIO");
+    assertOptionalBoolean(raw.debug.rawStreamEvents, "debug.rawStreamEvents");
+  }
+
+  if (raw.security !== undefined) {
+    assertObject(raw.security, "security");
+  }
+  const security = raw.security as Config["security"];
+  if (security?.bash !== undefined) assertObject(security.bash, "security.bash");
+  const bashMode = security?.bash?.mode;
+  if (bashMode !== undefined && !["deny", "ask", "allow"].includes(bashMode)) {
+    throw new Error("配置字段 security.bash.mode 不受支持");
+  }
+  const gatewayHost = security?.gateway?.host;
+  const gatewayToken = security?.gateway?.token;
+  if (security?.gateway !== undefined) assertObject(security.gateway, "security.gateway");
+  if (gatewayHost !== undefined && typeof gatewayHost !== "string") {
+    throw new Error("配置字段 security.gateway.host 必须是字符串");
+  }
+  if (gatewayToken !== undefined && typeof gatewayToken !== "string") {
+    throw new Error("配置字段 security.gateway.token 必须是字符串");
+  }
+  if (gatewayHost && gatewayHost !== "127.0.0.1" && gatewayHost !== "localhost" && gatewayHost !== "::1" && !gatewayToken) {
+    throw new Error("Gateway 暴露到非回环地址时必须配置 security.gateway.token");
+  }
+  assertOptionalBoolean(security?.auditTools, "security.auditTools");
+}
 
 export function loadConfig(workspacePath: string): Config {
   const configPath = resolve(workspacePath, "config.json");
@@ -25,6 +146,7 @@ export function loadConfig(workspacePath: string): Config {
   if (!raw.apiUrl) throw new Error("配置缺少 apiUrl");
   if (!raw.apiKey) throw new Error("配置缺少 apiKey");
   if (!raw.model) throw new Error("配置缺少 model");
+  validateConfig(raw);
 
   return {
     apiUrl: raw.apiUrl as string,
@@ -47,6 +169,7 @@ export function loadConfig(workspacePath: string): Config {
     sessionSummary: raw.sessionSummary as Config["sessionSummary"] | undefined,
     autoMemory: raw.autoMemory as Config["autoMemory"] | undefined,
     debug: raw.debug as Config["debug"] | undefined,
+    security: raw.security as Config["security"] | undefined,
     workspacePath,
     systemPrompt: loadIdentity(workspacePath),
   };

@@ -49,6 +49,7 @@ export interface Config {
   sessionSummary?: SessionSummaryConfig;
   autoMemory?: AutoMemoryConfig;
   debug?: boolean | DebugConfig;
+  security?: SecurityConfig;
   workspacePath: string;
   systemPrompt: string;
 }
@@ -82,6 +83,17 @@ export interface DebugConfig {
   rawStreamEvents?: boolean;
 }
 
+export interface SecurityConfig {
+  bash?: {
+    mode?: "deny" | "ask" | "allow";
+  };
+  gateway?: {
+    host?: string;
+    token?: string;
+  };
+  auditTools?: boolean;
+}
+
 // === Tool ===
 
 export interface ToolDefinition {
@@ -98,7 +110,19 @@ export interface Tool {
   name: string;
   description: string;
   inputSchema: ToolDefinition["input_schema"];
-  execute: (args: Record<string, unknown>) => Promise<string>;
+  execute: (args: Record<string, unknown>, context?: ToolExecutionContext) => Promise<string>;
+}
+
+export interface ToolExecutionContext {
+  signal?: AbortSignal;
+  sessionId?: string;
+  actor?: AgentActor;
+}
+
+export interface AgentActor {
+  channel: "cli" | "web" | "feishu";
+  requesterId?: string;
+  chatId?: string;
 }
 
 // === API Request ===

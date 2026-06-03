@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Tool } from "../types.js";
 
-export function createFileEditTool(): Tool {
+export function createFileEditTool(workspacePath: string): Tool {
   return {
     name: "file_edit",
     description:
@@ -26,7 +26,7 @@ export function createFileEditTool(): Tool {
       required: ["path", "old_text", "new_text"],
     },
     execute: async (args) => {
-      const filePath = resolve(args.path as string);
+      const filePath = resolve(workspacePath, args.path as string);
       const oldText = args.old_text as string;
       const newText = args.new_text as string;
 

@@ -49,7 +49,7 @@ export class AnthropicMessagesClient implements ModelClient {
   }
 
   /** 非流式调用，用于上下文压缩等内部用途 */
-  async complete(messages: Message[], systemPrompt?: string): Promise<string> {
+  async complete(messages: Message[], systemPrompt?: string, signal?: AbortSignal): Promise<string> {
     const url = this.endpoint();
 
     const body: Record<string, unknown> = {
@@ -77,6 +77,7 @@ export class AnthropicMessagesClient implements ModelClient {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),
+      signal,
     });
 
     if (!response.ok) {
@@ -111,6 +112,7 @@ export class AnthropicMessagesClient implements ModelClient {
     onDelta: (text: string) => void,
     tools?: ToolDefinition[],
     systemPrompt?: string,
+    signal?: AbortSignal,
   ): Promise<ChatResponse> {
     const url = this.endpoint();
 
@@ -142,6 +144,7 @@ export class AnthropicMessagesClient implements ModelClient {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),
+      signal,
     });
 
     if (!response.ok) {

@@ -2,10 +2,11 @@ import { useState, useRef, useEffect } from "react";
 
 interface Props {
   onSend: (text: string) => void;
+  onStop: () => void;
   disabled: boolean;
 }
 
-export default function ChatInput({ onSend, disabled }: Props) {
+export default function ChatInput({ onSend, onStop, disabled }: Props) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -50,6 +51,7 @@ export default function ChatInput({ onSend, disabled }: Props) {
       <button onClick={handleSend} disabled={disabled || !text.trim()}>
         ↑
       </button>
+      {disabled && <button className="stop-btn" onClick={onStop}>停止</button>}
     </div>
   );
 }

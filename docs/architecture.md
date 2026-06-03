@@ -105,10 +105,11 @@ workspace/
 | maxContextTokens | 上下文最大 token 估计 | 128000 |
 | contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
 | historyWindowSize | 历史窗口（轮） | 5 |
-| maxAgentIterations | Agent Loop 最大迭代次数 | 0（不限） |
+| maxAgentIterations | Agent Loop 最大迭代次数，显式配置 0 表示不限 | 20 |
 | sessionSummary | 会话滚动摘要配置 | enabled=true, turnThreshold=5, recentTurns=3 |
 | autoMemory | 自动记忆配置 | enabled=true, turnThreshold=10 |
 | debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
+| security | 基础安全边界：bash 策略、Gateway host/token、工具审计 | 见下文 |
 | searchProvider | 搜索引擎 (ollama/searxng/brave/duckduckgo) | ollama |
 | ollamaApiKey | Ollama Web Search API key | - |
 | searxngUrl | SearXNG 实例地址 | - |
@@ -171,6 +172,32 @@ workspace/
 - `maxIterations`：每个 sub-agent 的最大 Agent Loop 轮数，硬上限为 8
 - `maxConcurrency`：一次 `sub_agent_run` 最多并发的 sub-agent 数，硬上限为 8
 - `sub_agent_run` 始终禁用，避免 sub-agent 递归派生 sub-agent
+
+### security 配置
+
+文件工具支持访问 workspace 外部文件：相对路径以 workspace 为基准，也可以传入绝对路径或使用 `..`。`bash` 可通过 `cwd` 在任意目录执行命令。Shell 和 Gateway 暴露范围通过 `security` 配置：
+
+```json
+{
+  "security": {
+    "bash": {
+      "mode": "deny"
+    },
+    "gateway": {
+      "host": "127.0.0.1",
+      "token": ""
+    },
+    "auditTools": true
+  }
+}
+```
+
+- `bash.mode`：统一控制 `bash` 工具和技能动态 shell。`deny` 默认拒绝执行；`ask` 创建一次性审批记录，批准后相同目录中的相同请求可在下次调用时执行一次；`allow` 允许执行。`bash.cwd` 工具参数支持相对 workspace 的路径或绝对路径。
+- `gateway.host`：Gateway API 监听地址，默认 `127.0.0.1`。暴露到其他机器时应同时配置 token。
+- `gateway.token`：可选 Bearer token。配置后 API 请求需要携带 `Authorization: Bearer <token>`。
+- `auditTools`：是否把工具调用和完成状态写入日志，默认开启。审计日志不会记录文件内容或记忆内容。
+
+`ask` 模式使用进程内审批队列。审批记录按 workspace、来源、工作目录、命令和调用者身份去重，默认 10 分钟过期。批准后的许可只消费一次；拒绝、过期或消费后立即失效。Gateway 暴露 `/approvals` 系列接口，Web UI 的“审批”页面提供允许一次和拒绝操作。飞书消息会携带用户 `open_id` 和 `chat_id`，用户可以发送 `/approvals`、`/approve <id>` 或 `/reject <id>` 处理自己在当前会话发起的审批。
 
 ### autoMemory 配置
 
@@ -238,6 +265,15 @@ AgentSession 初始化 → PluginManager.setRuntimeDeps()
 ```
 
 Agent Loop 是核心：模型自主决定是否调用工具，工具执行结果反馈给模型，模型继续输出，直到无工具调用时将最终回答交给用户。
+
+### 运行稳定性
+
+- 同一 session 同一时间只允许执行一个任务，避免历史消息和工具结果交错。
+- `AgentSession.cancel()` 会中止当前模型请求，并把取消信号传给工具；`bash` 收到信号后终止子进程。
+- Gateway 在 SSE 客户端断开时自动取消后台任务，也提供 `POST /sessions/:id/cancel` 主动取消接口。
+- 活跃任务不会被空闲会话清理器删除。
+- 模型调用、hook 和工具异常会进入 `onError` hook；工具异常仍会转换为结构化结果反馈给模型。
+- 配置加载和 Gateway 配置更新都会执行 schema 校验。非法配置不会写回磁盘。
 
 ## 关键设计决策
 
@@ -344,7 +380,7 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 
 插件也可以注册自己的工具，通过 `PluginContext.registerTool()` 方法。所有插件的工具统一合并到 PluginManager 的 ToolRegistry 中，模型调用时通过 `getTool(name)` 查找执行。新增工具只需：1) 在任意插件中实现 Tool 接口 2) 在插件 init 中注册。
 
-`PluginManager` 支持工具白名单/黑名单过滤（`allowedTools` / `disabledTools`），用于 sub-agent 等需要收敛权限的场景。工具在注册阶段被过滤，模型看不到被禁用的工具定义，也无法调用这些工具。
+`PluginManager` 支持工具白名单/黑名单过滤（`allowedTools` / `disabledTools`），用于 sub-agent 等需要收敛权限的场景。工具在注册阶段被过滤，模型看不到被禁用的工具定义，也无法调用这些工具。文件工具支持 workspace 外路径；`bash` 默认禁用，需要通过 `security.bash.mode` 显式开放。
 
 ### 搜索引擎：多 Provider 架构
 
@@ -365,8 +401,8 @@ web_search 工具支持四个搜索引擎，通过 `config.json` 的 `searchProv
 |------|------|----------|
 | web_search | 网络搜索（多 provider） | 按配置选择引擎 |
 | web_fetch | 获取网页内容 | 15 秒超时、50KB 截断、仅支持文本类内容 |
-| bash | 执行 shell 命令 | 超时控制（默认30秒）、输出截断（10KB） |
-| file_read | 读取文件 | 路径 resolve 防止路径遍历 |
+| bash | 在指定目录执行 shell 命令 | 支持任意 cwd、超时控制（默认30秒）、输出截断（10KB） |
+| file_read | 读取文件 | 相对路径以 workspace 为基准，也支持绝对路径 |
 | file_write | 写入文件 | 自动创建父目录 |
 | file_edit | 精确替换文本 | old_text 必须唯一匹配，防止误替换 |
 | memory_save | 保存/覆盖长期记忆，写入 frontmatter 元数据 | name 防路径遍历（仅允许字母、数字、_-） |
@@ -486,7 +522,7 @@ description: 代码审查，检查代码质量、安全性和最佳实践
 - **发现**：启动时 `listSkills()` 扫描 `skills/<name>/SKILL.md`，将名称和描述注入 system prompt
 - **激活**：模型调用 `skill_use(name)` 获取完整指令内容，指令中注入技能工作目录绝对路径
 - **查询**：模型调用 `skill_list()` 列出所有可用技能
-- **动态内容**：支持 `!`command`` 执行命令注入、`$ARGUMENTS` 参数替换、`${CLAUDE_SKILL_DIR}` 路径替换
+- **动态内容**：支持 `!`command`` 执行命令注入、`$ARGUMENTS` 参数替换、`${CLAUDE_SKILL_DIR}` 路径替换。动态命令统一遵循 `security.bash.mode`
 - **文件格式**：`SKILL.md` frontmatter 用 `---` 包裹，必须包含 `description` 字段，`name` 由目录名决定
 
 ### Gateway：HTTP API 服务
@@ -502,6 +538,7 @@ Gateway 是一个 HTTP 服务器，让外部客户端（Web UI、聊天机器人
 | POST | /chat | 发送消息，SSE 流式返回事件 |
 | GET | /sessions | 列出活跃会话 |
 | GET | /sessions/:id/messages | 获取会话消息历史 |
+| POST | /sessions/:id/cancel | 取消会话中正在运行的任务 |
 | DELETE | /sessions/:id | 销毁会话 |
 | GET | /memory | 列出长期记忆 |
 | GET | /memory/:name | 读取单条长期记忆 |
@@ -685,6 +722,8 @@ const session = new AgentSession(id, workspacePath, pm);
 - 使用 `WSClient` 建立长连接，无需公网域名或 ngrok
 - 使用 `EventDispatcher` 注册 `im.message.receive_v1` 事件处理
 - 收到消息后异步处理，同一 `chat_id` 复用 AgentSession（session_id 格式：`feishu:<chat_id>`）
+- 普通回复先发送一张占位卡片，再按 Agent 流式事件节流更新同一张卡片，避免结束后一次性返回
+- 飞书文字审批绑定发起人的 `open_id` 和当前 `chat_id`，避免其他用户查看或处理审批
 - 超长回复自动按换行符分段发送（~4000 字符/段）
 - 支持 `onReady`/`onError`/`onReconnecting`/`onReconnected` 生命周期回调
 - 插件销毁时自动关闭 WebSocket 连接

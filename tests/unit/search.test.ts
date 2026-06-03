@@ -151,4 +151,15 @@ describe("web_search tool", () => {
       error: "搜索失败 (ollama): Ollama Web Search 请求失败 (401)",
     });
   });
+
+  it("cancels an active search when the parent signal aborts", async () => {
+    vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    })));
+    const controller = new AbortController();
+    const running = createWebSearchTool(config({ ollamaApiKey: "key" }))
+      .execute({ query: "cancel" }, { signal: controller.signal });
+    controller.abort();
+    expect(JSON.parse(await running)).toEqual({ error: "搜索已取消 (ollama)" });
+  });
 });

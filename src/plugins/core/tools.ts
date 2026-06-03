@@ -15,23 +15,54 @@ import {
 } from "../../tools/memory.js";
 import { createSkillUseTool, createSkillListTool } from "../../tools/skill.js";
 import { loadConfig } from "../../config.js";
+import { appendLog } from "../../workspace/logger.js";
+import type { Tool } from "../../types.js";
+
+function summarizeArgs(tool: Tool, args: Record<string, unknown>): Record<string, unknown> {
+  if (tool.name === "bash") return { command: args.command, timeout: args.timeout, cwd: args.cwd };
+  if (tool.name === "file_read") return { path: args.path, offset: args.offset, limit: args.limit };
+  if (tool.name === "file_write") return { path: args.path, bytes: typeof args.content === "string" ? Buffer.byteLength(args.content, "utf-8") : undefined };
+  if (tool.name === "file_edit") return { path: args.path };
+  return { keys: Object.keys(args) };
+}
+
+function withAudit(workspacePath: string, tool: Tool): Tool {
+  return {
+    ...tool,
+    async execute(args, context) {
+      const config = loadConfig(workspacePath);
+      if (config.security?.auditTools !== false) {
+        appendLog(workspacePath, "AUDIT", `工具调用 ${tool.name} ${JSON.stringify(summarizeArgs(tool, args))}`);
+      }
+      const result = await tool.execute(args, context);
+      if (config.security?.auditTools !== false) {
+        appendLog(workspacePath, "AUDIT", `工具完成 ${tool.name}`);
+      }
+      return result;
+    },
+  };
+}
 
 export const coreToolsPlugin: Plugin = {
   name: "core-tools",
   async init(ctx) {
-    ctx.registerTool(createWebSearchTool(() => loadConfig(ctx.workspacePath)));
-    ctx.registerTool(createWebFetchTool());
-    ctx.registerTool(createBashTool());
-    ctx.registerTool(createFileReadTool());
-    ctx.registerTool(createFileWriteTool());
-    ctx.registerTool(createFileEditTool());
-    ctx.registerTool(createMemorySaveTool(ctx.workspacePath));
-    ctx.registerTool(createMemoryAppendTool(ctx.workspacePath));
-    ctx.registerTool(createMemoryListTool(ctx.workspacePath));
-    ctx.registerTool(createMemoryReadTool(ctx.workspacePath));
-    ctx.registerTool(createMemorySearchTool(ctx.workspacePath));
-    ctx.registerTool(createMemoryDeleteTool(ctx.workspacePath));
-    ctx.registerTool(createSkillUseTool(ctx.workspacePath));
-    ctx.registerTool(createSkillListTool(ctx.workspacePath));
+    const getConfig = () => loadConfig(ctx.workspacePath);
+    const tools = [
+      createWebSearchTool(getConfig),
+      createWebFetchTool(),
+      createBashTool(ctx.workspacePath, getConfig),
+      createFileReadTool(ctx.workspacePath),
+      createFileWriteTool(ctx.workspacePath),
+      createFileEditTool(ctx.workspacePath),
+      createMemorySaveTool(ctx.workspacePath),
+      createMemoryAppendTool(ctx.workspacePath),
+      createMemoryListTool(ctx.workspacePath),
+      createMemoryReadTool(ctx.workspacePath),
+      createMemorySearchTool(ctx.workspacePath),
+      createMemoryDeleteTool(ctx.workspacePath),
+      createSkillUseTool(ctx.workspacePath, getConfig),
+      createSkillListTool(ctx.workspacePath),
+    ];
+    for (const tool of tools) ctx.registerTool(withAudit(ctx.workspacePath, tool));
   },
 };

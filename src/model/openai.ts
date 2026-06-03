@@ -141,7 +141,7 @@ export class OpenAIChatClient implements ModelClient {
     }
   }
 
-  async complete(messages: Message[], systemPrompt?: string): Promise<string> {
+  async complete(messages: Message[], systemPrompt?: string, signal?: AbortSignal): Promise<string> {
     const url = this.endpoint();
     const body = {
       model: this.config.model,
@@ -164,6 +164,7 @@ export class OpenAIChatClient implements ModelClient {
         "authorization": `Bearer ${this.config.apiKey}`,
       },
       body: JSON.stringify(body),
+      signal,
     });
 
     if (!response.ok) {
@@ -195,6 +196,7 @@ export class OpenAIChatClient implements ModelClient {
     onDelta: (text: string) => void,
     tools?: ToolDefinition[],
     systemPrompt?: string,
+    signal?: AbortSignal,
   ): Promise<ChatResponse> {
     const url = this.endpoint();
     const openAITools = toOpenAITools(tools);
@@ -222,6 +224,7 @@ export class OpenAIChatClient implements ModelClient {
         "authorization": `Bearer ${this.config.apiKey}`,
       },
       body: JSON.stringify(body),
+      signal,
     });
 
     if (!response.ok) {

@@ -27,7 +27,7 @@ describe("loadConfig", () => {
       maxContextTokens: 128000,
       contextCompressionThreshold: 0.7,
       historyWindowSize: 5,
-      maxAgentIterations: 0,
+      maxAgentIterations: 20,
       searchProvider: "ollama",
       workspacePath,
       systemPrompt: "You are tiny-claw.",
@@ -60,6 +60,23 @@ describe("loadConfig", () => {
     workspaces.push(workspacePath);
     writeFileSync(resolve(workspacePath, "config.json"), JSON.stringify(config), "utf-8");
 
+    expect(() => loadConfig(workspacePath)).toThrow(message);
+  });
+
+  it.each([
+    [{ maxTokens: 0 }, "配置字段 maxTokens 超出允许范围"],
+    [{ maxAgentIterations: -1 }, "配置字段 maxAgentIterations 超出允许范围"],
+    [{ searchProvider: "unknown" }, "配置字段 searchProvider 不受支持"],
+    [{ security: { bash: { mode: "unknown" } } }, "配置字段 security.bash.mode 不受支持"],
+    [{ security: { gateway: { host: "0.0.0.0" } } }, "Gateway 暴露到非回环地址时必须配置 security.gateway.token"],
+    [{ subAgent: { maxConcurrency: 9 } }, "配置字段 subAgent.maxConcurrency 超出允许范围"],
+    [{ autoMemory: { minConfidence: 2 } }, "配置字段 autoMemory.minConfidence 超出允许范围"],
+    [{ sessionSummary: { enabled: "yes" } }, "配置字段 sessionSummary.enabled 必须是布尔值"],
+    [{ enabledPlugins: "feishu" }, "配置字段 enabledPlugins 必须是字符串数组"],
+    [{ plugins: [] }, "配置字段 plugins 必须是对象"],
+  ])("rejects invalid configuration", (overrides, message) => {
+    const workspacePath = createTempWorkspace(overrides);
+    workspaces.push(workspacePath);
     expect(() => loadConfig(workspacePath)).toThrow(message);
   });
 });

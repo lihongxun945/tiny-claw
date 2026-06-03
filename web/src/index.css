@@ -441,6 +441,11 @@ html, body, #root {
   cursor: not-allowed;
 }
 
+.chat-input .stop-btn {
+  background: #e74c3c;
+  color: #fff;
+}
+
 /* Empty state */
 .empty-state {
   display: flex;
@@ -649,6 +654,134 @@ html, body, #root {
 .config-message {
   font-size: 13px;
   color: var(--accent);
+}
+
+/* Command approvals */
+.approval-manager {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.approval-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.approval-toolbar h2 {
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.approval-toolbar span,
+.approval-message,
+.approval-meta {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.approval-toolbar button,
+.approval-actions button {
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 7px 14px;
+  font-size: 13px;
+}
+
+.approval-toolbar button,
+.approval-actions button:first-child {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.approval-actions button:last-child {
+  background: var(--border);
+  color: var(--text);
+}
+
+.approval-toolbar button:disabled,
+.approval-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.approval-message {
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border);
+  color: var(--accent);
+}
+
+.approval-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 24px;
+}
+
+.approval-item {
+  background: var(--bg-tool);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+  padding: 14px;
+}
+
+.approval-item-header,
+.approval-actions,
+.approval-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.approval-item-header {
+  margin-bottom: 10px;
+}
+
+.approval-source,
+.approval-status {
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 3px 7px;
+}
+
+.approval-source {
+  background: rgba(126, 200, 227, 0.15);
+  color: var(--accent);
+}
+
+.approval-status {
+  background: rgba(240, 173, 78, 0.14);
+  color: #f0ad4e;
+}
+
+.approval-status.approved {
+  background: rgba(92, 184, 92, 0.14);
+  color: #5cb85c;
+}
+
+.approval-item pre {
+  background: #0d1117;
+  border-radius: 4px;
+  color: var(--text);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 13px;
+  margin-bottom: 10px;
+  overflow-x: auto;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.approval-meta {
+  flex-direction: column;
+  align-items: flex-start;
+  margin-bottom: 12px;
+  word-break: break-all;
 }
 
 /* Memory manager */

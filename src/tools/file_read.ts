@@ -4,7 +4,7 @@ import type { Tool } from "../types.js";
 
 const MAX_READ = 50000;
 
-export function createFileReadTool(): Tool {
+export function createFileReadTool(workspacePath: string): Tool {
   return {
     name: "file_read",
     description: "读取文件内容，返回带行号的文本。支持按行号范围读取。",
@@ -27,7 +27,7 @@ export function createFileReadTool(): Tool {
       required: ["path"],
     },
     execute: async (args) => {
-      const filePath = resolve(args.path as string);
+      const filePath = resolve(workspacePath, args.path as string);
       const offset = (args.offset as number) ?? 1;
       const limit = args.limit as number | undefined;
 

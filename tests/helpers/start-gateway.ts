@@ -19,14 +19,16 @@ async function getFreePort(): Promise<number> {
   });
 }
 
-async function waitUntilReady(url: string, child: ChildProcess): Promise<void> {
+async function waitUntilReady(url: string, child: ChildProcess, token?: string): Promise<void> {
   const deadline = Date.now() + 8_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(`Gateway 提前退出: ${child.exitCode}`);
     }
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        headers: token ? { authorization: `Bearer ${token}` } : undefined,
+      });
       if (response.ok) return;
     } catch {
       // Gateway is still starting.
@@ -42,7 +44,7 @@ export interface TestGateway {
   stop(): Promise<void>;
 }
 
-export async function startTestGateway(workspacePath: string): Promise<TestGateway> {
+export async function startTestGateway(workspacePath: string, token?: string): Promise<TestGateway> {
   const apiPort = await getFreePort();
   const webPort = await getFreePort();
   const tsxBin = resolve("node_modules/.bin/tsx");
@@ -61,7 +63,7 @@ export async function startTestGateway(workspacePath: string): Promise<TestGatew
 
   const apiUrl = `http://127.0.0.1:${apiPort}`;
   const webUrl = `http://127.0.0.1:${webPort}`;
-  await waitUntilReady(`${apiUrl}/sessions`, child);
+  await waitUntilReady(`${apiUrl}/sessions`, child, token);
 
   return {
     apiUrl,
