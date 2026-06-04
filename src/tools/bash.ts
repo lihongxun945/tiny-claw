@@ -44,13 +44,16 @@ export function createBashTool(workspacePath: string, getConfig: () => Config): 
       if (mode === "ask") {
         const approval = requestApproval(workspacePath, "bash", command, cwd, undefined, context?.actor, context?.sessionId);
         if (approval.approved) return execute(command, timeout, cwd, context?.signal);
+        const approvalCommand = context?.actor?.channel === "feishu"
+          ? `/approve ${approval.approval!.id}`
+          : undefined;
         return JSON.stringify({
-          error: "bash 执行需要用户确认。批准后重新发起任务即可执行一次。",
+          error: approvalCommand
+            ? `bash 执行需要用户确认。请在飞书中回复完整命令：${approvalCommand}。只回复“批准”无效。批准后系统会立即执行该命令。`
+            : "bash 执行需要用户确认。批准后重新发起任务即可执行一次。",
           requiresConfirmation: true,
           approvalId: approval.approval!.id,
-          approvalCommand: context?.actor?.channel === "feishu"
-            ? `/approve ${approval.approval!.id}`
-            : undefined,
+          approvalCommand,
           command,
           cwd,
         });

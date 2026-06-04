@@ -1,8 +1,18 @@
+import { useState } from "react";
 import Markdown from "react-markdown";
 import type { ToolCallInfo } from "../types.js";
+import { approveCommand, rejectCommand } from "../lib/api.js";
 
 interface Props {
   toolCall: ToolCallInfo;
+}
+
+interface ApprovalResult {
+  requiresConfirmation: true;
+  approvalId: string;
+  command?: string;
+  cwd?: string;
+  error?: string;
 }
 
 function summarizeInput(name: string, input: Record<string, unknown>): string {
@@ -23,6 +33,7 @@ function summarizeResult(result: string | undefined): string {
   if (!result) return "";
   try {
     const obj = JSON.parse(result);
+    if (obj.requiresConfirmation && obj.approvalId) return "需要批准";
     if (obj.error) return `❌ ${obj.error}`;
     if (obj.stdout !== undefined) return obj.stdout.slice(0, 80);
     if (obj.results) return `${Array.isArray(obj.results) ? obj.results.length : 0} 条结果`;
@@ -31,13 +42,58 @@ function summarizeResult(result: string | undefined): string {
   return result.slice(0, 80);
 }
 
+function parseApprovalResult(result: string | undefined): ApprovalResult | undefined {
+  if (!result) return undefined;
+  try {
+    const obj = JSON.parse(result) as Partial<ApprovalResult>;
+    if (obj.requiresConfirmation === true && typeof obj.approvalId === "string") {
+      return obj as ApprovalResult;
+    }
+  } catch { /* not JSON */ }
+  return undefined;
+}
+
 export default function ToolCallBlock({ toolCall }: Props) {
+  const approval = parseApprovalResult(toolCall.result);
+  const [approvalStatus, setApprovalStatus] = useState<"pending" | "approved" | "rejected">("pending");
+  const [approvalMessage, setApprovalMessage] = useState("");
+  const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
   const inputStr = JSON.stringify(toolCall.input, null, 2);
   const inputSummary = summarizeInput(toolCall.name, toolCall.input);
   const resultSummary = summarizeResult(toolCall.result);
 
+  const handleApprove = async () => {
+    if (!approval) return;
+    setIsSubmittingApproval(true);
+    setApprovalMessage("");
+    try {
+      await approveCommand(approval.approvalId);
+      setApprovalStatus("approved");
+      setApprovalMessage("已批准。请重新发送原任务，下一次相同命令会执行一次。");
+    } catch (err) {
+      setApprovalMessage(err instanceof Error ? err.message : "批准失败");
+    } finally {
+      setIsSubmittingApproval(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!approval) return;
+    setIsSubmittingApproval(true);
+    setApprovalMessage("");
+    try {
+      await rejectCommand(approval.approvalId);
+      setApprovalStatus("rejected");
+      setApprovalMessage("已拒绝。");
+    } catch (err) {
+      setApprovalMessage(err instanceof Error ? err.message : "拒绝失败");
+    } finally {
+      setIsSubmittingApproval(false);
+    }
+  };
+
   return (
-    <details className="tool-block">
+    <details className="tool-block" open={approval ? true : undefined}>
       <summary>
         <span className="tool-name">{toolCall.name}</span>
         {inputSummary && <span className="tool-input-summary">{inputSummary}</span>}
@@ -49,7 +105,24 @@ export default function ToolCallBlock({ toolCall }: Props) {
         {toolCall.result !== undefined && (
           <>
             <div style={{ marginTop: 8 }}><strong>Result:</strong></div>
-            <Markdown>{toolCall.result}</Markdown>
+            {approval ? (
+              <div className="tool-approval">
+                <div className="tool-approval-title">此命令需要批准</div>
+                {approval.error && <div>{approval.error}</div>}
+                <div>审批 ID：<code>{approval.approvalId}</code></div>
+                {approval.command && <pre>{approval.command}</pre>}
+                {approval.cwd && <div>目录：{approval.cwd}</div>}
+                <div className="tool-approval-actions">
+                  <button onClick={handleApprove} disabled={isSubmittingApproval || approvalStatus !== "pending"}>
+                    {approvalStatus === "approved" ? "已批准" : "批准"}
+                  </button>
+                  <button onClick={handleReject} disabled={isSubmittingApproval || approvalStatus !== "pending"}>拒绝</button>
+                </div>
+                {approvalMessage && <div className="tool-approval-message">{approvalMessage}</div>}
+              </div>
+            ) : (
+              <Markdown>{toolCall.result}</Markdown>
+            )}
           </>
         )}
       </div>

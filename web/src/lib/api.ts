@@ -9,7 +9,8 @@ export async function fetchSessions(): Promise<Session[]> {
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  await fetch(`/sessions/${id}`, { method: "DELETE" });
+  const res = await fetch(`/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+  await parseJSON(res);
 }
 
 export async function cancelSession(id: string): Promise<void> {
@@ -21,7 +22,7 @@ export async function cancelSession(id: string): Promise<void> {
 }
 
 export async function fetchMessages(id: string): Promise<Message[]> {
-  const res = await fetch(`/sessions/${id}/messages`);
+  const res = await fetch(`/sessions/${encodeURIComponent(id)}/messages`);
   const data = await res.json();
   return data.messages ?? [];
 }

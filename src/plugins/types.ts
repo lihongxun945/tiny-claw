@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentSession } from "../agent.js";
 import type { MessageHistory } from "../history.js";
-import type { Tool, ToolDefinition, Config, Message, ChatResponse } from "../types.js";
+import type { Tool, ToolDefinition, Config, Message, ChatResponse, AgentActor } from "../types.js";
 import type { ModelClient } from "../model/index.js";
 
 // === 插件接口 ===
@@ -19,11 +19,49 @@ export interface PluginContext {
   workspacePath: string;
   registerRoute(route: RouteDefinition): void;
   registerTool(tool: Tool): void;
+  registerChatCommand(command: ChatCommand): void;
+  executeChatCommand(input: string, options: ExecuteChatCommandOptions): Promise<ChatCommandResult | undefined>;
   registerHooks(hooks: PluginHooks): void;
   extendPrompt(section: PromptSection): void;
   getOrCreateSession(id: string, prefix?: string): AgentSession;
   deleteSession(id: string): boolean;
   log(level: "INFO" | "WARN" | "ERROR", message: string, sessionId?: string): void;
+}
+
+// === 聊天命令 ===
+
+export interface ChatCommand {
+  name: string;
+  aliases?: string[];
+  description: string;
+  usage?: string;
+  execute(ctx: ChatCommandContext): Promise<ChatCommandResult> | ChatCommandResult;
+}
+
+export interface ChatCommandContext {
+  workspacePath: string;
+  sessionId: string;
+  channel: AgentActor["channel"];
+  actor?: AgentActor;
+  config?: Config;
+  history?: MessageHistory;
+  commandName: string;
+  args: string[];
+  rawArgs: string;
+  rawInput: string;
+  getChatCommands(): ChatCommand[];
+}
+
+export interface ExecuteChatCommandOptions {
+  sessionId: string;
+  channel: AgentActor["channel"];
+  actor?: AgentActor;
+}
+
+export interface ChatCommandResult {
+  text: string;
+  sessionId?: string;
+  clearMessages?: boolean;
 }
 
 // === 插件钩子 ===

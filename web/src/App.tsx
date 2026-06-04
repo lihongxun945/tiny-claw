@@ -7,9 +7,8 @@ import SessionSidebar from "./components/SessionSidebar.js";
 import LogViewer from "./components/LogViewer.js";
 import ConfigEditor from "./components/ConfigEditor.js";
 import MemoryManager from "./components/MemoryManager.js";
-import ApprovalManager from "./components/ApprovalManager.js";
 
-type View = "chat" | "memory" | "approvals" | "logs" | "config";
+type View = "chat" | "memory" | "logs" | "config";
 
 function readHashSession(): string | null {
   const hash = location.hash;
@@ -89,10 +88,8 @@ export default function App() {
           case "done": {
             const sid = (d.session_id as string) ?? null;
             if (sid) setActiveSessionId(sid);
-            setMessages((prev) => [
-              ...prev,
-              { role: "assistant", text: fullText, toolCalls: [...toolCalls], timestamp: Date.now() },
-            ]);
+            const assistantMessage = { role: "assistant" as const, text: fullText, toolCalls: [...toolCalls], timestamp: Date.now() };
+            setMessages((prev) => d.clear_messages === true ? [assistantMessage] : [...prev, assistantMessage]);
             setStreamingText("");
             setStreamingToolCalls([]);
             setSidebarRefreshKey((k) => k + 1);
@@ -202,7 +199,6 @@ export default function App() {
           </>
         )}
         {view === "memory" && <MemoryManager />}
-        {view === "approvals" && <ApprovalManager />}
         {view === "logs" && <LogViewer />}
         {view === "config" && <ConfigEditor />}
       </div>

@@ -12,6 +12,9 @@ import type {
   PromptSection,
   RegisteredRoute,
   RouteDefinition,
+  ChatCommand,
+  ChatCommandResult,
+  ExecuteChatCommandOptions,
 } from "./plugins/types.js";
 import type { Config, Tool, ToolDefinition, Message, ChatResponse } from "./types.js";
 import type { ModelClient } from "./model/index.js";
@@ -19,6 +22,7 @@ import type { AgentSession } from "./agent.js";
 import type { MessageHistory } from "./history.js";
 
 type PluginModule = { default: Plugin };
+type RegisteredChatCommand = ChatCommand & { pluginName: string };
 
 export interface PluginManagerOptions {
   builtinPlugins?: string[];
@@ -31,6 +35,7 @@ export interface PluginManagerOptions {
 export class PluginManager {
   private registry = new ToolRegistry();
   private hooks: PluginHooks[] = [];
+  private chatCommands = new Map<string, RegisteredChatCommand>();
   private promptSections: PromptSection[] = [];
   private routes: RegisteredRoute[] = [];
   private loadedPlugins: Plugin[] = [];
@@ -143,6 +148,12 @@ export class PluginManager {
         if (pm.disabledTools.has(tool.name)) return;
         pm.registry.register(tool);
       },
+      registerChatCommand(command: ChatCommand) {
+        pm.registerChatCommand(command, pluginName);
+      },
+      executeChatCommand(input, options) {
+        return pm.executeChatCommand(input, options);
+      },
       registerHooks(hooks: PluginHooks) {
         pm.hooks.push(hooks);
       },
@@ -191,6 +202,55 @@ export class PluginManager {
 
   getTool(name: string): Tool | undefined {
     return this.registry.getTool(name);
+  }
+
+  // ========== Chat Command Access ==========
+
+  private registerChatCommand(command: ChatCommand, pluginName: string): void {
+    const registered = { ...command, pluginName };
+    for (const name of [command.name, ...(command.aliases ?? [])]) {
+      this.chatCommands.set(name.toLowerCase(), registered);
+    }
+  }
+
+  getChatCommands(): ChatCommand[] {
+    const seen = new Set<RegisteredChatCommand>();
+    const commands: ChatCommand[] = [];
+    for (const command of this.chatCommands.values()) {
+      if (seen.has(command)) continue;
+      seen.add(command);
+      commands.push(command);
+    }
+    return commands.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async executeChatCommand(input: string, options: ExecuteChatCommandOptions): Promise<ChatCommandResult | undefined> {
+    const parsed = parseChatCommand(input);
+    if (!parsed) return undefined;
+
+    if (parsed.name === "help" && !this.chatCommands.has("help")) {
+      return { text: formatCommandHelp(this.getChatCommands()) };
+    }
+
+    const command = this.chatCommands.get(parsed.name);
+    if (!command) {
+      return { text: `未知命令：/${parsed.name}\n发送 /help 查看可用命令。` };
+    }
+    const deps = this.runtimeDepsBySession.get(options.sessionId);
+
+    return command.execute({
+      workspacePath: this.workspacePath,
+      sessionId: options.sessionId,
+      channel: options.channel,
+      actor: options.actor,
+      config: deps?.config ?? this.config,
+      history: deps?.history ?? this.history,
+      commandName: parsed.name,
+      args: parsed.args,
+      rawArgs: parsed.rawArgs,
+      rawInput: input,
+      getChatCommands: () => this.getChatCommands(),
+    });
   }
 
   // ========== Route Access ==========
@@ -351,4 +411,28 @@ export class PluginManager {
   async destroy(): Promise<void> {
     await destroyPlugins(this.loadedPlugins);
   }
+}
+
+function parseChatCommand(input: string): { name: string; args: string[]; rawArgs: string } | undefined {
+  const text = input.trim();
+  if (!text.startsWith("/") || text === "/") return undefined;
+  const match = text.match(/^\/([A-Za-z][\w-]*)(?:\s+(.*))?$/);
+  if (!match) return undefined;
+  const rawArgs = match[2]?.trim() ?? "";
+  return {
+    name: match[1].toLowerCase(),
+    rawArgs,
+    args: rawArgs ? rawArgs.split(/\s+/) : [],
+  };
+}
+
+function formatCommandHelp(commands: Array<{ name: string; description: string; usage?: string }>): string {
+  if (commands.length === 0) return "暂无可用命令。";
+  return [
+    "可用命令：",
+    ...commands.map((command) => {
+      const usage = command.usage ?? `/${command.name}`;
+      return `- \`${usage}\`：${command.description}`;
+    }),
+  ].join("\n");
 }

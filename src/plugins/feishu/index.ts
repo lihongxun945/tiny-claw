@@ -51,7 +51,22 @@ const feishuPlugin: Plugin = {
 
         feishuClient.addReaction(messageId, "THINKING").catch(() => {});
 
-        processFeishuMessage(session, userText, messageId, feishuClient, ctx.workspacePath, actor).then(() => {
+        processFeishuMessage(
+          session,
+          userText,
+          messageId,
+          feishuClient,
+          ctx.workspacePath,
+          actor,
+          async (input, commandActor) => {
+            const result = await ctx.executeChatCommand(input, {
+              sessionId: session.id,
+              channel: "feishu",
+              actor: commandActor,
+            });
+            return result?.text;
+          },
+        ).then(() => {
           feishuClient.deleteReaction(messageId, "THINKING").catch(() => {});
           feishuClient.addReaction(messageId, "DONE").catch(() => {});
         }).catch((err) => {

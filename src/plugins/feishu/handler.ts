@@ -1,12 +1,12 @@
 import { AgentSession } from "../../agent.js";
 import type { AgentActor } from "../../types.js";
-import { approveRequest, listApprovals, rejectRequest } from "../../tools/approval.js";
 import { FeishuClient, splitMessage } from "./client.js";
 
 const STREAM_PLACEHOLDER = "正在处理...";
 const STREAM_FLUSH_INTERVAL_MS = 1_000;
 
 type ReplyClient = Pick<FeishuClient, "replyMessage" | "updateMessageCard">;
+type ChatCommandRunner = (input: string, actor: AgentActor) => Promise<string | undefined>;
 
 class FeishuStreamReply {
   private replyMessageId = "";
@@ -60,10 +60,11 @@ export async function processFeishuMessage(
   userText: string,
   messageId: string,
   client: ReplyClient,
-  workspacePath: string,
+  _workspacePath: string,
   actor: AgentActor,
+  runChatCommand?: ChatCommandRunner,
 ): Promise<void> {
-  const commandReply = handleApprovalCommand(workspacePath, userText, actor);
+  const commandReply = runChatCommand ? await runChatCommand(userText, actor) : undefined;
   if (commandReply !== undefined) {
     await client.replyMessage(messageId, commandReply);
     return;
@@ -83,7 +84,7 @@ export async function processFeishuMessage(
         await stream.flush(true);
         break;
       case "tool_result":
-        stream.append(`\n[工具结果] ${event.result.slice(0, 500)}\n`);
+        stream.append(`\n${formatToolResultForFeishu(event.result)}\n`);
         await stream.flush(true);
         break;
       case "error":
@@ -98,32 +99,33 @@ export async function processFeishuMessage(
   await stream.finish();
 }
 
-export function handleApprovalCommand(workspacePath: string, userText: string, actor: AgentActor): string | undefined {
-  const text = userText.trim();
-  if (text === "/approvals") {
-    const approvals = listApprovals(workspacePath, actor);
-    if (approvals.length === 0) return "暂无你可以处理的命令审批。";
-    return approvals.map((approval) => [
-      `审批 ID：${approval.id}`,
-      `状态：${approval.status === "approved" ? "已允许一次" : "待审批"}`,
-      `来源：${approval.source}`,
-      `命令：${approval.command}`,
-      `有效期至：${approval.expiresAt}`,
-      `允许一次：/approve ${approval.id}`,
-      `拒绝：/reject ${approval.id}`,
-    ].join("\n")).join("\n\n");
+function formatToolResultForFeishu(result: string): string {
+  try {
+    const parsed = JSON.parse(result) as {
+      requiresConfirmation?: boolean;
+      approvalId?: string;
+      approvalCommand?: string;
+      command?: string;
+      cwd?: string;
+      error?: string;
+    };
+    if (parsed.requiresConfirmation && parsed.approvalCommand) {
+      return [
+        "[需要授权]",
+        "请回复下面这条完整命令进行批准：",
+        parsed.approvalCommand,
+        "",
+        "只回复“批准”不会生效。",
+        "批准后系统会立即执行这条命令；授权只对本次列出的命令生效。",
+        parsed.command ? `命令：${truncate(parsed.command, 500)}` : "",
+      ].filter(Boolean).join("\n");
+    }
+  } catch {
+    // 非 JSON 工具结果按普通文本展示。
   }
+  return `[工具结果] ${result.slice(0, 500)}`;
+}
 
-  const match = text.match(/^\/(approve|reject)\s+(\S+)$/);
-  if (!match) return undefined;
-  const [, action, id] = match;
-  if (action === "approve") {
-    const approval = approveRequest(workspacePath, id, actor);
-    return approval
-      ? "已允许该命令执行一次，请重新发送原任务。"
-      : "审批记录不存在、已过期，或你无权处理该审批。";
-  }
-  return rejectRequest(workspacePath, id, actor)
-    ? "已拒绝该命令。"
-    : "审批记录不存在、已过期，或你无权处理该审批。";
+function truncate(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength)}...`;
 }

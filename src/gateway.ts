@@ -463,8 +463,28 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
           return;
         }
 
-        const session = getOrCreateSession(sessionId, workspacePath, pm);
         sendSSEHeader(res);
+
+        const isNewSessionCommand = /^\/(?:new|reset)(?:\s|$)/i.test(message.trim());
+        const commandSession = isNewSessionCommand
+          ? undefined
+          : getOrCreateSession(sessionId, workspacePath, pm);
+        const commandResult = await pm.executeChatCommand(message, {
+          sessionId: commandSession?.id ?? sessionId ?? randomUUID(),
+          channel: "web",
+        });
+        if (commandResult) {
+          if (commandResult.text) sendSSE(res, "text_delta", { text: commandResult.text });
+          sendSSE(res, "done", {
+            text: commandResult.text,
+            session_id: commandResult.sessionId ?? sessionId ?? null,
+            clear_messages: commandResult.clearMessages === true,
+          });
+          res.end();
+          return;
+        }
+
+        const session = commandSession ?? getOrCreateSession(sessionId, workspacePath, pm);
         const cancelOnDisconnect = () => {
           if (!res.writableEnded) session.cancel();
         };
@@ -799,13 +819,16 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       // 代理 API 请求到 gateway
       if (url.pathname === "/chat" || url.pathname === "/sessions" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
         try {
+          const hasRequestBody = req.method !== "GET" && req.method !== "HEAD"
+            && (Number(req.headers["content-length"] ?? 0) > 0 || req.headers["transfer-encoding"] !== undefined);
+          const proxyBody = hasRequestBody ? await readBody(req) : undefined;
           const proxyRes = await fetch(`http://127.0.0.1:${port}${url.pathname}${url.search}`, {
             method: req.method,
             headers: {
-              "content-type": req.headers["content-type"] ?? "application/json",
+              ...(proxyBody !== undefined && req.headers["content-type"] ? { "content-type": req.headers["content-type"] } : {}),
               ...(gatewayToken ? { authorization: `Bearer ${gatewayToken}` } : {}),
             },
-            body: req.method !== "GET" && req.method !== "HEAD" ? await readBody(req) : undefined,
+            body: proxyBody,
           });
           const contentType = proxyRes.headers.get("content-type") ?? "application/json";
           res.writeHead(proxyRes.status, {

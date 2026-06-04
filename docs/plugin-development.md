@@ -35,6 +35,8 @@ interface Plugin {
 | `config` | 插件专属配置（来自 `plugins.<name>`） |
 | `workspacePath` | 工作目录路径 |
 | `registerTool(tool)` | 注册工具到全局 ToolRegistry |
+| `registerChatCommand(command)` | 注册用户显式触发的斜杠聊天命令 |
+| `executeChatCommand(input, options)` | 执行已注册聊天命令，供平台插件复用 |
 | `registerHooks(hooks)` | 注册生命周期钩子 |
 | `registerRoute(route)` | 注册 HTTP 路由（Gateway 模式） |
 | `extendPrompt(section)` | 注册提示词片段（追加到系统提示词） |
@@ -159,6 +161,36 @@ export default {
 } satisfies Plugin;
 ```
 
+## 注册聊天命令
+
+聊天命令由用户显式输入 `/命令` 触发，不会暴露给模型调用。适合做控制面操作，例如快捷查询、审批、部署入口或插件自定义工作流。
+
+```typescript
+import type { Plugin } from "../../../src/plugins/types.js";
+
+export default {
+  name: "greeter-command",
+  async init(ctx) {
+    ctx.registerChatCommand({
+      name: "hello",
+      description: "发送一句问候",
+      usage: "/hello [name]",
+      execute: ({ args, channel }) => ({
+        text: `你好，${args[0] ?? "world"}！来自 ${channel}`,
+      }),
+    });
+  },
+} satisfies Plugin;
+```
+
+注册后可以在 Web UI 或飞书中输入：
+
+```text
+/hello 小明
+```
+
+内置命令也走同一套机制，例如 `/help`、`/new`、`/context`、`/approvals`、`/approve <审批 ID>`、`/reject <审批 ID>`。
+
 ## 注册 HTTP 路由
 
 Gateway 模式下可注册自定义 HTTP 端点：
@@ -178,6 +210,7 @@ ctx.registerRoute({
 核心插件是学习插件开发的最佳参考：
 
 - [core-tools](../src/plugins/core/tools.ts) — 注册基础内置工具，演示 `registerTool` 用法
+- [core-chat-commands](../src/plugins/core/chat-commands.ts) — 注册内置斜杠命令，演示 `registerChatCommand` 用法
 - [core-sub-agent](../src/plugins/core/sub-agent.ts) — 注册 `sub_agent_run`，演示将编排能力封装为独立核心插件
 - [core-prompts](../src/plugins/core/prompts.ts) — 系统提示词模板加载，演示 `extendPrompt` 和 `onBuildPrompt` 钩子
 - [core-compress](../src/plugins/core/compress.ts) — 上下文压缩，演示 `onBeforeModelCall` 钩子

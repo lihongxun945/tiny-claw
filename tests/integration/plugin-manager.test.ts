@@ -120,6 +120,33 @@ describe("PluginManager hook lifecycle", () => {
     });
   });
 
+  it("lets plugins register chat commands", async () => {
+    const ctx = createContext(manager, "custom-commands");
+    ctx.registerChatCommand({
+      name: "hello",
+      description: "say hello",
+      usage: "/hello <name>",
+      execute: ({ args, rawInput }) => ({ text: `hello ${args[0] ?? "world"} from ${rawInput}` }),
+    });
+
+    await expect(manager.executeChatCommand("/hello codex", {
+      sessionId: "main",
+      channel: "web",
+    })).resolves.toEqual({
+      text: "hello codex from /hello codex",
+    });
+    await expect(manager.executeChatCommand("hello codex", {
+      sessionId: "main",
+      channel: "web",
+    })).resolves.toBeUndefined();
+    await expect(manager.executeChatCommand("/missing", {
+      sessionId: "main",
+      channel: "web",
+    })).resolves.toEqual({
+      text: "未知命令：/missing\n发送 /help 查看可用命令。",
+    });
+  });
+
   it("passes tool results through hooks and emits iteration and error hooks", async () => {
     const onAfterIteration = vi.fn();
     const onError = vi.fn();

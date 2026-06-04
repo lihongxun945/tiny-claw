@@ -197,7 +197,9 @@ workspace/
 - `gateway.token`：可选 Bearer token。配置后 API 请求需要携带 `Authorization: Bearer <token>`。
 - `auditTools`：是否把工具调用和完成状态写入日志，默认开启。审计日志不会记录文件内容或记忆内容。
 
-`ask` 模式使用进程内审批队列。审批记录按 workspace、来源、工作目录、命令和调用者身份去重，默认 10 分钟过期。批准后的许可只消费一次；拒绝、过期或消费后立即失效。Gateway 暴露 `/approvals` 系列接口，Web UI 的“审批”页面提供允许一次和拒绝操作。飞书消息会携带用户 `open_id` 和 `chat_id`，用户可以发送 `/approvals`、`/approve <id>` 或 `/reject <id>` 处理自己在当前会话发起的审批。
+`ask` 模式使用进程内审批队列。审批记录按 workspace、来源、工作目录、命令和调用者身份去重，默认 10 分钟过期。批准后的许可只消费一次；拒绝、过期或消费后立即失效。Gateway 暴露 `/approvals` 系列接口，Web UI 在聊天工具块内提供批准和拒绝操作。飞书消息会携带用户 `open_id` 和 `chat_id`，用户可以发送 `/approvals`、`/approve <id>` 或 `/reject <id>` 处理自己在当前会话发起的审批。
+
+当工具结果包含 `requiresConfirmation: true` 时，Agent Loop 会立即暂停当前轮：审批提示会发给用户并写入历史用于 UI 恢复，但不会再把该结果回灌给模型继续总结。这样用户批准前不会产生基于“未执行命令”的最终回答；批准后由审批命令消费一次性许可并执行记录的命令。
 
 ### autoMemory 配置
 
@@ -381,6 +383,12 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 插件也可以注册自己的工具，通过 `PluginContext.registerTool()` 方法。所有插件的工具统一合并到 PluginManager 的 ToolRegistry 中，模型调用时通过 `getTool(name)` 查找执行。新增工具只需：1) 在任意插件中实现 Tool 接口 2) 在插件 init 中注册。
 
 `PluginManager` 支持工具白名单/黑名单过滤（`allowedTools` / `disabledTools`），用于 sub-agent 等需要收敛权限的场景。工具在注册阶段被过滤，模型看不到被禁用的工具定义，也无法调用这些工具。文件工具支持 workspace 外路径；`bash` 默认禁用，需要通过 `security.bash.mode` 显式开放。
+
+### 聊天命令注册：插件化
+
+聊天命令通过 `PluginContext.registerChatCommand()` 注册，由 `PluginManager` 在用户输入进入 Agent Loop 前统一解析和分发。命令只在用户显式输入 `/command` 时触发，不暴露给模型调用。核心插件 `plugins/core/chat-commands.ts` 注册 `/help`、`/new`、`/context`、`/approvals`、`/approve` 和 `/reject`；workspace 插件也可以注册自己的命令。
+
+Web `/chat` 和飞书消息入口都会先调用 `executeChatCommand()`，命中命令时直接返回结果，不写入模型上下文。未以 `/` 开头的普通消息才进入 Agent Loop。
 
 ### 搜索引擎：多 Provider 架构
 
@@ -625,6 +633,8 @@ interface Plugin {
 | `workspacePath` | 工作目录路径 |
 | `registerRoute(route)` | 注册 HTTP 路由 |
 | `registerTool(tool)` | 注册工具到全局 ToolRegistry |
+| `registerChatCommand(command)` | 注册用户显式触发的斜杠聊天命令 |
+| `executeChatCommand(input, options)` | 执行已注册聊天命令，供平台插件复用 |
 | `registerHooks(hooks)` | 注册生命周期钩子 |
 | `extendPrompt(section)` | 注册提示词片段（追加到系统提示词） |
 | `getOrCreateSession(id, prefix?)` | 获取/创建 AgentSession |

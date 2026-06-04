@@ -58,6 +58,29 @@ describe("MessageHistory", () => {
     ]);
   });
 
+  it("drops orphaned tool results after trimming the context window", () => {
+    const history = new MessageHistory([
+      message("user", "u1"),
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "pwd" } }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call-1", content: "ok" }],
+      },
+      message("assistant", "a1"),
+      message("user", "u2"),
+      message("assistant", "a2"),
+    ]);
+
+    expect(history.getRecentMessages(2)).toEqual([
+      message("assistant", "a1"),
+      message("user", "u2"),
+      message("assistant", "a2"),
+    ]);
+  });
+
   it("replaces compressed history and preserves the new turn index", () => {
     const history = new MessageHistory();
     history.replaceWithCompressed([

@@ -6,6 +6,7 @@ import { MessageHistory } from "./history.js";
 import { PluginManager } from "./plugin-manager.js";
 import { ensureWorkspace } from "./workspace/workspace.js";
 import { appendHistory } from "./workspace/logger.js";
+import { sanitizeToolMessageChains } from "./message-sanitizer.js";
 import type { AgentActor, Config, Message, ToolUseBlock, ToolResultBlock } from "./types.js";
 
 // === 事件类型 ===
@@ -49,6 +50,12 @@ class EventQueue {
   }
 }
 
+interface PendingApprovalContinuation {
+  toolCall: ToolUseBlock;
+  skippedToolCalls: ToolUseBlock[];
+  iteration: number;
+}
+
 // === AgentSession ===
 
 function loadPersistedSessionMessages(workspacePath: string, sessionId: string): Message[] {
@@ -74,57 +81,7 @@ function loadPersistedSessionMessages(workspacePath: string, sessionId: string):
       }
     }
   }
-  return sanitizePersistedMessages(messages);
-}
-
-function sanitizePersistedMessages(messages: Message[]): Message[] {
-  const sanitized: Message[] = [];
-
-  for (let index = 0; index < messages.length; index++) {
-    const message = messages[index];
-    if (!Array.isArray(message.content)) {
-      sanitized.push(message);
-      continue;
-    }
-
-    if (message.role === "user" && message.content.some((block) => block.type === "tool_result")) {
-      // Orphaned tool results cannot be sent to OpenAI-compatible APIs.
-      continue;
-    }
-
-    const toolUses = message.role === "assistant"
-      ? message.content.filter((block): block is ToolUseBlock => block.type === "tool_use")
-      : [];
-    if (toolUses.length === 0) {
-      sanitized.push(message);
-      continue;
-    }
-
-    const expectedIds = new Set(toolUses.map((block) => block.id));
-    const toolResultMessages: Message[] = [];
-    const seenIds = new Set<string>();
-    let nextIndex = index + 1;
-    while (nextIndex < messages.length) {
-      const next = messages[nextIndex];
-      if (next.role !== "user" || !Array.isArray(next.content) || next.content.length === 0) break;
-      if (!next.content.every((block) => block.type === "tool_result" && expectedIds.has(block.tool_use_id))) break;
-      toolResultMessages.push(next);
-      for (const block of next.content) {
-        if (block.type === "tool_result") seenIds.add(block.tool_use_id);
-      }
-      nextIndex++;
-    }
-
-    if (seenIds.size === expectedIds.size) {
-      sanitized.push(message, ...toolResultMessages);
-    } else {
-      const readableContent = message.content.filter((block) => block.type !== "tool_use");
-      if (readableContent.length > 0) sanitized.push({ ...message, content: readableContent });
-    }
-    index = nextIndex - 1;
-  }
-
-  return sanitized;
+  return sanitizeToolMessageChains(messages);
 }
 
 export class AgentSession {
@@ -136,6 +93,7 @@ export class AgentSession {
   private systemPrompt: string;
   private workspacePath: string;
   private activeController?: AbortController;
+  private pendingApprovals = new Map<string, PendingApprovalContinuation>();
   lastActivity: number;
 
   getMessages(): Message[] {
@@ -184,35 +142,99 @@ export class AgentSession {
 
   /** 执行一轮对话，返回事件流 */
   async *chat(userInput: string, actor?: AgentActor): AsyncGenerator<AgentEvent> {
+    if (this.pendingApprovals.size > 0) {
+      yield { type: "error", message: "当前会话有待审批的工具调用。请先批准或拒绝最新审批，再继续发送新任务。" };
+      return;
+    }
     if (this.activeController) {
       yield { type: "error", message: "会话正在执行中，请等待完成或先取消当前任务" };
       return;
     }
     const controller = new AbortController();
     this.activeController = controller;
-    let agentIteration = 0;
 
     try {
-    this.lastActivity = Date.now();
+      this.lastActivity = Date.now();
 
-    // 1. Before Chat Hook：日志记录 + 可能的阻断或输入修改
-    const beforeResult = await this.pluginManager.callOnBeforeChat(userInput, this.id);
-    if (beforeResult.abort) {
-      yield { type: "error", message: beforeResult.abort };
+      // 1. Before Chat Hook：日志记录 + 可能的阻断或输入修改
+      const beforeResult = await this.pluginManager.callOnBeforeChat(userInput, this.id);
+      if (beforeResult.abort) {
+        yield { type: "error", message: beforeResult.abort };
+        return;
+      }
+
+      // 2. 懒构建系统提示词
+      if (!this.systemPrompt) {
+        this.systemPrompt = await this.pluginManager.callOnBuildPrompt("", this.id);
+      }
+
+      // 3. User Message Hook：由插件决定如何写入当前会话历史
+      const input = beforeResult.input;
+      await this.pluginManager.callOnUserMessage(input, this.id);
+
+      yield* this.runModelLoop(controller, actor, 0, "");
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      await this.notifyError(error, 0);
+      yield { type: "error", message: error.message };
+    } finally {
+      if (this.activeController === controller) this.activeController = undefined;
+    }
+  }
+
+  /** 审批通过后，从挂起的工具调用继续执行同一个 Agent Loop。 */
+  async *resumeApproval(approvalId: string, actor?: AgentActor): AsyncGenerator<AgentEvent> {
+    if (this.activeController) {
+      yield { type: "error", message: "会话正在执行中，请等待完成或先取消当前任务" };
       return;
     }
 
-    // 2. 懒构建系统提示词
-    if (!this.systemPrompt) {
-      this.systemPrompt = await this.pluginManager.callOnBuildPrompt("", this.id);
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!pending) {
+      yield { type: "error", message: "审批已通过，但原会话没有可恢复的待执行任务；可能是服务重启或会话已被清理。" };
+      return;
     }
+    this.pendingApprovals.delete(approvalId);
 
-    // 3. User Message Hook：由插件决定如何写入当前会话历史
-    const input = beforeResult.input;
-    await this.pluginManager.callOnUserMessage(input, this.id);
+    const controller = new AbortController();
+    this.activeController = controller;
+    let agentIteration = pending.iteration;
 
+    try {
+      this.lastActivity = Date.now();
+      if (!this.systemPrompt) {
+        this.systemPrompt = await this.pluginManager.callOnBuildPrompt("", this.id);
+      }
+
+      const result = await this.executeToolCall(pending.toolCall, controller, actor, agentIteration);
+      yield { type: "tool_call", name: pending.toolCall.name, input: pending.toolCall.input };
+      yield { type: "tool_result", name: pending.toolCall.name, result };
+      this.appendToolResult(pending.toolCall.id, result);
+
+      for (const skipped of pending.skippedToolCalls) {
+        const skippedResult = JSON.stringify({
+          error: "前一个工具调用需要授权，本工具调用已暂停执行。如仍需要，请重新发起该工具调用。",
+        });
+        this.appendToolResult(skipped.id, skippedResult);
+      }
+
+      yield* this.runModelLoop(controller, actor, agentIteration, "");
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      await this.notifyError(error, agentIteration);
+      yield { type: "error", message: error.message };
+    } finally {
+      if (this.activeController === controller) this.activeController = undefined;
+    }
+  }
+
+  private async *runModelLoop(
+    controller: AbortController,
+    actor: AgentActor | undefined,
+    agentIteration: number,
+    fullText: string,
+  ): AsyncGenerator<AgentEvent> {
     const maxIterations = this.config.maxAgentIterations > 0 ? this.config.maxAgentIterations : Infinity;
-    let fullText = "";
 
     while (agentIteration < maxIterations) {
       if (controller.signal.aborted) throw new Error("会话已取消");
@@ -314,61 +336,95 @@ export class AgentSession {
       }
 
       // 10. 执行工具调用
-      for (const toolCall of response.toolCalls) {
+      for (let toolCallIndex = 0; toolCallIndex < response.toolCalls.length; toolCallIndex++) {
+        const toolCall = response.toolCalls[toolCallIndex];
         if (controller.signal.aborted) throw new Error("会话已取消");
-        // Before Tool Hook
-        const beforeTool = await this.pluginManager.callOnBeforeTool(
-          toolCall.name, toolCall.input, agentIteration, this.id,
-        );
-        if (beforeTool.abort) {
-          yield { type: "error", message: beforeTool.abort };
+
+        yield { type: "tool_call", name: toolCall.name, input: toolCall.input };
+        const result = await this.executeToolCall(toolCall, controller, actor, agentIteration);
+        yield { type: "tool_result", name: toolCall.name, result };
+
+        if (requiresUserConfirmation(result)) {
+          const approvalId = getApprovalId(result);
+          if (approvalId) {
+            this.pendingApprovals.set(approvalId, {
+              toolCall,
+              skippedToolCalls: response.toolCalls.slice(toolCallIndex + 1),
+              iteration: agentIteration,
+            });
+          }
+          yield { type: "done", text: fullText };
           return;
         }
 
-        yield { type: "tool_call", name: toolCall.name, input: toolCall.input };
-
-        const tool = this.pluginManager.getTool(toolCall.name);
-        let result: string;
-        if (tool) {
-          try {
-            result = await tool.execute(toolCall.input, { signal: controller.signal, sessionId: this.id, actor });
-          } catch (err) {
-            await this.notifyError(err instanceof Error ? err : new Error(String(err)), agentIteration);
-            result = JSON.stringify({
-              error: `工具执行失败: ${err instanceof Error ? err.message : String(err)}`,
-            });
-          }
-        } else {
-          result = JSON.stringify({ error: `未知工具: ${toolCall.name}` });
-        }
-
-        // After Tool Hook
-        result = await this.pluginManager.callOnAfterTool(
-          toolCall.name, result, agentIteration, this.id,
-        );
-
-        yield { type: "tool_result", name: toolCall.name, result };
-
-        const toolResult: ToolResultBlock = {
-          type: "tool_result",
-          tool_use_id: toolCall.id,
-          content: result,
-        };
-        const toolResultMsg: Message = { role: "user", content: [toolResult], _timestamp: Date.now() };
-        appendHistory(this.workspacePath, toolResultMsg, this.id);
-        this.history.push(toolResultMsg);
+        this.appendToolResult(toolCall.id, result);
       }
     }
 
     if (this.config.maxAgentIterations > 0 && agentIteration >= maxIterations) {
       yield { type: "done", text: fullText };
     }
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      await this.notifyError(error, agentIteration);
-      yield { type: "error", message: error.message };
-    } finally {
-      if (this.activeController === controller) this.activeController = undefined;
+  }
+
+  private async executeToolCall(
+    toolCall: ToolUseBlock,
+    controller: AbortController,
+    actor: AgentActor | undefined,
+    agentIteration: number,
+  ): Promise<string> {
+    // Before Tool Hook
+    const beforeTool = await this.pluginManager.callOnBeforeTool(
+      toolCall.name, toolCall.input, agentIteration, this.id,
+    );
+    if (beforeTool.abort) return JSON.stringify({ error: beforeTool.abort });
+
+    const tool = this.pluginManager.getTool(toolCall.name);
+    let result: string;
+    if (tool) {
+      try {
+        result = await tool.execute(toolCall.input, { signal: controller.signal, sessionId: this.id, actor });
+      } catch (err) {
+        await this.notifyError(err instanceof Error ? err : new Error(String(err)), agentIteration);
+        result = JSON.stringify({
+          error: `工具执行失败: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    } else {
+      result = JSON.stringify({ error: `未知工具: ${toolCall.name}` });
     }
+
+    // After Tool Hook
+    return this.pluginManager.callOnAfterTool(
+      toolCall.name, result, agentIteration, this.id,
+    );
+  }
+
+  private appendToolResult(toolUseId: string, result: string): void {
+    const toolResult: ToolResultBlock = {
+      type: "tool_result",
+      tool_use_id: toolUseId,
+      content: result,
+    };
+    const toolResultMsg: Message = { role: "user", content: [toolResult], _timestamp: Date.now() };
+    appendHistory(this.workspacePath, toolResultMsg, this.id);
+    this.history.push(toolResultMsg);
+  }
+}
+
+function requiresUserConfirmation(result: string): boolean {
+  try {
+    const parsed = JSON.parse(result) as { requiresConfirmation?: unknown };
+    return parsed.requiresConfirmation === true;
+  } catch {
+    return false;
+  }
+}
+
+function getApprovalId(result: string): string | undefined {
+  try {
+    const parsed = JSON.parse(result) as { approvalId?: unknown };
+    return typeof parsed.approvalId === "string" ? parsed.approvalId : undefined;
+  } catch {
+    return undefined;
   }
 }

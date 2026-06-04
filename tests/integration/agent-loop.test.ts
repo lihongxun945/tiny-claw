@@ -138,6 +138,119 @@ describe("AgentSession loop", () => {
     });
   });
 
+  it("pauses the loop when a tool requires user confirmation", async () => {
+    const gatedTool = vi.fn(async () => JSON.stringify({
+      error: "需要批准",
+      requiresConfirmation: true,
+      approvalId: "approval-1",
+    }));
+    const laterTool = vi.fn(async () => "should-not-run");
+    registerTool(manager, {
+      name: "gated",
+      description: "gated",
+      inputSchema: { type: "object", properties: {} },
+      execute: gatedTool,
+    });
+    registerTool(manager, {
+      name: "later",
+      description: "later",
+      inputSchema: { type: "object", properties: {} },
+      execute: laterTool,
+    });
+    const client = new FakeModelClient([
+      {
+        text: "先申请授权",
+        toolCalls: [
+          { type: "tool_use", id: "call-1", name: "gated", input: {} },
+          { type: "tool_use", id: "call-2", name: "later", input: {} },
+        ],
+      },
+      { text: "不应该继续总结", toolCalls: [] },
+    ]);
+    const session = new AgentSession("approval-pause", workspacePath, manager, {}, client);
+
+    expect(await collect(session.chat("run"))).toEqual([
+      { type: "text_delta", text: "先申请授权" },
+      { type: "tool_call", name: "gated", input: {} },
+      {
+        type: "tool_result",
+        name: "gated",
+        result: JSON.stringify({ error: "需要批准", requiresConfirmation: true, approvalId: "approval-1" }),
+      },
+      { type: "done", text: "先申请授权" },
+    ]);
+    expect(client.calls).toHaveLength(1);
+    expect(gatedTool).toHaveBeenCalledTimes(1);
+    expect(laterTool).not.toHaveBeenCalled();
+  });
+
+  it("continues the original model loop after an approval is granted", async () => {
+    const gatedTool = vi.fn(async () => {
+      if (gatedTool.mock.calls.length === 1) {
+        return JSON.stringify({
+          error: "需要批准",
+          requiresConfirmation: true,
+          approvalId: "approval-1",
+        });
+      }
+      return "approved-result";
+    });
+    const laterTool = vi.fn(async () => "should-not-run");
+    registerTool(manager, {
+      name: "gated",
+      description: "gated",
+      inputSchema: { type: "object", properties: {} },
+      execute: gatedTool,
+    });
+    registerTool(manager, {
+      name: "later",
+      description: "later",
+      inputSchema: { type: "object", properties: {} },
+      execute: laterTool,
+    });
+    const client = new FakeModelClient([
+      {
+        text: "需要授权",
+        toolCalls: [
+          { type: "tool_use", id: "call-1", name: "gated", input: {} },
+          { type: "tool_use", id: "call-2", name: "later", input: {} },
+        ],
+      },
+      (messages) => {
+        expect(messages.at(-2)).toEqual({
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "call-1", content: "approved-result" }],
+          _timestamp: expect.any(Number),
+        });
+        expect(messages.at(-1)).toEqual({
+          role: "user",
+          content: [{
+            type: "tool_result",
+            tool_use_id: "call-2",
+            content: expect.stringContaining("前一个工具调用需要授权"),
+          }],
+          _timestamp: expect.any(Number),
+        });
+        return { text: "继续后的总结", toolCalls: [] };
+      },
+    ]);
+    const session = new AgentSession("approval-resume", workspacePath, manager, {}, client);
+
+    await collect(session.chat("run"));
+    expect(await collect(session.chat("new task before approval"))).toEqual([
+      { type: "error", message: "当前会话有待审批的工具调用。请先批准或拒绝最新审批，再继续发送新任务。" },
+    ]);
+    expect(await collect(session.resumeApproval("approval-1"))).toEqual([
+      { type: "tool_call", name: "gated", input: {} },
+      { type: "tool_result", name: "gated", result: "approved-result" },
+      { type: "text_delta", text: "继续后的总结" },
+      { type: "done", text: "继续后的总结" },
+    ]);
+    expect(client.calls).toHaveLength(2);
+    expect(gatedTool).toHaveBeenCalledTimes(2);
+    expect(laterTool).not.toHaveBeenCalled();
+  });
+
   it("repairs incomplete persisted tool chains when restoring a session", async () => {
     const historyPath = resolve(workspacePath, "history", `${new Date().toISOString().slice(0, 10)}.jsonl`);
     writeFileSync(historyPath, [

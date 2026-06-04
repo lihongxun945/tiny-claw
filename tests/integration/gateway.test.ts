@@ -9,6 +9,17 @@ async function json(url: string, init?: RequestInit): Promise<{ status: number; 
   return { status: response.status, body: await response.json() };
 }
 
+async function sse(url: string, init?: RequestInit): Promise<Array<{ event: string; data: any }>> {
+  const response = await fetch(url, init);
+  expect(response.status).toBe(200);
+  const text = await response.text();
+  return text.trim().split("\n\n").filter(Boolean).map((chunk) => {
+    const event = chunk.split("\n").find((line) => line.startsWith("event: "))?.slice(7) ?? "";
+    const data = chunk.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? "{}";
+    return { event, data: JSON.parse(data) };
+  });
+}
+
 describe("Gateway HTTP API", () => {
   let workspacePath: string;
   let gateway: TestGateway;
@@ -141,6 +152,34 @@ describe("Gateway HTTP API", () => {
     expect(readFileSync(historyPath, "utf-8")).toContain("{malformed");
   });
 
+  it("deletes persisted session history for encoded session ids", async () => {
+    const sessionId = "web/session?special#id";
+    const historyPath = resolve(workspacePath, "history", "2026-06-02.jsonl");
+    writeFileSync(historyPath, [
+      JSON.stringify({ role: "user", content: "special question", _session: sessionId, _timestamp: 2 }),
+      JSON.stringify({ role: "assistant", content: "special answer", _session: sessionId, _timestamp: 3 }),
+      "",
+    ].join("\n"), "utf-8");
+
+    expect((await json(`${gateway.apiUrl}/history/sessions`)).body.sessions.map((session: { id: string }) => session.id)).toEqual([sessionId]);
+
+    const deleted = await json(`${gateway.apiUrl}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    expect(deleted.body).toEqual({ deleted: true, deletedHistoryRecords: 2 });
+    expect((await json(`${gateway.apiUrl}/history/sessions`)).body.sessions).toEqual([]);
+  });
+
+  it("proxies DELETE session requests without sending an empty body", async () => {
+    const sessionId = "web-proxy-delete";
+    writeFileSync(resolve(workspacePath, "history", "2026-06-02.jsonl"), [
+      JSON.stringify({ role: "user", content: "delete through web proxy", _session: sessionId, _timestamp: 2 }),
+      "",
+    ].join("\n"), "utf-8");
+
+    const deleted = await json(`${gateway.webUrl}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    expect(deleted).toEqual({ status: 200, body: { deleted: true, deletedHistoryRecords: 1 } });
+    expect((await json(`${gateway.apiUrl}/history/sessions`)).body.sessions).toEqual([]);
+  });
+
   it("restores persisted tool results after a page refresh", async () => {
     const historyPath = resolve(workspacePath, "history", "2026-06-02.jsonl");
     writeFileSync(historyPath, [
@@ -181,6 +220,63 @@ describe("Gateway HTTP API", () => {
 
     const proxied = await json(`${gateway.webUrl}/memory?include_sensitive=true&include_disabled=true`);
     expect(proxied).toEqual({ status: 200, body: { memories: [] } });
+  });
+
+  it("handles slash commands before entering the agent loop", async () => {
+    const events = await sse(`${gateway.apiUrl}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "/help" }),
+    });
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        event: "text_delta",
+        data: expect.objectContaining({ text: expect.stringContaining("- `/help [命令名]`：列出可用聊天命令") }),
+      }),
+      expect.objectContaining({
+        event: "done",
+        data: expect.objectContaining({ text: expect.stringContaining("- `/approvals`：列出当前可处理的命令审批") }),
+      }),
+    ]);
+  });
+
+  it("creates a fresh session for /new", async () => {
+    const events = await sse(`${gateway.apiUrl}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "/new", session_id: "old-session" }),
+    });
+
+    const done = events.find((event) => event.event === "done");
+    expect(done?.data).toMatchObject({
+      text: expect.stringContaining("已创建新会话"),
+      clear_messages: true,
+    });
+    expect(done?.data.session_id).toBeTruthy();
+    expect(done?.data.session_id).not.toBe("old-session");
+  });
+
+  it("reports context length for the active session", async () => {
+    writeFileSync(resolve(workspacePath, "history", `${new Date().toISOString().slice(0, 10)}.jsonl`), [
+      JSON.stringify({ role: "user", content: "hello context", _session: "ctx-session", _timestamp: 1 }),
+      JSON.stringify({ role: "assistant", content: [{ type: "text", text: "context reply" }], _session: "ctx-session", _timestamp: 2 }),
+      "",
+    ].join("\n"), "utf-8");
+
+    const events = await sse(`${gateway.apiUrl}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "/context", session_id: "ctx-session" }),
+    });
+
+    const done = events.find((event) => event.event === "done");
+    expect(done?.data).toMatchObject({
+      session_id: "ctx-session",
+      text: expect.stringContaining("当前上下文长度估算"),
+    });
+    expect(done?.data.text).toContain("当前发送窗口");
+    expect(done?.data.text).toContain("会话完整历史");
   });
 
   it("exposes approval API and proxies it through the WebUI server", async () => {

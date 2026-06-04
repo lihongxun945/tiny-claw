@@ -8,6 +8,7 @@ import type {
 } from "../types.js";
 import type { ModelClient } from "./types.js";
 import { appendLog } from "../workspace/logger.js";
+import { sanitizeToolMessageChains } from "../message-sanitizer.js";
 
 interface OpenAIToolCall {
   id: string;
@@ -85,7 +86,7 @@ function toOpenAIMessages(messages: Message[], systemPrompt?: string): OpenAIMes
     result.push({ role: "system", content: systemPrompt });
   }
 
-  for (const message of messages) {
+  for (const message of sanitizeToolMessageChains(messages)) {
     if (typeof message.content === "string") {
       result.push({ role: message.role, content: message.content });
       continue;
