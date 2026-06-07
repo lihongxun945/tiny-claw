@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const SUBDIRS = ["skills", "memory", "history", "logs"];
+const SUBDIRS = ["skills", "memory", "logs", "sessions"];
 
 export function resolveWorkspacePath(cliPath?: string): string {
   return cliPath || process.env.TINY_CLAW_WORKSPACE || resolve(process.cwd(), "workspace");
@@ -20,4 +20,3 @@ export function loadIdentity(workspacePath: string): string {
     return "";
   }
 }
-

@@ -50,6 +50,30 @@ test("shows a stop button while streaming and cancels the request", async ({ pag
   await expect(page.getByRole("button", { name: "停止" })).not.toBeVisible();
 });
 
+test("shows processing state immediately after sending", async ({ page }) => {
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({ json: { sessions: [] } });
+  });
+  await page.route("**/chat", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await route.fulfill({
+      contentType: "text/event-stream",
+      body: [
+        'event: text_delta\ndata: {"text":"收到"}',
+        'event: done\ndata: {"text":"收到","session_id":"session-1"}',
+        "",
+      ].join("\n\n"),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("textbox").fill("hello");
+  await page.getByRole("button", { name: "↑" }).click();
+
+  await expect(page.getByText("正在处理")).toBeVisible();
+  await expect(page.getByText("收到")).toBeVisible();
+});
+
 test("clears chat and switches session when /new completes", async ({ page }) => {
   await page.route("**/history/sessions", async (route) => {
     await route.fulfill({ json: { sessions: [] } });

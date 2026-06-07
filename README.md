@@ -11,7 +11,7 @@ cd tiny-claw
 npm install
 ```
 
-### 配置
+### 配置模型
 
 复制配置模板并修改：
 
@@ -37,6 +37,84 @@ cp config.example.json workspace/config.json
 | `anthropic-messages` | Anthropic Messages API 兼容协议 |
 | `openai-chat` / `chatgpt` | OpenAI Chat Completions 兼容协议 |
 
+### 配置搜索引擎
+
+Agent 的 `web_search` 能力依赖搜索 provider。`duckduckgo` 是免配置兜底，只适合简单关键词查询，本质上不是真正稳定的搜索引擎能力，效果较差；推荐配置 Ollama Web Search、Brave Search 或自建 SearXNG。
+
+Ollama Web Search 示例：
+
+```json
+{
+  "searchProvider": "ollama",
+  "ollamaApiKey": "YOUR_OLLAMA_API_KEY"
+}
+```
+
+Brave Search 示例：
+
+```json
+{
+  "searchProvider": "brave",
+  "braveApiKey": "YOUR_BRAVE_API_KEY"
+}
+```
+
+SearXNG 示例：
+
+```json
+{
+  "searchProvider": "searxng",
+  "searxngUrl": "http://localhost:8080"
+}
+```
+
+### 启动 Gateway
+
+推荐使用 Gateway + WebUI 模式进行本地使用和开发：
+
+```bash
+npm run gateway -- --port 3000
+```
+
+Gateway API 默认监听 `127.0.0.1:3000`，WebUI 默认访问：
+
+```text
+http://localhost:3001
+```
+
+启动后即可在 WebUI 中创建会话并与 Agent 对话。
+
+## 配置参考
+
+`workspace/config.json` 支持以下配置。`workspacePath` 和 `systemPrompt` 是运行时内部字段，不需要写入配置文件。
+
+| 配置项 | 默认值 | 示例 | 说明 |
+|---|---:|---|---|
+| `apiUrl` | 必填 | `"https://ark.cn-beijing.volces.com/api/coding"` | 模型 API 基础地址 |
+| `apiKey` | 必填 | `"YOUR_API_KEY"` | 模型 API Key |
+| `model` | 必填 | `"deepseek-v4-flash"` | 模型名称 |
+| `modelProvider` | `"anthropic-messages"` | `"openai-chat"` | 模型协议适配器：`anthropic-messages`、`openai-chat`、`chatgpt` |
+| `maxTokens` | `4096` | `4096` | 单次模型回复最大 token |
+| `maxContextTokens` | `128000` | `128000` | 上下文窗口 token 估算上限 |
+| `contextCompressionThreshold` | `0.7` | `0.7` | 超过 `maxContextTokens * threshold` 时触发上下文压缩 |
+| `contextCompressionMaxChars` | `5000` | `5000` | 上下文压缩摘要目标字数上限 |
+| `contextCompressionToolResultMaxChars` | `500` | `500` | 构建历史压缩摘要时每个 tool result 保留的字符数 |
+| `toolResultInitialMaxChars` | `12000` | `12000` | 对话上下文超预算时 tool result 的初始截断字符数 |
+| `historyWindowSize` | `5` | `20` | 普通历史窗口轮数；会话摘要开启后仍会保留近期原文 |
+| `maxAgentIterations` | `20` | `20` | 单次任务最大 Agent Loop 次数；配置 `0` 表示不限 |
+| `searchProvider` | `"ollama"` | `"brave"` | 搜索服务：`ollama`、`searxng`、`brave`、`duckduckgo` |
+| `ollamaApiKey` | 无 | `"YOUR_OLLAMA_API_KEY"` | Ollama Web Search API Key，`searchProvider=ollama` 时使用 |
+| `searxngUrl` | 无 | `"http://localhost:8080"` | 自建 SearXNG 地址，`searchProvider=searxng` 时使用 |
+| `braveApiKey` | 无 | `"YOUR_BRAVE_API_KEY"` | Brave Search API Key，`searchProvider=brave` 时使用 |
+| `enabledPlugins` | `[]` | `["feishu"]` | 启用的内置插件列表 |
+| `externalPlugins` | `[]` | `["./workspace/plugins/foo/index.ts"]` | 额外加载的外部插件入口 |
+| `plugins` | `{}` | `{ "feishu": { "appId": "cli_xxx" } }` | 插件私有配置 |
+| `subAgent` | 见下文 | `{ "maxConcurrency": 3 }` | Sub-agent 工具权限与并发配置 |
+| `sessionSummary` | 见下文 | `{ "enabled": true }` | 会话滚动摘要与持久化配置 |
+| `autoMemory` | 见下文 | `{ "mode": "hybrid" }` | 自动长期记忆配置 |
+| `debug` | `false` | `{ "enabled": true, "modelIO": true }` | 模型输入输出调试日志 |
+| `security` | 见下文 | `{ "bash": { "mode": "ask" } }` | bash、Gateway、工具审计安全配置 |
+
 ### Sub-agent 配置
 
 `sub_agent_run` 工具支持一次并行启动多个临时子 agent。子 agent 默认只开放读取/检索类工具，不允许执行 shell、写文件或保存记忆。可在 `workspace/config.json` 中调整：
@@ -56,21 +134,82 @@ cp config.example.json workspace/config.json
 
 Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作目录放置 `workspace/sub_agent_prompt.md` 覆盖。支持占位符：`{{task}}`、`{{context}}`、`{{allowed_tools}}`、`{{current_date}}`。
 
+| 配置项 | 默认值 | 示例 | 说明 |
+|---|---:|---|---|
+| `subAgent.allowedTools` | 读取/检索类工具 | `["web_search", "file_read"]` | 子 agent 可使用的工具白名单 |
+| `subAgent.disabledTools` | `["sub_agent_run"]` | `["bash", "file_write"]` | 子 agent 禁用工具；`sub_agent_run` 始终禁用 |
+| `subAgent.maxIterations` | `3` | `3` | 单个子任务最大 Agent Loop 次数，上限 `8` |
+| `subAgent.maxConcurrency` | `3` | `3` | 并行执行的子任务数量，上限 `8` |
+
 ### 会话摘要配置
 
-`core-session-summary` 插件会为每个普通会话维护滚动摘要，模型调用时注入摘要并只保留最近几轮原文，避免历史消息持续膨胀：
+`core-session-summary` 插件会为每个普通会话维护滚动摘要，模型调用时注入摘要并只保留最近几轮原文，避免历史消息持续膨胀。摘要默认持久化到 `workspace/sessions/<session>/state.json`，刷新、切换会话或重启 Gateway 后仍可恢复：
 
 ```json
 {
   "sessionSummary": {
     "enabled": true,
+    "persistent": true,
+    "turnThreshold": 5,
     "recentTurns": 3,
     "maxChars": 4000
   }
 }
 ```
 
-`sub:` 开头的临时 sub-agent 会话默认不生成摘要，避免额外消耗。
+`sub:` 开头的临时 sub-agent 会话默认不生成摘要，避免额外消耗。完整原始消息按会话写入 `workspace/sessions/<session>/messages.jsonl`，持久摘要只作为模型上下文状态，不影响 UI 历史回放。
+
+| 配置项 | 默认值 | 示例 | 说明 |
+|---|---:|---|---|
+| `sessionSummary.enabled` | `true` | `true` | 是否启用会话滚动摘要 |
+| `sessionSummary.persistent` | `true` | `true` | 是否把摘要持久化到 session 状态文件 |
+| `sessionSummary.turnThreshold` | `5` | `5` | 累积多少轮后更新一次摘要 |
+| `sessionSummary.recentTurns` | `3` | `3` | 模型上下文中保留的最近原文轮数 |
+| `sessionSummary.maxChars` | `4000` | `4000` | 会话滚动摘要最大字符数 |
+
+### 自动记忆配置
+
+`core-auto-memory` 可以在多轮对话后自动分析是否需要写入长期记忆。长期记忆存储在 `workspace/memory/*.md`，不同于会话摘要；它更适合保存用户偏好、项目约定等跨会话信息。
+
+```json
+{
+  "autoMemory": {
+    "enabled": true,
+    "mode": "hybrid",
+    "turnThreshold": 10,
+    "minConfidence": 0.75,
+    "maxCandidates": 5,
+    "maxBatchChars": 8000
+  }
+}
+```
+
+| 配置项 | 默认值 | 示例 | 说明 |
+|---|---:|---|---|
+| `autoMemory.enabled` | `true` | `true` | 是否启用自动记忆 |
+| `autoMemory.mode` | `"hybrid"` | `"hybrid"` | `auto` 自动写入、`hybrid` 混合模式、`suggest` 仅建议 |
+| `autoMemory.turnThreshold` | `10` | `10` | 每多少轮触发一次分析 |
+| `autoMemory.minConfidence` | `0.75` | `0.75` | 写入候选的最低置信度 |
+| `autoMemory.maxCandidates` | `5` | `5` | 单次最多写入候选数 |
+| `autoMemory.maxBatchChars` | `8000` | `8000` | 单次分析输入的最大字符数 |
+
+### 聊天命令
+
+聊天输入支持斜杠命令。命令由插件注册，内置命令如下：
+
+| 命令 | 说明 |
+|---|---|
+| `/help` | 列出可用命令 |
+| `/help <命令名>` | 查看单个命令说明 |
+| `/new` | Web 中开启新会话；飞书中重置当前会话 |
+| `/reset` | `/new` 的别名 |
+| `/context` | 显示当前会话上下文长度估算 |
+| `/ctx` | `/context` 的别名 |
+| `/approvals` | 列出当前可处理的命令审批 |
+| `/approve <审批 ID>` | 批准一条命令审批；可恢复原任务时会继续执行 |
+| `/reject <审批 ID>` | 拒绝一条命令审批 |
+
+自定义插件可以通过 `ctx.registerChatCommand(...)` 注册命令。命令会在进入 Agent Loop 前执行，适合做会话管理、审批、上下文查询等轻量操作。
 
 ### Debug 模式
 
@@ -96,6 +235,13 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 
 Debug 日志可能包含用户输入、工具结果和提示词内容，建议只在本地排查时开启。
 
+| 配置项 | 默认值 | 示例 | 说明 |
+|---|---:|---|---|
+| `debug` | `false` | `true` | 简写形式，直接开启或关闭 debug |
+| `debug.enabled` | `false` | `true` | 是否启用 debug 日志 |
+| `debug.modelIO` | `true` | `true` | debug 开启后，是否记录模型请求和响应 |
+| `debug.rawStreamEvents` | `true` | `true` | debug 开启后，是否记录流式原始事件 |
+
 ### 安全边界
 
 文件工具支持读取和修改 workspace 之外的文件：相对路径以 workspace 为基准，也可以传入绝对路径。`bash` 也可以通过 `cwd` 在任意目录执行命令，但默认禁用；需要执行 shell 时显式开启：
@@ -111,19 +257,14 @@ Debug 日志可能包含用户输入、工具结果和提示词内容，建议�
 
 `bash.mode` 支持 `deny`、`ask` 和 `allow`。该策略同时控制 `bash` 工具和技能文件中的动态 shell 注入。`ask` 会创建一次性审批记录；在 Web UI 的聊天工具块中点击批准后，重新发起原任务即可执行一次。飞书中回复完整 `/approve <审批 ID>` 后会立即执行本次记录的 bash 命令。工具调用默认写入审计日志，可通过 `auditTools: false` 关闭。
 
-### CLI 模式
+| 配置项 | 默认值 | 示例 | 说明 |
+|---|---:|---|---|
+| `security.bash.mode` | `"deny"` | `"ask"` | bash 权限模式：`deny`、`ask`、`allow` |
+| `security.gateway.host` | `"127.0.0.1"` | `"0.0.0.0"` | Gateway 监听地址；暴露到非回环地址时必须配置 token |
+| `security.gateway.token` | 无 | `"YOUR_GATEWAY_TOKEN"` | Gateway Bearer token |
+| `security.auditTools` | `true` | `true` | 是否记录工具调用审计日志 |
 
-```bash
-npm start
-```
-
-启动后直接在终端与 Agent 对话，输入问题即可。
-
-### Gateway 模式
-
-```bash
-npm run gateway -- --port 3000
-```
+### Gateway API
 
 Gateway 默认只监听 `127.0.0.1`。如需暴露到其他机器，请同时配置 Bearer token：
 
@@ -161,7 +302,7 @@ POST /chat 请求示例：
 { "message": "你好", "session_id": "optional" }
 ```
 
-聊天输入支持插件注册的斜杠命令。输入 `/help` 可查看当前可用命令；输入 `/new` 可开启新会话；输入 `/context` 可查看当前上下文长度估算。workspace 插件可以通过 `ctx.registerChatCommand(...)` 注册自定义命令。
+聊天输入支持插件注册的斜杠命令。输入 `/help` 可查看当前可用命令；输入 `/new` 可开启新会话；输入 `/context` 可查看当前上下文长度估算。
 
 同一 session 同一时间只允许执行一个任务。客户端断开 SSE 连接时，Gateway 会自动取消后台任务；已知 session 也可以通过 `/sessions/:id/cancel` 主动取消。默认最多执行 20 次 Agent Loop 迭代，可通过 `maxAgentIterations` 调整，显式配置 `0` 表示不限。
 
@@ -196,11 +337,14 @@ POST /chat 请求示例：
 }
 ```
 
-7. **启动 Gateway** — 飞书插件会随 Gateway 自动启动 WebSocket 长连接：
+| 配置项 | 默认值 | 示例 | 说明 |
+|---|---:|---|---|
+| `enabledPlugins` | `[]` | `["feishu"]` | 启用飞书内置插件 |
+| `plugins.feishu.appId` | 必填 | `"cli_xxx"` | 飞书自建应用 App ID |
+| `plugins.feishu.appSecret` | 必填 | `"YOUR_FEISHU_APP_SECRET"` | 飞书自建应用 App Secret |
+| `plugins.feishu.verificationToken` | 必填 | `"YOUR_FEISHU_VERIFICATION_TOKEN"` | 事件订阅 Verification Token |
 
-```bash
-npm run gateway -- --port 3000
-```
+7. **确认连接** — 先按“快速开始”确保 Gateway 已运行；飞书插件会随 Gateway 自动建立 WebSocket 长连接。
 
 启动后日志显示 `飞书长连接已建立` 即表示连接成功，可以在飞书中给机器人发消息测试。
 

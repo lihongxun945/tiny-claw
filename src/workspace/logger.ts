@@ -1,5 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { appendSessionMessage } from "../session-store.js";
+import type { Message } from "../types.js";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -14,11 +16,13 @@ function ensureDir(dir: string): void {
 }
 
 export function appendHistory(workspacePath: string, message: unknown, sessionId?: string): void {
-  const dir = resolve(workspacePath, "history");
+  if (sessionId) {
+    appendSessionMessage(workspacePath, sessionId, message as Message);
+    return;
+  }
+  const dir = resolve(workspacePath, "sessions");
   ensureDir(dir);
-  const path = resolve(dir, `${today()}.jsonl`);
-  const record = sessionId ? { ...message as object, _session: sessionId } : message;
-  appendFileSync(path, JSON.stringify(record) + "\n", "utf-8");
+  appendFileSync(resolve(dir, "unscoped.jsonl"), JSON.stringify(message) + "\n", "utf-8");
 }
 
 export function appendLog(workspacePath: string, level: string, message: string, sessionId?: string): void {

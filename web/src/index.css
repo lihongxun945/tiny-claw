@@ -318,8 +318,49 @@ html, body, #root {
   color: var(--accent);
 }
 
+.processing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+}
+
+.processing-dots {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.processing-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: processing-dot 1.2s ease-in-out infinite;
+  opacity: 0.35;
+}
+
+.processing-dots span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.processing-dots span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
 @keyframes blink {
   50% { opacity: 0; }
+}
+
+@keyframes processing-dot {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  40% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
 }
 
 /* Tool call block */
@@ -462,6 +503,7 @@ html, body, #root {
   padding: 16px 24px;
   border-top: 1px solid var(--border);
   display: flex;
+  align-items: flex-end;
   gap: 10px;
 }
 
@@ -494,10 +536,16 @@ html, body, #root {
   color: var(--bg);
   border: none;
   border-radius: var(--radius);
-  padding: 0 16px;
+  width: 42px;
+  height: 42px;
+  padding: 0;
   font-size: 16px;
+  line-height: 1;
   cursor: pointer;
-  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .chat-input button:hover:not(:disabled) {
@@ -512,6 +560,8 @@ html, body, #root {
 .chat-input .stop-btn {
   background: #e74c3c;
   color: #fff;
+  width: auto;
+  padding: 0 14px;
 }
 
 /* Empty state */

@@ -3,6 +3,7 @@ import { loadConfig } from "../../config.js";
 import { estimateTokens } from "../../estimate-tokens.js";
 import { approveRequest, listApprovals, rejectRequest } from "../../tools/approval.js";
 import { createBashTool } from "../../tools/bash.js";
+import { deleteStoredSession } from "../../session-store.js";
 import type { ChatCommand, ChatCommandContext, Plugin } from "../types.js";
 
 export const coreChatCommandsPlugin: Plugin = {
@@ -88,6 +89,7 @@ function newConversation(pluginCtx: Parameters<Plugin["init"]>[0], ctx: ChatComm
 
   if (ctx.channel === "feishu") {
     pluginCtx.deleteSession(ctx.sessionId);
+    deleteStoredSession(ctx.workspacePath, ctx.sessionId);
     pluginCtx.getOrCreateSession(ctx.sessionId);
     return { text: "已重置当前飞书会话上下文。下一条消息会从新上下文开始。" };
   }

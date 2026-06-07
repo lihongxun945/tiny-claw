@@ -10,6 +10,7 @@ import { PluginManager } from "./plugin-manager.js";
 import { appendLog } from "./workspace/logger.js";
 import { deleteMemory, getMemoryRecord, listMemoryRecords, setMemoryDisabled, updateMemoryRecord, type MemorySource } from "./tools/memory.js";
 import { approveRequest, listApprovals, rejectRequest } from "./tools/approval.js";
+import { deleteStoredSession, listSessionMetas, readSessionMessages } from "./session-store.js";
 import type { RegisteredRoute, RouteContext } from "./plugins/types.js";
 
 const SESSION_TIMEOUT = 30 * 60 * 1000;
@@ -213,53 +214,6 @@ function buildMessageListFromMessages(msgs: Array<{ role: string; content: strin
     }
   }
   return result;
-}
-
-function buildMessageListFromRecords(historyDir: string, sessionId: string): FormattedMessage[] {
-  const rawMsgs: Array<{ role: string; content: unknown; _timestamp?: number }> = [];
-  const files = readdirSync(historyDir).filter((f) => f.endsWith(".jsonl")).sort();
-  for (const f of files) {
-    const lines = readFileSync(resolve(historyDir, f), "utf-8").split("\n").filter(Boolean);
-    for (const line of lines) {
-      try {
-        const record = JSON.parse(line);
-        if (record._session !== sessionId) continue;
-        rawMsgs.push({ role: record.role, content: record.content, _timestamp: record._timestamp });
-      } catch { /* skip */ }
-    }
-  }
-  return buildMessageListFromMessages(rawMsgs as Array<{ role: string; content: string | Array<{ type: string; id?: string; tool_use_id?: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>);
-}
-
-function deleteSessionHistory(workspacePath: string, sessionId: string): number {
-  const historyDir = resolve(workspacePath, "history");
-  if (!existsSync(historyDir)) return 0;
-
-  let deleted = 0;
-  const files = readdirSync(historyDir).filter((f) => f.endsWith(".jsonl"));
-  for (const file of files) {
-    const path = resolve(historyDir, file);
-    const lines = readFileSync(path, "utf-8").split("\n");
-    const kept: string[] = [];
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const record = JSON.parse(line);
-        if (record._session === sessionId) {
-          deleted++;
-          continue;
-        }
-      } catch {
-        // 保留无法解析的行，避免误删历史。
-      }
-      kept.push(line);
-    }
-
-    writeFileSync(path, kept.length > 0 ? `${kept.join("\n")}\n` : "", "utf-8");
-  }
-
-  return deleted;
 }
 
 function sendJSON(res: ServerResponse, status: number, data: unknown): void {
@@ -655,10 +609,14 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       sessions.get(id)?.cancel();
       const deletedActive = sessions.delete(id);
       pm.clearRuntimeDeps(id);
-      const deletedHistoryRecords = deleteSessionHistory(workspacePath, id);
-      if (deletedActive || deletedHistoryRecords > 0) {
-        appendLog(workspacePath, "INFO", `会话已删除，历史记录 ${deletedHistoryRecords} 条`, id);
-        sendJSON(res, 200, { deleted: true, deletedHistoryRecords });
+      const stored = deleteStoredSession(workspacePath, id);
+      if (deletedActive || stored.deleted) {
+        appendLog(workspacePath, "INFO", `会话已删除，历史记录 ${stored.deletedHistoryRecords} 条，会话记忆 ${stored.deletedSessionState ? "已删除" : "无"}`, id);
+        sendJSON(res, 200, {
+          deleted: true,
+          deletedHistoryRecords: stored.deletedHistoryRecords,
+          deletedSessionState: stored.deletedSessionState,
+        });
       } else {
         sendJSON(res, 404, { error: "会话不存在" });
       }
@@ -741,37 +699,13 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       return;
     }
 
-    // GET /history/sessions — 从历史文件 + 活跃会话合并
+    // GET /history/sessions — 从 session 元数据 + 活跃会话合并
     if (req.method === "GET" && url.pathname === "/history/sessions") {
       const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string }>();
 
-      // 从历史文件读取
-      const historyDir = resolve(workspacePath, "history");
-      if (existsSync(historyDir)) {
-        const files = readdirSync(historyDir).filter((f) => f.endsWith(".jsonl")).sort().reverse();
-        for (const f of files.slice(0, 30)) {
-          const lines = readFileSync(resolve(historyDir, f), "utf-8").split("\n").filter(Boolean);
-          for (const line of lines) {
-            try {
-              const record = JSON.parse(line);
-              const sid = record._session;
-              if (!sid) continue;
-              if (isSubAgentSessionId(sid)) continue;
-              if (!sessionMap.has(sid)) {
-                const preview = typeof record.content === "string"
-                  ? record.content.slice(0, 60)
-                  : Array.isArray(record.content) && record.content[0]?.text
-                    ? record.content[0].text.slice(0, 60)
-                    : "";
-                sessionMap.set(sid, { id: sid, lastActivity: 0, preview });
-              }
-              const entry = sessionMap.get(sid)!;
-              if (record.role === "user") {
-                entry.lastActivity = Math.max(entry.lastActivity, record._timestamp || Date.parse(f.replace(".jsonl", "")) || 0);
-              }
-            } catch { /* skip malformed */ }
-          }
-        }
+      for (const meta of listSessionMetas(workspacePath)) {
+        if (isSubAgentSessionId(meta.id) || meta.archived) continue;
+        sessionMap.set(meta.id, { id: meta.id, lastActivity: meta.lastActivity, preview: meta.preview });
       }
 
       // 合并活跃会话（新创建的但还未写入历史文件的）
@@ -787,15 +721,10 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       return;
     }
 
-    // GET /history/sessions/:id/messages — 读取指定会话的历史消息
+    // GET /history/sessions/:id/messages — 读取指定会话的消息
     if (req.method === "GET" && url.pathname.startsWith("/history/sessions/") && url.pathname.endsWith("/messages")) {
       const id = decodeURIComponent(url.pathname.slice("/history/sessions/".length, -"/messages".length));
-      const historyDir = resolve(workspacePath, "history");
-      if (!existsSync(historyDir)) {
-        sendJSON(res, 200, { messages: [] });
-        return;
-      }
-      const messages = buildMessageListFromRecords(historyDir, id);
+      const messages = buildMessageListFromMessages(readSessionMessages(workspacePath, id) as Array<{ role: string; content: string | Array<{ type: string; id?: string; tool_use_id?: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>);
       sendJSON(res, 200, { messages });
       return;
     }

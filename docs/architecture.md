@@ -106,7 +106,7 @@ workspace/
 | contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
 | historyWindowSize | 历史窗口（轮） | 5 |
 | maxAgentIterations | Agent Loop 最大迭代次数，显式配置 0 表示不限 | 20 |
-| sessionSummary | 会话滚动摘要配置 | enabled=true, turnThreshold=5, recentTurns=3 |
+| sessionSummary | 会话滚动摘要配置 | enabled=true, persistent=true, turnThreshold=5, recentTurns=3 |
 | autoMemory | 自动记忆配置 | enabled=true, turnThreshold=10 |
 | debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
 | security | 基础安全边界：bash 策略、Gateway host/token、工具审计 | 见下文 |
@@ -352,7 +352,7 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 
 ### 会话滚动摘要
 
-核心插件 `core-session-summary` 为每个普通会话维护一份内存中的滚动摘要，减少旧消息原文进入模型上下文。摘要默认每 5 个完整对话轮次更新一次，不会每轮额外调用模型：
+核心插件 `core-session-summary` 为每个普通会话维护一份滚动摘要，减少旧消息原文进入模型上下文。摘要默认每 5 个完整对话轮次更新一次，不会每轮额外调用模型；摘要状态默认持久化到 `workspace/sessions/<session>/state.json`，以便刷新、切换会话或 Gateway 重启后恢复：
 
 1. `onBeforeModelCall`：移除旧摘要消息；如果已有摘要，优先保留上次摘要后尚未沉淀的增量消息和当前轮消息，并将摘要合并进下一条 user 消息前部。没有未沉淀增量时，回退保留最近 `recentTurns` 轮原文。
 2. 摘要尚未生成时，不会因为 `recentTurns` 提前裁掉历史，仍由 `historyWindowSize` 控制底层历史窗口。
@@ -365,6 +365,7 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 {
   "sessionSummary": {
     "enabled": true,
+    "persistent": true,
     "turnThreshold": 5,
     "recentTurns": 3,
     "maxChars": 4000
@@ -374,7 +375,7 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 
 其中 `turnThreshold` 是摘要刷新频率，`recentTurns` 是已有摘要后仍保留的近期原文窗口，二者不需要和 `historyWindowSize` 相同。
 
-完整原始历史仍写入 `workspace/history/*.jsonl`，用于回放和审计；滚动摘要只影响模型上下文，不写入长期 memory。
+完整原始消息写入 `workspace/sessions/<session>/messages.jsonl`，会话列表来自 `workspace/sessions/<session>/meta.json`；滚动摘要写入 `workspace/sessions/<session>/state.json`，只作为会话级模型上下文状态，不写入长期 memory，也不污染 UI 历史回放。
 
 ### 工具注册：插件化
 

@@ -36,6 +36,9 @@ export interface Config {
   maxTokens: number;
   maxContextTokens: number;
   contextCompressionThreshold: number;
+  contextCompressionMaxChars: number;
+  contextCompressionToolResultMaxChars: number;
+  toolResultInitialMaxChars: number;
   historyWindowSize: number;
   maxAgentIterations: number;
   searchProvider: "ollama" | "searxng" | "brave" | "duckduckgo";
@@ -63,6 +66,7 @@ export interface SubAgentConfig {
 
 export interface SessionSummaryConfig {
   enabled?: boolean;
+  persistent?: boolean;
   turnThreshold?: number;
   recentTurns?: number;
   maxChars?: number;

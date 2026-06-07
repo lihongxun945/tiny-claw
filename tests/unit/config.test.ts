@@ -26,6 +26,9 @@ describe("loadConfig", () => {
       maxTokens: 4096,
       maxContextTokens: 128000,
       contextCompressionThreshold: 0.7,
+      contextCompressionMaxChars: 5000,
+      contextCompressionToolResultMaxChars: 500,
+      toolResultInitialMaxChars: 12000,
       historyWindowSize: 5,
       maxAgentIterations: 20,
       searchProvider: "ollama",
@@ -65,6 +68,9 @@ describe("loadConfig", () => {
 
   it.each([
     [{ maxTokens: 0 }, "配置字段 maxTokens 超出允许范围"],
+    [{ contextCompressionMaxChars: 99 }, "配置字段 contextCompressionMaxChars 超出允许范围"],
+    [{ contextCompressionToolResultMaxChars: 99 }, "配置字段 contextCompressionToolResultMaxChars 超出允许范围"],
+    [{ toolResultInitialMaxChars: 999 }, "配置字段 toolResultInitialMaxChars 超出允许范围"],
     [{ maxAgentIterations: -1 }, "配置字段 maxAgentIterations 超出允许范围"],
     [{ searchProvider: "unknown" }, "配置字段 searchProvider 不受支持"],
     [{ security: { bash: { mode: "unknown" } } }, "配置字段 security.bash.mode 不受支持"],
@@ -72,11 +78,25 @@ describe("loadConfig", () => {
     [{ subAgent: { maxConcurrency: 9 } }, "配置字段 subAgent.maxConcurrency 超出允许范围"],
     [{ autoMemory: { minConfidence: 2 } }, "配置字段 autoMemory.minConfidence 超出允许范围"],
     [{ sessionSummary: { enabled: "yes" } }, "配置字段 sessionSummary.enabled 必须是布尔值"],
+    [{ sessionSummary: { persistent: "yes" } }, "配置字段 sessionSummary.persistent 必须是布尔值"],
     [{ enabledPlugins: "feishu" }, "配置字段 enabledPlugins 必须是字符串数组"],
     [{ plugins: [] }, "配置字段 plugins 必须是对象"],
   ])("rejects invalid configuration", (overrides, message) => {
     const workspacePath = createTempWorkspace(overrides);
     workspaces.push(workspacePath);
     expect(() => loadConfig(workspacePath)).toThrow(message);
+  });
+
+  it("loads custom context compression limits", () => {
+    const workspacePath = createTempWorkspace({
+      contextCompressionMaxChars: 1200,
+      contextCompressionToolResultMaxChars: 300,
+      toolResultInitialMaxChars: 6000,
+    });
+    workspaces.push(workspacePath);
+
+    expect(loadConfig(workspacePath).contextCompressionMaxChars).toBe(1200);
+    expect(loadConfig(workspacePath).contextCompressionToolResultMaxChars).toBe(300);
+    expect(loadConfig(workspacePath).toolResultInitialMaxChars).toBe(6000);
   });
 });

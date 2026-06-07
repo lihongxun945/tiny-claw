@@ -1,26 +1,33 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI, when working with code in this repository.
 
 ## 项目概述
 
-tiny-claw 是一个个人项目，目标是构建一个类似 open-claw 的自主 Agent，能够自主规划、执行任务。项目目前处于早期开发阶段。
+tiny-claw 是一个个人项目，目标是构建一个类似 open-claw 的自主 Agent，能够自主规划、执行任务。
 
 ## 编程语言
 
 主要使用 TypeScript。项目涉及大量消息格式、工具 schema、API 响应等结构化数据，必须充分利用类型系统。
 
-## 架构设计
-在设计和实现任何功能之前，你都需要考虑可维护性、可拓展性，需要架构清晰，考虑后续的维护和拓展成本，不要无脑叠加和硬编码。
-
 ## 工作规范
 
+进行代码变更前，必须遵守：
+- 进行任何代码变更前，你必须要先设计方案，只有我同意你的方案后，才开始进行编码
+- 在你设计方案前，必须阅读 docs/architecture.md 文件，理解当前项目的架构，按照规范进行方案设计。
+- 当前项目是插件化架构，你的设计必须充分解耦，大部分功能应该都是通过插件注册，可插拔的，而不是硬编码到主流程的
+
+在代码变更时，必须遵守：
+- 改动任何代码，都需要判断是否要更新测试用例，如果需要的话一定要更新
+- 不要硬编码阈值，需要设置阈值的地方，你都要增加一个配置项，并在代码中设置一个合理的默认值
+
+在代码变更后，必须遵守：
+- 必须执行相关的自动测试
 - 代码变更后必须检查 `docs/architecture.md` 是否需要同步更新（模块结构、数据流、设计决策等）
-- 代码变更后必须执行相关测试
-- 每日开发结束后更新 `docs/devlog/YYYY-MM-DD.md`
+- 代码变更后必须检查 `README.md` 是否需要同步更新，比如增加了新的工具、命令、配置等，或者已有的文档需要更新
+- 代码变更后必须检查 `config.example.json` 是否需要更新，如果有新增的配置项则必须增加示例
 - 除非明确要求，不要自己提交或者推送git
 - 只要改动了webui代码，就要执行一下build，以免改动不生效
-- 改动任何代码，都需要判断是否要更新测试用例，如果需要的话一定要更新
 
 ## Behavioral guidelines
 

@@ -81,6 +81,67 @@ describe("MessageHistory", () => {
     ]);
   });
 
+  it("strips completed tool messages from previous turns", () => {
+    const history = new MessageHistory([
+      message("user", "previous-user"),
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "I will search" },
+          { type: "tool_use", id: "call-1", name: "web_search", input: { query: "large" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call-1", content: "very large result" }],
+      },
+      message("assistant", "previous-final-answer"),
+    ]);
+    history.markTurnStart();
+    history.push(message("user", "current-user"));
+
+    expect(history.getRecentMessages(10)).toEqual([
+      message("user", "previous-user"),
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "I will search" }],
+      },
+      message("assistant", "previous-final-answer"),
+      message("user", "current-user"),
+    ]);
+  });
+
+  it("keeps tool messages inside the current turn", () => {
+    const history = new MessageHistory([
+      message("user", "previous-user"),
+      message("assistant", "previous-assistant"),
+    ]);
+    history.markTurnStart();
+    history.push(message("user", "current-user"));
+    history.push({
+      role: "assistant",
+      content: [{ type: "tool_use", id: "call-1", name: "web_search", input: { query: "large" } }],
+    });
+    history.push({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "call-1", content: "current result" }],
+    });
+
+    expect(history.getRecentMessages(10)).toEqual([
+      message("user", "previous-user"),
+      message("assistant", "previous-assistant"),
+      message("user", "current-user"),
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call-1", name: "web_search", input: { query: "large" } }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call-1", content: "current result" }],
+      },
+    ]);
+  });
+
   it("replaces compressed history and preserves the new turn index", () => {
     const history = new MessageHistory();
     history.replaceWithCompressed([

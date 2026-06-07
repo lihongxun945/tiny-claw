@@ -2,7 +2,24 @@ import type { Message, Config } from "./types.js";
 import type { ModelClient } from "./model/index.js";
 import { estimateTokens } from "./estimate-tokens.js";
 
-const COMPRESS_PROMPT = `请将以下对话历史压缩为一段简洁的摘要，保留关键信息（事实、决策、结论），省略细节和中间过程。用中文输出，不超过 500 字。`;
+const DEFAULT_CONTEXT_COMPRESSION_MAX_CHARS = 5000;
+const DEFAULT_CONTEXT_COMPRESSION_TOOL_RESULT_MAX_CHARS = 500;
+
+function getCompressionMaxChars(config: Config): number {
+  const value = config.contextCompressionMaxChars;
+  if (!Number.isFinite(value) || value < 100) return DEFAULT_CONTEXT_COMPRESSION_MAX_CHARS;
+  return Math.floor(value);
+}
+
+function getCompressionToolResultMaxChars(config: Config): number {
+  const value = config.contextCompressionToolResultMaxChars;
+  if (!Number.isFinite(value) || value < 100) return DEFAULT_CONTEXT_COMPRESSION_TOOL_RESULT_MAX_CHARS;
+  return Math.floor(value);
+}
+
+function compressPrompt(maxChars: number): string {
+  return `请将以下对话历史压缩为一段简洁的摘要，保留关键信息（事实、决策、结论），省略细节和中间过程。用中文输出，不超过 ${maxChars} 字。`;
+}
 
 /**
  * 检查是否需要压缩上下文，如果需要则执行压缩。
@@ -26,7 +43,12 @@ export async function compressIfNeeded(
 
   // 优先压缩历史对话
   if (previousMessages.length > 2) {
-    const compressed = await compressMessages(previousMessages, client);
+    const compressed = await compressMessages(
+      previousMessages,
+      client,
+      getCompressionMaxChars(config),
+      getCompressionToolResultMaxChars(config),
+    );
     return [...compressed, ...currentMessages];
   }
 
@@ -35,7 +57,12 @@ export async function compressIfNeeded(
     const splitIdx = Math.ceil(currentMessages.length / 2);
     const toCompress = currentMessages.slice(0, splitIdx);
     const toKeep = currentMessages.slice(splitIdx);
-    const compressed = await compressMessages(toCompress, client);
+    const compressed = await compressMessages(
+      toCompress,
+      client,
+      getCompressionMaxChars(config),
+      getCompressionToolResultMaxChars(config),
+    );
     return [...previousMessages, ...compressed, ...toKeep];
   }
 
@@ -45,6 +72,8 @@ export async function compressIfNeeded(
 async function compressMessages(
   messages: Message[],
   client: ModelClient,
+  maxChars: number,
+  toolResultMaxChars: number,
 ): Promise<Message[]> {
   // 将消息格式化为可读文本供模型压缩
   const text = messages
@@ -55,7 +84,7 @@ async function compressMessages(
       const parts = msg.content.map((block) => {
         if (block.type === "text") return `[文本]: ${block.text}`;
         if (block.type === "tool_use") return `[工具调用 ${block.name}]: ${JSON.stringify(block.input)}`;
-        if (block.type === "tool_result") return `[工具结果]: ${block.content.slice(0, 500)}`;
+        if (block.type === "tool_result") return `[工具结果]: ${block.content.slice(0, toolResultMaxChars)}`;
         return "";
       });
       return `[${msg.role}]: ${parts.join(" | ")}`;
@@ -64,7 +93,7 @@ async function compressMessages(
 
   try {
     const summary = await client.complete(
-      [{ role: "user", content: `${COMPRESS_PROMPT}\n\n---\n${text}` }],
+      [{ role: "user", content: `${compressPrompt(maxChars)}\n\n---\n${text}` }],
       "你是一个对话摘要助手，只输出摘要，不要有任何额外说明。",
     );
 

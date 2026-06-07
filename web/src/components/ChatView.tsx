@@ -46,16 +46,29 @@ export default function ChatView({
         {messages.map((msg, i) => (
           <MessageBubble key={i} message={msg} />
         ))}
-        {isStreaming && (streamingText || streamingToolCalls.length > 0) && (
-          <MessageBubble
-            message={{
-              role: "assistant",
-              text: streamingText,
-              toolCalls: streamingToolCalls,
-              timestamp: Date.now(),
-            }}
-            isStreaming
-          />
+        {isStreaming && (
+          streamingText || streamingToolCalls.length > 0 ? (
+            <MessageBubble
+              message={{
+                role: "assistant",
+                text: streamingText,
+                toolCalls: streamingToolCalls,
+                timestamp: Date.now(),
+              }}
+              isStreaming
+            />
+          ) : (
+            <div className="message assistant">
+              <div className="message-content processing-indicator" aria-live="polite">
+                <span>正在处理</span>
+                <span className="processing-dots" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              </div>
+            </div>
+          )
         )}
         <div ref={bottomRef} />
       </div>

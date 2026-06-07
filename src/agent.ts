@@ -1,5 +1,3 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { createModelClient, type ModelClient } from "./model/index.js";
 import { MessageHistory } from "./history.js";
@@ -7,6 +5,7 @@ import { PluginManager } from "./plugin-manager.js";
 import { ensureWorkspace } from "./workspace/workspace.js";
 import { appendHistory } from "./workspace/logger.js";
 import { sanitizeToolMessageChains } from "./message-sanitizer.js";
+import { readSessionMessages } from "./session-store.js";
 import type { AgentActor, Config, Message, ToolUseBlock, ToolResultBlock } from "./types.js";
 
 // === 事件类型 ===
@@ -59,29 +58,7 @@ interface PendingApprovalContinuation {
 // === AgentSession ===
 
 function loadPersistedSessionMessages(workspacePath: string, sessionId: string): Message[] {
-  const historyDir = resolve(workspacePath, "history");
-  if (!existsSync(historyDir)) return [];
-
-  const messages: Message[] = [];
-  const files = readdirSync(historyDir).filter((file) => file.endsWith(".jsonl")).sort();
-  for (const file of files) {
-    const lines = readFileSync(resolve(historyDir, file), "utf-8").split("\n").filter(Boolean);
-    for (const line of lines) {
-      try {
-        const record = JSON.parse(line) as Message & { _session?: string };
-        if (record._session !== sessionId) continue;
-        if (record.role !== "user" && record.role !== "assistant") continue;
-        messages.push({
-          role: record.role,
-          content: record.content,
-          _timestamp: record._timestamp,
-        });
-      } catch {
-        // 忽略损坏的历史行，避免影响会话创建。
-      }
-    }
-  }
-  return sanitizeToolMessageChains(messages);
+  return sanitizeToolMessageChains(readSessionMessages(workspacePath, sessionId));
 }
 
 export class AgentSession {

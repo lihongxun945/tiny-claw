@@ -7,10 +7,14 @@
   "maxTokens": 4096,
   "maxContextTokens": 128000,
   "contextCompressionThreshold": 0.7,
+  "contextCompressionMaxChars": 5000,
+  "contextCompressionToolResultMaxChars": 500,
+  "toolResultInitialMaxChars": 12000,
   "historyWindowSize": 20,
   "maxAgentIterations": 20,
   "sessionSummary": {
     "enabled": true,
+    "persistent": true,
     "turnThreshold": 5,
     "recentTurns": 3,
     "maxChars": 4000

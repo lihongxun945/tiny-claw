@@ -7,6 +7,9 @@ const DEFAULTS: Partial<Config> = {
   maxTokens: 4096,
   maxContextTokens: 128000,
   contextCompressionThreshold: 0.7,
+  contextCompressionMaxChars: 5000,
+  contextCompressionToolResultMaxChars: 500,
+  toolResultInitialMaxChars: 12_000,
   historyWindowSize: 5,
   maxAgentIterations: 20,
   searchProvider: "ollama",
@@ -59,6 +62,9 @@ export function validateConfig(raw: Record<string, unknown>): void {
   assertNumber(raw.maxTokens ?? DEFAULTS.maxTokens, "maxTokens", { min: 1, max: 1_000_000, integer: true });
   assertNumber(raw.maxContextTokens ?? DEFAULTS.maxContextTokens, "maxContextTokens", { min: 1, max: 10_000_000, integer: true });
   assertNumber(raw.contextCompressionThreshold ?? DEFAULTS.contextCompressionThreshold, "contextCompressionThreshold", { min: 0.1, max: 1 });
+  assertNumber(raw.contextCompressionMaxChars ?? DEFAULTS.contextCompressionMaxChars, "contextCompressionMaxChars", { min: 100, max: 1_000_000, integer: true });
+  assertNumber(raw.contextCompressionToolResultMaxChars ?? DEFAULTS.contextCompressionToolResultMaxChars, "contextCompressionToolResultMaxChars", { min: 100, max: 1_000_000, integer: true });
+  assertNumber(raw.toolResultInitialMaxChars ?? DEFAULTS.toolResultInitialMaxChars, "toolResultInitialMaxChars", { min: 1000, max: 10_000_000, integer: true });
   assertNumber(raw.historyWindowSize ?? DEFAULTS.historyWindowSize, "historyWindowSize", { min: 0, max: 10_000, integer: true });
   assertNumber(raw.maxAgentIterations ?? DEFAULTS.maxAgentIterations, "maxAgentIterations", { min: 0, max: 1_000, integer: true });
 
@@ -85,6 +91,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
   if (raw.sessionSummary !== undefined) {
     assertObject(raw.sessionSummary, "sessionSummary");
     assertOptionalBoolean(raw.sessionSummary.enabled, "sessionSummary.enabled");
+    assertOptionalBoolean(raw.sessionSummary.persistent, "sessionSummary.persistent");
     assertOptionalNumber(raw.sessionSummary.turnThreshold, "sessionSummary.turnThreshold", { min: 1, integer: true });
     assertOptionalNumber(raw.sessionSummary.recentTurns, "sessionSummary.recentTurns", { min: 0, integer: true });
     assertOptionalNumber(raw.sessionSummary.maxChars, "sessionSummary.maxChars", { min: 1, integer: true });
@@ -156,6 +163,9 @@ export function loadConfig(workspacePath: string): Config {
     maxTokens: (raw.maxTokens as number) ?? DEFAULTS.maxTokens!,
     maxContextTokens: (raw.maxContextTokens as number) ?? DEFAULTS.maxContextTokens!,
     contextCompressionThreshold: (raw.contextCompressionThreshold as number) ?? DEFAULTS.contextCompressionThreshold!,
+    contextCompressionMaxChars: (raw.contextCompressionMaxChars as number) ?? DEFAULTS.contextCompressionMaxChars!,
+    contextCompressionToolResultMaxChars: (raw.contextCompressionToolResultMaxChars as number) ?? DEFAULTS.contextCompressionToolResultMaxChars!,
+    toolResultInitialMaxChars: (raw.toolResultInitialMaxChars as number) ?? DEFAULTS.toolResultInitialMaxChars!,
     historyWindowSize: (raw.historyWindowSize as number) ?? DEFAULTS.historyWindowSize!,
     maxAgentIterations: (raw.maxAgentIterations as number) ?? DEFAULTS.maxAgentIterations!,
     searchProvider: (raw.searchProvider as Config["searchProvider"]) ?? DEFAULTS.searchProvider!,

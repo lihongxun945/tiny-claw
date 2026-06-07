@@ -3,6 +3,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 import { startTestGateway, type TestGateway } from "../helpers/start-gateway.js";
+import { loadSessionState, saveSessionState } from "../../src/session-state.js";
+import { appendSessionMessage } from "../../src/session-store.js";
 
 async function json(url: string, init?: RequestInit): Promise<{ status: number; body: any }> {
   const response = await fetch(url, init);
@@ -129,15 +131,10 @@ describe("Gateway HTTP API", () => {
     expect((await json(`${gateway.apiUrl}/memory/project`)).status).toBe(404);
   });
 
-  it("filters sub-agent sessions and deletes persisted session history", async () => {
-    const historyPath = resolve(workspacePath, "history", "2026-06-02.jsonl");
-    writeFileSync(historyPath, [
-      JSON.stringify({ role: "user", content: "main question", _session: "main", _timestamp: 2 }),
-      JSON.stringify({ role: "assistant", content: "main answer", _session: "main", _timestamp: 3 }),
-      JSON.stringify({ role: "user", content: "sub question", _session: "sub:main:worker", _timestamp: 4 }),
-      "{malformed",
-      "",
-    ].join("\n"), "utf-8");
+  it("filters sub-agent sessions and deletes persisted session messages", async () => {
+    appendSessionMessage(workspacePath, "main", { role: "user", content: "main question", _timestamp: 2 });
+    appendSessionMessage(workspacePath, "main", { role: "assistant", content: "main answer", _timestamp: 3 });
+    appendSessionMessage(workspacePath, "sub:main:worker", { role: "user", content: "sub question", _timestamp: 4 });
 
     const sessions = await json(`${gateway.apiUrl}/history/sessions`);
     expect(sessions.body.sessions.map((session: { id: string }) => session.id)).toEqual(["main"]);
@@ -147,57 +144,59 @@ describe("Gateway HTTP API", () => {
     ]);
 
     const deleted = await json(`${gateway.apiUrl}/sessions/main`, { method: "DELETE" });
-    expect(deleted.body).toEqual({ deleted: true, deletedHistoryRecords: 2 });
+    expect(deleted.body).toEqual({ deleted: true, deletedHistoryRecords: 2, deletedSessionState: false });
     expect((await json(`${gateway.apiUrl}/history/sessions`)).body.sessions).toEqual([]);
-    expect(readFileSync(historyPath, "utf-8")).toContain("{malformed");
   });
 
-  it("deletes persisted session history for encoded session ids", async () => {
+  it("deletes persisted session messages for encoded session ids", async () => {
     const sessionId = "web/session?special#id";
-    const historyPath = resolve(workspacePath, "history", "2026-06-02.jsonl");
-    writeFileSync(historyPath, [
-      JSON.stringify({ role: "user", content: "special question", _session: sessionId, _timestamp: 2 }),
-      JSON.stringify({ role: "assistant", content: "special answer", _session: sessionId, _timestamp: 3 }),
-      "",
-    ].join("\n"), "utf-8");
+    appendSessionMessage(workspacePath, sessionId, { role: "user", content: "special question", _timestamp: 2 });
+    appendSessionMessage(workspacePath, sessionId, { role: "assistant", content: "special answer", _timestamp: 3 });
 
     expect((await json(`${gateway.apiUrl}/history/sessions`)).body.sessions.map((session: { id: string }) => session.id)).toEqual([sessionId]);
 
     const deleted = await json(`${gateway.apiUrl}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
-    expect(deleted.body).toEqual({ deleted: true, deletedHistoryRecords: 2 });
+    expect(deleted.body).toEqual({ deleted: true, deletedHistoryRecords: 2, deletedSessionState: false });
     expect((await json(`${gateway.apiUrl}/history/sessions`)).body.sessions).toEqual([]);
   });
 
   it("proxies DELETE session requests without sending an empty body", async () => {
     const sessionId = "web-proxy-delete";
-    writeFileSync(resolve(workspacePath, "history", "2026-06-02.jsonl"), [
-      JSON.stringify({ role: "user", content: "delete through web proxy", _session: sessionId, _timestamp: 2 }),
-      "",
-    ].join("\n"), "utf-8");
+    appendSessionMessage(workspacePath, sessionId, { role: "user", content: "delete through web proxy", _timestamp: 2 });
 
     const deleted = await json(`${gateway.webUrl}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
-    expect(deleted).toEqual({ status: 200, body: { deleted: true, deletedHistoryRecords: 1 } });
+    expect(deleted).toEqual({ status: 200, body: { deleted: true, deletedHistoryRecords: 1, deletedSessionState: false } });
     expect((await json(`${gateway.apiUrl}/history/sessions`)).body.sessions).toEqual([]);
   });
 
+  it("deletes persisted session state with the session", async () => {
+    saveSessionState(workspacePath, {
+      sessionId: "stateful-session",
+      summary: "持久化摘要",
+      pendingMessages: [],
+      turnsSinceSummary: 0,
+    });
+
+    const deleted = await json(`${gateway.apiUrl}/sessions/stateful-session`, { method: "DELETE" });
+    expect(deleted).toEqual({
+      status: 200,
+      body: { deleted: true, deletedHistoryRecords: 0, deletedSessionState: true },
+    });
+    expect(loadSessionState(workspacePath, "stateful-session").summary).toBe("");
+  });
+
   it("restores persisted tool results after a page refresh", async () => {
-    const historyPath = resolve(workspacePath, "history", "2026-06-02.jsonl");
-    writeFileSync(historyPath, [
-      JSON.stringify({ role: "user", content: "run pwd", _session: "tool-history", _timestamp: 1 }),
-      JSON.stringify({
-        role: "assistant",
-        content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "pwd" } }],
-        _session: "tool-history",
-        _timestamp: 2,
-      }),
-      JSON.stringify({
-        role: "user",
-        content: [{ type: "tool_result", tool_use_id: "call-1", content: "{\"error\":\"bash 执行已禁用\"}" }],
-        _session: "tool-history",
-        _timestamp: 3,
-      }),
-      "",
-    ].join("\n"), "utf-8");
+    appendSessionMessage(workspacePath, "tool-history", { role: "user", content: "run pwd", _timestamp: 1 });
+    appendSessionMessage(workspacePath, "tool-history", {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "pwd" } }],
+      _timestamp: 2,
+    });
+    appendSessionMessage(workspacePath, "tool-history", {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "call-1", content: "{\"error\":\"bash 执行已禁用\"}" }],
+      _timestamp: 3,
+    });
 
     expect((await json(`${gateway.apiUrl}/history/sessions/tool-history/messages`)).body.messages).toEqual([
       expect.objectContaining({ role: "user", text: "run pwd" }),
@@ -258,11 +257,8 @@ describe("Gateway HTTP API", () => {
   });
 
   it("reports context length for the active session", async () => {
-    writeFileSync(resolve(workspacePath, "history", `${new Date().toISOString().slice(0, 10)}.jsonl`), [
-      JSON.stringify({ role: "user", content: "hello context", _session: "ctx-session", _timestamp: 1 }),
-      JSON.stringify({ role: "assistant", content: [{ type: "text", text: "context reply" }], _session: "ctx-session", _timestamp: 2 }),
-      "",
-    ].join("\n"), "utf-8");
+    appendSessionMessage(workspacePath, "ctx-session", { role: "user", content: "hello context", _timestamp: 1 });
+    appendSessionMessage(workspacePath, "ctx-session", { role: "assistant", content: [{ type: "text", text: "context reply" }], _timestamp: 2 });
 
     const events = await sse(`${gateway.apiUrl}/chat`, {
       method: "POST",

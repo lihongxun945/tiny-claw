@@ -1,5 +1,5 @@
 import type { Message } from "./types.js";
-import { sanitizeToolMessageChains } from "./message-sanitizer.js";
+import { sanitizeToolMessageChains, stripToolMessagesForNewTurn } from "./message-sanitizer.js";
 
 export class MessageHistory {
   private messages: Message[] = [];
@@ -48,7 +48,7 @@ export class MessageHistory {
       trimmed = trimmed.slice(1);
     }
 
-    const sanitizedPrevious = sanitizeToolMessageChains(trimmed);
+    const sanitizedPrevious = stripToolMessagesForNewTurn(trimmed);
     const sanitizedCurrentTurn = sanitizeToolMessageChains(currentTurn);
 
     return {
