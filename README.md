@@ -16,8 +16,10 @@ npm install
 复制配置模板并修改：
 
 ```bash
-cp config.example.json workspace/config.json
+cp config.simple.example.json workspace/config.json
 ```
+
+推荐从 `config.simple.example.json` 开始；`config.all.example.json` 是完整配置参考。
 
 `workspace/config.json` 必填字段：
 

@@ -1,5 +1,5 @@
 {
-  "$comment": "复制到 workspace/config.json 后修改",
+  "$comment": "完整配置示例。复制到 workspace/config.json 后按需修改；入门推荐使用 config.simple.example.json",
   "apiUrl": "https://ark.cn-beijing.volces.com/api/coding",
   "apiKey": "YOUR_API_KEY",
   "model": "deepseek-v4-flash",

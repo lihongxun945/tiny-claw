@@ -6,6 +6,7 @@ workspace/config.json
 workspace/history/
 workspace/logs/
 workspace/memory/
+workspace/sessions/
 web/dist/
 web/node_modules/
 workspace/gateway.pid

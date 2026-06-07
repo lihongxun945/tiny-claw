@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadConfig } from "../../src/config.js";
+import { loadConfig, validateConfig } from "../../src/config.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
 describe("loadConfig", () => {
@@ -35,6 +35,11 @@ describe("loadConfig", () => {
       workspacePath,
       systemPrompt: "You are tiny-claw.",
     });
+  });
+
+  it.each(["config.simple.example.json", "config.all.example.json"])("keeps %s valid", (fileName) => {
+    const raw = JSON.parse(readFileSync(resolve(process.cwd(), fileName), "utf-8"));
+    expect(() => validateConfig(raw)).not.toThrow();
   });
 
   it("loads provider-specific search configuration", () => {

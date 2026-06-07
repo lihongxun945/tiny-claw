@@ -1,0 +1,46 @@
+{
+  "$comment": "简单配置示例。复制到 workspace/config.json 后修改 API Key 和插件密钥",
+  "apiUrl": "https://api.deepseek.com",
+  "apiKey": "YOUR_API_KEY",
+  "model": "deepseek-v4-pro",
+  "modelProvider": "openai-chat",
+  "maxTokens": 4096,
+  "historyWindowSize": 10,
+  "maxContextTokens": 128000,
+  "debug": {
+    "enabled": true,
+    "modelIO": true,
+    "rawStreamEvents": true
+  },
+  "sessionSummary": {
+    "enabled": true,
+    "turnThreshold": 5,
+    "recentTurns": 3,
+    "maxChars": 4000
+  },
+  "autoMemory": {
+    "enabled": true,
+    "mode": "hybrid",
+    "turnThreshold": 10,
+    "minConfidence": 0.75,
+    "maxCandidates": 5,
+    "maxBatchChars": 8000
+  },
+  "enabledPlugins": [
+    "feishu"
+  ],
+  "plugins": {
+    "feishu": {
+      "appId": "cli_xxx",
+      "appSecret": "YOUR_FEISHU_APP_SECRET",
+      "verificationToken": "YOUR_FEISHU_VERIFICATION_TOKEN"
+    }
+  },
+  "searchProvider": "ollama",
+  "ollamaApiKey": "YOUR_OLLAMA_API_KEY",
+  "security": {
+    "bash": {
+      "mode": "ask"
+    }
+  }
+}

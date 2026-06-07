@@ -95,6 +95,8 @@ workspace/
 
 ### config.json
 
+仓库提供两个配置示例：`config.simple.example.json` 是推荐入门配置，`config.all.example.json` 是完整配置参考。实际运行时只读取 `workspace/config.json`。
+
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
 | apiUrl | API 基础地址 | 必填 |
