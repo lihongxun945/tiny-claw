@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import type { Tool } from "../types.js";
 import type { Config } from "../types.js";
-import { requestApproval } from "./approval.js";
+import { checkDangerousToolPermission } from "./permission.js";
 
 const MAX_OUTPUT = 10000;
 const DEFAULT_TIMEOUT = 30;
@@ -36,28 +36,16 @@ export function createBashTool(workspacePath: string, getConfig: () => Config): 
       const command = args.command as string;
       const timeout = (args.timeout as number) ?? DEFAULT_TIMEOUT;
       const cwd = resolve(workspacePath, (args.cwd as string | undefined) ?? ".");
-      const mode = getConfig().security?.bash?.mode ?? "allow";
-
-      if (mode === "deny") {
-        return JSON.stringify({ error: "bash 执行已禁用。需要在 security.bash.mode 中显式配置 allow。" });
-      }
-      if (mode === "ask") {
-        const approval = requestApproval(workspacePath, "bash", command, cwd, undefined, context?.actor, context?.sessionId);
-        if (approval.approved) return execute(command, timeout, cwd, context?.signal);
-        const approvalCommand = context?.actor?.channel === "feishu"
-          ? `/approve ${approval.approval!.id}`
-          : undefined;
-        return JSON.stringify({
-          error: approvalCommand
-            ? `bash 执行需要用户确认。请在飞书中回复完整命令：${approvalCommand}。只回复“批准”无效。批准后系统会立即执行该命令。`
-            : "bash 执行需要用户确认。批准后重新发起任务即可执行一次。",
-          requiresConfirmation: true,
-          approvalId: approval.approval!.id,
-          approvalCommand,
-          command,
-          cwd,
-        });
-      }
+      const permission = checkDangerousToolPermission({
+        workspacePath,
+        config: getConfig(),
+        toolName: "bash",
+        args,
+        context,
+        command,
+        cwd,
+      });
+      if (!permission.allowed) return permission.result;
 
       return execute(command, timeout, cwd, context?.signal);
     },

@@ -1,8 +1,9 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { Tool } from "../types.js";
+import type { Config, Tool } from "../types.js";
+import { checkDangerousToolPermission } from "./permission.js";
 
-export function createFileWriteTool(workspacePath: string): Tool {
+export function createFileWriteTool(workspacePath: string, getConfig: () => Config): Tool {
   return {
     name: "file_write",
     description: "创建或覆盖写入文件。自动创建不存在的父目录。",
@@ -20,11 +21,22 @@ export function createFileWriteTool(workspacePath: string): Tool {
       },
       required: ["path", "content"],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       const content = args.content as string;
 
       try {
         const filePath = resolve(workspacePath, args.path as string);
+        const permission = checkDangerousToolPermission({
+          workspacePath,
+          config: getConfig(),
+          toolName: "file_write",
+          args,
+          context,
+          command: `write ${filePath}`,
+          cwd: dirname(filePath),
+        });
+        if (!permission.allowed) return permission.result;
+
         mkdirSync(dirname(filePath), { recursive: true });
         writeFileSync(filePath, content, "utf-8");
         return JSON.stringify({

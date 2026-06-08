@@ -182,8 +182,14 @@ workspace/
 ```json
 {
   "security": {
-    "bash": {
-      "mode": "allow"
+    "mode": "allow",
+    "tools": {
+      "bash": {
+        "mode": "ask"
+      },
+      "memory_delete": {
+        "mode": "deny"
+      }
     },
     "gateway": {
       "host": "127.0.0.1",
@@ -194,12 +200,13 @@ workspace/
 }
 ```
 
-- `bash.mode`：统一控制 `bash` 工具和技能动态 shell。默认 `allow` 自动执行；`ask` 创建一次性审批记录，批准后相同目录中的相同请求可在下次调用时执行一次；`deny` 拒绝执行。`bash.cwd` 工具参数支持相对 workspace 的路径或绝对路径。
+- `security.mode`：全局危险操作权限模式，默认 `allow` 自动执行；`ask` 创建一次性审批记录；`deny` 拒绝执行。
+- `security.tools.<tool>.mode`：单个工具权限模式，覆盖全局模式。`bash` 工具和技能动态 shell 统一使用 `security.tools.bash.mode`。
 - `gateway.host`：Gateway API 监听地址，默认 `127.0.0.1`。暴露到其他机器时应同时配置 token。
 - `gateway.token`：可选 Bearer token。配置后 API 请求需要携带 `Authorization: Bearer <token>`。
 - `auditTools`：是否把工具调用和完成状态写入日志，默认开启。审计日志不会记录文件内容或记忆内容。
 
-`ask` 模式使用进程内审批队列。审批记录按 workspace、来源、工作目录、命令和调用者身份去重，默认 10 分钟过期。批准后的许可只消费一次；拒绝、过期或消费后立即失效。Gateway 暴露 `/approvals` 系列接口，Web UI 在聊天工具块内提供批准和拒绝操作。飞书消息会携带用户 `open_id` 和 `chat_id`，用户可以发送 `/approvals`、`/approve <id>` 或 `/reject <id>` 处理自己在当前会话发起的审批。
+`ask` 模式使用进程内审批队列。审批记录按 workspace、工具名、参数和调用者身份去重，默认 10 分钟过期。批准后的许可只消费一次；拒绝、过期或消费后立即失效。Gateway 暴露 `/approvals` 系列接口，Web UI 在聊天工具块内提供批准和拒绝操作，批准后会自动调用 `AgentSession.resumeApproval()` 继续原任务。飞书消息会携带用户 `open_id` 和 `chat_id`，用户可以发送 `/approvals`、`/approve <id>` 或 `/reject <id>` 处理自己在当前会话发起的审批。
 
 当工具结果包含 `requiresConfirmation: true` 时，Agent Loop 会立即暂停当前轮：审批提示会发给用户并写入历史用于 UI 恢复，但不会再把该结果回灌给模型继续总结。这样用户批准前不会产生基于“未执行命令”的最终回答；批准后由审批命令消费一次性许可并执行记录的命令。
 
@@ -385,7 +392,7 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 
 插件也可以注册自己的工具，通过 `PluginContext.registerTool()` 方法。所有插件的工具统一合并到 PluginManager 的 ToolRegistry 中，模型调用时通过 `getTool(name)` 查找执行。新增工具只需：1) 在任意插件中实现 Tool 接口 2) 在插件 init 中注册。
 
-`PluginManager` 支持工具白名单/黑名单过滤（`allowedTools` / `disabledTools`），用于 sub-agent 等需要收敛权限的场景。工具在注册阶段被过滤，模型看不到被禁用的工具定义，也无法调用这些工具。文件工具支持 workspace 外路径；`bash` 默认允许执行，可通过 `security.bash.mode` 改为 `ask` 或 `deny`。
+`PluginManager` 支持工具白名单/黑名单过滤（`allowedTools` / `disabledTools`），用于 sub-agent 等需要收敛权限的场景。工具在注册阶段被过滤，模型看不到被禁用的工具定义，也无法调用这些工具。文件工具支持 workspace 外路径；危险操作默认允许执行，可通过 `security.mode` 或 `security.tools.<tool>.mode` 改为 `ask` 或 `deny`。
 
 ### 聊天命令注册：插件化
 
@@ -533,7 +540,7 @@ description: 代码审查，检查代码质量、安全性和最佳实践
 - **发现**：启动时 `listSkills()` 扫描 `skills/<name>/SKILL.md`，将名称和描述注入 system prompt
 - **激活**：模型调用 `skill_use(name)` 获取完整指令内容，指令中注入技能工作目录绝对路径
 - **查询**：模型调用 `skill_list()` 列出所有可用技能
-- **动态内容**：支持 `!`command`` 执行命令注入、`$ARGUMENTS` 参数替换、`${CLAUDE_SKILL_DIR}` 路径替换。动态命令统一遵循 `security.bash.mode`
+- **动态内容**：支持 `!`command`` 执行命令注入、`$ARGUMENTS` 参数替换、`${CLAUDE_SKILL_DIR}` 路径替换。动态命令统一遵循 `bash` 工具权限。
 - **文件格式**：`SKILL.md` frontmatter 用 `---` 包裹，必须包含 `description` 字段，`name` 由目录名决定
 
 ### Gateway：HTTP API 服务

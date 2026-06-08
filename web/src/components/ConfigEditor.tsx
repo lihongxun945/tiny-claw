@@ -48,7 +48,7 @@ const FIELD_GROUPS: Array<{ title: string; fields: FieldDef[] }> = [
   {
     title: "权限",
     fields: [
-      { key: "security.bash.mode", label: "Shell 权限模式", type: "select", options: ["deny", "ask", "allow"], defaultValue: "deny" },
+      { key: "security.mode", label: "全局危险操作模式", type: "select", options: ["deny", "ask", "allow"], defaultValue: "allow" },
     ],
   },
   {

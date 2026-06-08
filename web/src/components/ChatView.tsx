@@ -10,6 +10,7 @@ interface Props {
   activeSessionId: string | null;
   isRefreshing?: boolean;
   onRefreshMessages: () => void;
+  onApproveAndResume: (approvalId: string) => Promise<void>;
 }
 
 export default function ChatView({
@@ -20,6 +21,7 @@ export default function ChatView({
   activeSessionId,
   isRefreshing,
   onRefreshMessages,
+  onApproveAndResume,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -44,7 +46,7 @@ export default function ChatView({
           <div className="empty-state">发送一条消息开始对话</div>
         )}
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
+          <MessageBubble key={i} message={msg} onApproveAndResume={onApproveAndResume} />
         ))}
         {isStreaming && (
           streamingText || streamingToolCalls.length > 0 ? (
@@ -56,6 +58,7 @@ export default function ChatView({
                 timestamp: Date.now(),
               }}
               isStreaming
+              onApproveAndResume={onApproveAndResume}
             />
           ) : (
             <div className="message assistant">

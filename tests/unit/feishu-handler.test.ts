@@ -35,10 +35,10 @@ describe("feishu approval commands", () => {
   }
 
   it("lists and approves only the current user's approvals", async () => {
-    const workspacePath = createTempWorkspace({ security: { bash: { mode: "ask" } } });
+    const workspacePath = createTempWorkspace({ security: { tools: { bash: { mode: "ask" } } } });
     paths.push(workspacePath);
     const manager = await createCommandManager(workspacePath);
-    const pending = requestApproval(workspacePath, "bash", "pwd", workspacePath, undefined, actor, "feishu:oc_chat");
+    const pending = requestApproval(workspacePath, "bash", { command: "pwd", cwd: workspacePath }, undefined, actor, "feishu:oc_chat", { command: "pwd", cwd: workspacePath });
 
     await expect(runFeishuCommand(manager, "/approvals", actor)).resolves.toContain(pending.approval!.id);
     await expect(runFeishuCommand(manager, "/approvals", actor)).resolves.toContain(`/approve ${pending.approval!.id}`);
@@ -46,12 +46,12 @@ describe("feishu approval commands", () => {
     await expect(runFeishuCommand(manager, `/approve ${pending.approval!.id}`, otherActor)).resolves.toContain("无权处理");
     expect(listApprovals(workspacePath, actor)[0].status).toBe("pending");
 
-    await expect(runFeishuCommand(manager, `/approve ${pending.approval!.id}`, actor)).resolves.toContain("已批准并执行该命令");
-    expect(listApprovals(workspacePath, actor)).toEqual([]);
+    await expect(runFeishuCommand(manager, `/approve ${pending.approval!.id}`, actor)).resolves.toContain("已批准该工具调用执行一次");
+    expect(listApprovals(workspacePath, actor)[0].status).toBe("approved");
   });
 
   it("returns a ready-to-send approval command from bash", async () => {
-    const workspacePath = createTempWorkspace({ security: { bash: { mode: "ask" } } });
+    const workspacePath = createTempWorkspace({ security: { tools: { bash: { mode: "ask" } } } });
     paths.push(workspacePath);
     const bash = createBashTool(workspacePath, () => loadConfig(workspacePath));
 
@@ -60,39 +60,37 @@ describe("feishu approval commands", () => {
     expect(pending.approvalCommand).toBe(`/approve ${pending.approvalId}`);
     expect(pending.error).toContain(`/approve ${pending.approvalId}`);
     expect(pending.error).toContain("只回复“批准”无效");
-    expect(pending.error).toContain("批准后系统会立即执行该命令");
+    expect(pending.error).toContain("批准后系统会立即继续执行");
   });
 
   it("rejects approvals and ignores normal messages", async () => {
     const workspacePath = createTempWorkspace();
     paths.push(workspacePath);
     const manager = await createCommandManager(workspacePath);
-    const pending = requestApproval(workspacePath, "skill", "printf test", workspacePath, undefined, actor);
+    const pending = requestApproval(workspacePath, "skill_use", { name: "dynamic" }, undefined, actor, undefined, { command: "printf test", cwd: workspacePath });
 
     await expect(runFeishuCommand(manager, `/reject ${pending.approval!.id}`, actor)).resolves.toBe("已拒绝该命令。");
     expect(listApprovals(workspacePath, actor)).toEqual([]);
     await expect(runFeishuCommand(manager, "继续执行任务", actor)).resolves.toBeUndefined();
   });
 
-  it("executes an approved bash command immediately in Feishu", async () => {
-    const workspacePath = createTempWorkspace({ security: { bash: { mode: "ask" } } });
+  it("approves a bash command once when the original Feishu session cannot resume", async () => {
+    const workspacePath = createTempWorkspace({ security: { tools: { bash: { mode: "ask" } } } });
     paths.push(workspacePath);
     const manager = await createCommandManager(workspacePath);
-    const pending = requestApproval(workspacePath, "bash", "printf feishu-approved", workspacePath, undefined, actor, "feishu:oc_chat");
+    const pending = requestApproval(workspacePath, "bash", { command: "printf feishu-approved", cwd: workspacePath }, undefined, actor, "feishu:oc_chat", { command: "printf feishu-approved", cwd: workspacePath });
 
     const reply = await runFeishuCommand(manager, `/approve ${pending.approval!.id}`, actor);
 
-    expect(reply).toContain("已批准并执行该命令");
-    expect(reply).toContain("feishu-approved");
-    expect(reply).toContain("退出码：0");
-    expect(listApprovals(workspacePath, actor)).toEqual([]);
+    expect(reply).toContain("已批准该工具调用执行一次");
+    expect(listApprovals(workspacePath, actor)[0].status).toBe("approved");
   });
 
   it("handles approval commands before entering the agent loop", async () => {
     const workspacePath = createTempWorkspace();
     paths.push(workspacePath);
     const manager = await createCommandManager(workspacePath);
-    requestApproval(workspacePath, "bash", "pwd", workspacePath, undefined, actor);
+    requestApproval(workspacePath, "bash", { command: "pwd", cwd: workspacePath }, undefined, actor, undefined, { command: "pwd", cwd: workspacePath });
     const chat = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
       yield { type: "done", text: "" };
     });
@@ -190,6 +188,6 @@ describe("feishu approval commands", () => {
 
     expect(updateMessageCard).toHaveBeenLastCalledWith("om_reply", expect.stringContaining("/approve approval-1"));
     expect(updateMessageCard).toHaveBeenLastCalledWith("om_reply", expect.stringContaining("只回复“批准”不会生效"));
-    expect(updateMessageCard).toHaveBeenLastCalledWith("om_reply", expect.stringContaining("批准后系统会立即执行这条命令"));
+    expect(updateMessageCard).toHaveBeenLastCalledWith("om_reply", expect.stringContaining("批准后系统会立即继续原任务"));
   });
 });

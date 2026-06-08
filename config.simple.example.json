@@ -39,8 +39,7 @@
   "searchProvider": "ollama",
   "ollamaApiKey": "YOUR_OLLAMA_API_KEY",
   "security": {
-    "bash": {
-      "mode": "allow"
-    }
+    "mode": "allow",
+    "tools": {}
   }
 }

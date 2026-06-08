@@ -20,6 +20,7 @@ import {
   setMemoryDisabled,
   updateMemoryRecord,
 } from "../../src/tools/memory.js";
+import { loadConfig } from "../../src/config.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
 describe("memory storage", () => {
@@ -133,20 +134,21 @@ describe("memory storage", () => {
   });
 
   it("exposes memory storage through tool wrappers", async () => {
-    expect(await createMemorySaveTool(workspacePath).execute({
+    const getConfig = () => loadConfig(workspacePath);
+    expect(await createMemorySaveTool(workspacePath, getConfig).execute({
       name: "tool-memory",
       content: "tool content",
       tags: ["tool"],
       scope: "project",
       summary: "tool summary",
     })).toBe("已保存记忆: tool-memory");
-    expect(await createMemoryAppendTool(workspacePath).execute({
+    expect(await createMemoryAppendTool(workspacePath, getConfig).execute({
       name: "tool-memory",
       content: "more content",
     })).toBe("已追加记忆: tool-memory");
     expect(JSON.parse(await createMemoryListTool(workspacePath).execute({})).memories).toHaveLength(1);
     expect(JSON.parse(await createMemoryReadTool(workspacePath).execute({ name: "tool-memory" })).content).toContain("more content");
     expect(JSON.parse(await createMemorySearchTool(workspacePath).execute({ query: "tool", limit: 1 })).results).toHaveLength(1);
-    expect(await createMemoryDeleteTool(workspacePath).execute({ name: "tool-memory" })).toBe("已删除记忆: tool-memory");
+    expect(await createMemoryDeleteTool(workspacePath, getConfig).execute({ name: "tool-memory" })).toBe("已删除记忆: tool-memory");
   });
 });

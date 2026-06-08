@@ -3,13 +3,12 @@ import type { AgentActor } from "../types.js";
 
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
 
-export type ApprovalSource = "bash" | "skill";
-
 export interface ApprovalRequest {
   id: string;
-  source: ApprovalSource;
-  command: string;
-  cwd: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  command?: string;
+  cwd?: string;
   status: "pending" | "approved";
   createdAt: string;
   expiresAt: string;
@@ -33,13 +32,24 @@ function getScope(workspacePath: string): ApprovalScope {
   return scope;
 }
 
-function keyOf(source: ApprovalSource, command: string, cwd: string, actor?: AgentActor): string {
-  return `${source}\0${cwd}\0${command}\0${actor?.channel ?? ""}\0${actor?.requesterId ?? ""}\0${actor?.chatId ?? ""}`;
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function keyOf(toolName: string, args: Record<string, unknown>, actor?: AgentActor): string {
+  return `${toolName}\0${stableStringify(args)}\0${actor?.channel ?? ""}\0${actor?.requesterId ?? ""}\0${actor?.chatId ?? ""}`;
 }
 
 function remove(scope: ApprovalScope, approval: ApprovalRequest): void {
   scope.byId.delete(approval.id);
-  scope.byKey.delete(keyOf(approval.source, approval.command, approval.cwd, approval.actor));
+  scope.byKey.delete(keyOf(approval.toolName, approval.args, approval.actor));
 }
 
 function cleanup(scope: ApprovalScope): void {
@@ -51,16 +61,16 @@ function cleanup(scope: ApprovalScope): void {
 
 export function requestApproval(
   workspacePath: string,
-  source: ApprovalSource,
-  command: string,
-  cwd: string,
+  toolName: string,
+  args: Record<string, unknown>,
   ttlMs = DEFAULT_TTL_MS,
   actor?: AgentActor,
   sessionId?: string,
+  display: { command?: string; cwd?: string } = {},
 ): { approved: boolean; approval?: ApprovalRequest } {
   const scope = getScope(workspacePath);
   cleanup(scope);
-  const key = keyOf(source, command, cwd, actor);
+  const key = keyOf(toolName, args, actor);
   const existingId = scope.byKey.get(key);
   const existing = existingId ? scope.byId.get(existingId) : undefined;
 
@@ -73,9 +83,10 @@ export function requestApproval(
   const createdAt = new Date();
   const approval: ApprovalRequest = {
     id: randomUUID(),
-    source,
-    command,
-    cwd,
+    toolName,
+    args,
+    command: display.command,
+    cwd: display.cwd,
     status: "pending",
     createdAt: createdAt.toISOString(),
     expiresAt: new Date(createdAt.getTime() + ttlMs).toISOString(),

@@ -116,7 +116,7 @@ function formatToolResultForFeishu(result: string): string {
         parsed.approvalCommand,
         "",
         "只回复“批准”不会生效。",
-        "批准后系统会立即执行这条命令；授权只对本次列出的命令生效。",
+        "批准后系统会立即继续原任务；授权只对本次列出的工具调用生效。",
         parsed.command ? `命令：${truncate(parsed.command, 500)}` : "",
       ].filter(Boolean).join("\n");
     }

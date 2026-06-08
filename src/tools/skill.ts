@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { execSync } from "node:child_process";
 import type { Config, Tool, ToolExecutionContext } from "../types.js";
 import { resolveWorkspaceFile } from "./workspace-path.js";
-import { requestApproval } from "./approval.js";
+import { checkDangerousToolPermission, getToolPermissionMode } from "./permission.js";
 
 export interface SkillMeta {
   name: string;
@@ -59,19 +59,35 @@ export function listSkills(workspacePath: string): SkillMeta[] {
   return skills;
 }
 
+interface SkillLoadResult {
+  body: string;
+  approvalResult?: string;
+}
+
 /** 执行技能中的动态命令（`!`command`` 语法） */
-function executeDynamicCommands(workspacePath: string, body: string, skillDir: string, args: string, bashMode: "deny" | "ask" | "allow", context?: ToolExecutionContext): string {
+function executeDynamicCommands(workspacePath: string, body: string, skillDir: string, args: string, config: Config, context?: ToolExecutionContext): SkillLoadResult {
   // 替换 $ARGUMENTS
   let result = body.replace(/\$ARGUMENTS/g, args);
   // 替换 ${CLAUDE_SKILL_DIR}
   result = result.replace(/\$\{CLAUDE_SKILL_DIR\}/g, skillDir);
+  let approvalResult: string | undefined;
 
   // 处理 !`command` 语法：执行命令并替换为输出
   result = result.replace(/!`([^`]+)`/g, (_, cmd) => {
-    if (bashMode === "deny") return `[动态命令已禁用: ${cmd}]`;
-    if (bashMode === "ask") {
-      const approval = requestApproval(workspacePath, "skill", cmd, skillDir, undefined, context?.actor, context?.sessionId);
-      if (!approval.approved) return `[动态命令需要用户确认，批准后重新发起任务即可执行一次。审批 ID: ${approval.approval!.id}${approvalCommandHint(approval.approval!.id, context)}，命令: ${cmd}]`;
+    const permission = checkDangerousToolPermission({
+      workspacePath,
+      config,
+      toolName: "bash",
+      args: { command: cmd, cwd: skillDir },
+      context,
+      command: cmd,
+      cwd: skillDir,
+    });
+    if (!permission.allowed) {
+      approvalResult ??= permission.result;
+      return getToolPermissionMode(config, "bash") === "deny"
+        ? `[动态命令已禁用: ${cmd}]`
+        : `[动态命令需要用户确认，批准后系统会立即继续执行。命令: ${cmd}]`;
     }
     try {
       return execSync(cmd, { encoding: "utf-8", timeout: 10_000, cwd: skillDir }).trim();
@@ -82,28 +98,34 @@ function executeDynamicCommands(workspacePath: string, body: string, skillDir: s
 
   // 处理 ```! 代码块语法
   result = result.replace(/```!\n([\s\S]*?)```/g, (_, code) => {
-    if (bashMode === "deny") return `[动态命令已禁用: ${code.trim()}]`;
-    if (bashMode === "ask") {
-      const command = code.trim();
-      const approval = requestApproval(workspacePath, "skill", command, skillDir, undefined, context?.actor, context?.sessionId);
-      if (!approval.approved) return `[动态命令需要用户确认，批准后重新发起任务即可执行一次。审批 ID: ${approval.approval!.id}${approvalCommandHint(approval.approval!.id, context)}，命令: ${command}]`;
+    const command = code.trim();
+    const permission = checkDangerousToolPermission({
+      workspacePath,
+      config,
+      toolName: "bash",
+      args: { command, cwd: skillDir },
+      context,
+      command,
+      cwd: skillDir,
+    });
+    if (!permission.allowed) {
+      approvalResult ??= permission.result;
+      return getToolPermissionMode(config, "bash") === "deny"
+        ? `[动态命令已禁用: ${command}]`
+        : `[动态命令需要用户确认，批准后系统会立即继续执行。命令: ${command}]`;
     }
     try {
-      return execSync(code.trim(), { encoding: "utf-8", timeout: 10_000, cwd: skillDir }).trim();
+      return execSync(command, { encoding: "utf-8", timeout: 10_000, cwd: skillDir }).trim();
     } catch (err) {
       return `[命令执行失败: ${err instanceof Error ? err.message : String(err)}]`;
     }
   });
 
-  return result;
-}
-
-function approvalCommandHint(id: string, context?: ToolExecutionContext): string {
-  return context?.actor?.channel === "feishu" ? `，请发送 /approve ${id}` : "";
+  return { body: result, approvalResult };
 }
 
 /** 加载技能的完整指令内容 */
-function loadSkill(workspacePath: string, name: string, args: string, bashMode: "deny" | "ask" | "allow", context?: ToolExecutionContext): string | null {
+function loadSkill(workspacePath: string, name: string, args: string, config: Config, context?: ToolExecutionContext): SkillLoadResult | null {
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) return null;
   const dir = skillsDir(workspacePath);
 
@@ -114,7 +136,7 @@ function loadSkill(workspacePath: string, name: string, args: string, bashMode: 
     const content = readFileSync(mdPath, "utf-8");
     const parsed = parseSkillMd(content);
     if (!parsed) return null;
-    return executeDynamicCommands(workspacePath, parsed.body, skillPath, args, bashMode, context);
+    return executeDynamicCommands(workspacePath, parsed.body, skillPath, args, config, context);
   } catch {
     return null;
   }
@@ -141,17 +163,18 @@ export function createSkillUseTool(workspacePath: string, getConfig: () => Confi
     execute: async (toolArgs, context) => {
       const name = toolArgs.name as string;
       const args = (toolArgs.args as string) ?? "";
-      const bashMode = getConfig().security?.bash?.mode ?? "allow";
-      const body = loadSkill(workspacePath, name, args, bashMode, context);
-      if (!body) {
+      const config = getConfig();
+      const loaded = loadSkill(workspacePath, name, args, config, context);
+      if (!loaded) {
         const available = listSkills(workspacePath).map((s) => s.name).join(", ");
         return JSON.stringify({
           error: `未找到技能: ${name}。可用技能: ${available || "无"}`,
         });
       }
+      if (loaded.approvalResult) return loaded.approvalResult;
       return JSON.stringify({
         skill: name,
-        instruction: `[技能工作目录: ${resolve(skillsDir(workspacePath), name)}]\n执行此技能中的脚本或文件操作时，必须使用上述绝对路径作为工作目录。例如：cd 到该目录后再执行命令，或使用绝对路径引用文件。\n\n${body}`,
+        instruction: `[技能工作目录: ${resolve(skillsDir(workspacePath), name)}]\n执行此技能中的脚本或文件操作时，必须使用上述绝对路径作为工作目录。例如：cd 到该目录后再执行命令，或使用绝对路径引用文件。\n\n${loaded.body}`,
       });
     },
   };

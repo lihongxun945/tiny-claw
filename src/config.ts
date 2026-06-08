@@ -120,10 +120,20 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertObject(raw.security, "security");
   }
   const security = raw.security as Config["security"];
-  if (security?.bash !== undefined) assertObject(security.bash, "security.bash");
-  const bashMode = security?.bash?.mode;
-  if (bashMode !== undefined && !["deny", "ask", "allow"].includes(bashMode)) {
-    throw new Error("配置字段 security.bash.mode 不受支持");
+  const securityMode = security?.mode;
+  if (securityMode !== undefined && !["deny", "ask", "allow"].includes(securityMode)) {
+    throw new Error("配置字段 security.mode 不受支持");
+  }
+  if (security?.tools !== undefined) {
+    assertObject(security.tools, "security.tools");
+    for (const [toolName, toolConfig] of Object.entries(security.tools)) {
+      assertObject(toolConfig, `security.tools.${toolName}`);
+      const toolSecurity = toolConfig as { mode?: unknown };
+      const mode = toolSecurity.mode;
+      if (mode !== undefined && (typeof mode !== "string" || !["deny", "ask", "allow"].includes(mode))) {
+        throw new Error(`配置字段 security.tools.${toolName}.mode 不受支持`);
+      }
+    }
   }
   const gatewayHost = security?.gateway?.host;
   const gatewayToken = security?.gateway?.token;

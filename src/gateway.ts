@@ -281,6 +281,26 @@ function sendSSE(res: ServerResponse, event: string, data: unknown): void {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+function sendAgentEventSSE(res: ServerResponse, event: AgentEvent, sessionId?: string): void {
+  switch (event.type) {
+    case "text_delta":
+      sendSSE(res, "text_delta", { text: event.text });
+      break;
+    case "tool_call":
+      sendSSE(res, "tool_call", { name: event.name, input: event.input });
+      break;
+    case "tool_result":
+      sendSSE(res, "tool_result", { name: event.name, result: event.result });
+      break;
+    case "done":
+      sendSSE(res, "done", { text: event.text, session_id: sessionId });
+      break;
+    case "error":
+      sendSSE(res, "error", { message: event.message });
+      break;
+  }
+}
+
 function tokenMatches(actual: string | undefined, expected: string | undefined): boolean {
   if (!expected) return true;
   if (!actual) return false;
@@ -444,25 +464,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         };
         res.once("close", cancelOnDisconnect);
 
-        for await (const event of session.chat(message)) {
-          switch (event.type) {
-            case "text_delta":
-              sendSSE(res, "text_delta", { text: event.text });
-              break;
-            case "tool_call":
-              sendSSE(res, "tool_call", { name: event.name, input: event.input });
-              break;
-            case "tool_result":
-              sendSSE(res, "tool_result", { name: event.name, result: event.result });
-              break;
-            case "done":
-              sendSSE(res, "done", { text: event.text, session_id: session.id });
-              break;
-            case "error":
-              sendSSE(res, "error", { message: event.message });
-              break;
-          }
-        }
+        for await (const event of session.chat(message)) sendAgentEventSSE(res, event, session.id);
 
         res.removeListener("close", cancelOnDisconnect);
         res.end();
@@ -493,6 +495,32 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       return;
     }
 
+    // POST /approvals/:id/approve-and-resume — 批准并继续原 Agent Loop
+    if (req.method === "POST" && url.pathname.startsWith("/approvals/") && url.pathname.endsWith("/approve-and-resume")) {
+      const id = decodeURIComponent(url.pathname.slice("/approvals/".length, -"/approve-and-resume".length));
+      const approval = approveRequest(workspacePath, id);
+      if (!approval) {
+        sendJSON(res, 404, { error: "审批记录不存在或已过期" });
+        return;
+      }
+      appendLog(workspacePath, "AUDIT", `命令审批通过并续跑 ${approval.toolName} ${approval.id} ${JSON.stringify({ command: approval.command, cwd: approval.cwd })}`);
+
+      if (!approval.sessionId) {
+        sendJSON(res, 409, { error: "审批已通过，但原会话没有可恢复的待执行任务。" });
+        return;
+      }
+      const session = sessions.get(approval.sessionId);
+      if (!session) {
+        sendJSON(res, 409, { error: "审批已通过，但原会话不可恢复；可能是服务重启或会话已被清理。" });
+        return;
+      }
+
+      sendSSEHeader(res);
+      for await (const event of session.resumeApproval(approval.id)) sendAgentEventSSE(res, event, session.id);
+      res.end();
+      return;
+    }
+
     // POST /approvals/:id/approve 或 /approvals/:id/reject
     if (req.method === "POST" && url.pathname.startsWith("/approvals/") && (url.pathname.endsWith("/approve") || url.pathname.endsWith("/reject"))) {
       const approved = url.pathname.endsWith("/approve");
@@ -504,7 +532,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
           sendJSON(res, 404, { error: "审批记录不存在或已过期" });
           return;
         }
-        appendLog(workspacePath, "AUDIT", `命令审批通过 ${approval.source} ${approval.id} ${JSON.stringify({ command: approval.command, cwd: approval.cwd })}`);
+        appendLog(workspacePath, "AUDIT", `命令审批通过 ${approval.toolName} ${approval.id} ${JSON.stringify({ command: approval.command, cwd: approval.cwd })}`);
         sendJSON(res, 200, { approval });
       } else {
         const rejected = rejectRequest(workspacePath, id);

@@ -1,0 +1,65 @@
+import type { Config, PermissionMode } from "../types.js";
+import { requestApproval } from "./approval.js";
+import type { ToolExecutionContext } from "../types.js";
+
+const DEFAULT_PERMISSION_MODE: PermissionMode = "allow";
+
+export function getToolPermissionMode(config: Config, toolName: string): PermissionMode {
+  return config.security?.tools?.[toolName]?.mode
+    ?? config.security?.mode
+    ?? DEFAULT_PERMISSION_MODE;
+}
+
+export function checkDangerousToolPermission(options: {
+  workspacePath: string;
+  config: Config;
+  toolName: string;
+  args: Record<string, unknown>;
+  context?: ToolExecutionContext;
+  command?: string;
+  cwd?: string;
+}): { allowed: true } | { allowed: false; result: string } {
+  const mode = getToolPermissionMode(options.config, options.toolName);
+  if (mode === "allow") return { allowed: true };
+  if (mode === "deny") {
+    return {
+      allowed: false,
+      result: JSON.stringify({
+        error: `${options.toolName} 执行已禁用。请调整 security.mode 或 security.tools.${options.toolName}.mode。`,
+      }),
+    };
+  }
+
+  const approval = requestApproval(
+    options.workspacePath,
+    options.toolName,
+    options.args,
+    undefined,
+    options.context?.actor,
+    options.context?.sessionId,
+    {
+      command: options.command,
+      cwd: options.cwd,
+    },
+  );
+  if (approval.approved) return { allowed: true };
+
+  const approvalCommand = options.context?.actor?.channel === "feishu"
+    ? `/approve ${approval.approval!.id}`
+    : undefined;
+  return {
+    allowed: false,
+    result: JSON.stringify({
+      error: approvalCommand
+        ? `${options.toolName} 执行需要用户确认。请在飞书中回复完整命令：${approvalCommand}。只回复“批准”无效。批准后系统会立即继续执行。`
+        : `${options.toolName} 执行需要用户确认。批准后系统会立即继续执行。`,
+      requiresConfirmation: true,
+      approvalId: approval.approval!.id,
+      approvalCommand,
+      toolName: options.toolName,
+      args: options.args,
+      command: options.command,
+      cwd: options.cwd,
+    }),
+  };
+}

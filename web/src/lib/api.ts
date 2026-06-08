@@ -1,6 +1,6 @@
 import type { Session, Message, MemoryRecord, ApprovalRequest } from "../types.js";
 
-export { streamChat } from "./sse-client.js";
+export { streamChat, streamApprovalResume } from "./sse-client.js";
 
 export async function fetchSessions(): Promise<Session[]> {
   const res = await fetch("/sessions");

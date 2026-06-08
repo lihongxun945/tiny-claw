@@ -25,9 +25,10 @@ export interface SSEEvent {
 
 export interface ApprovalRequest {
   id: string;
-  source: "bash" | "skill";
-  command: string;
-  cwd: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  command?: string;
+  cwd?: string;
   status: "pending" | "approved";
   createdAt: string;
   expiresAt: string;

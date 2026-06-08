@@ -88,14 +88,19 @@ export interface DebugConfig {
 }
 
 export interface SecurityConfig {
-  bash?: {
-    mode?: "deny" | "ask" | "allow";
-  };
+  mode?: PermissionMode;
+  tools?: Record<string, ToolSecurityConfig>;
   gateway?: {
     host?: string;
     token?: string;
   };
   auditTools?: boolean;
+}
+
+export type PermissionMode = "deny" | "ask" | "allow";
+
+export interface ToolSecurityConfig {
+  mode?: PermissionMode;
 }
 
 // === Tool ===

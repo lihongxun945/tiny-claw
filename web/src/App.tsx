@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { Message, ToolCallInfo } from "./types.js";
-import { streamChat, fetchHistoryMessages, cancelSession } from "./lib/api.js";
+import { streamChat, streamApprovalResume, fetchHistoryMessages, cancelSession } from "./lib/api.js";
 import ChatView from "./components/ChatView.js";
 import ChatInput from "./components/ChatInput.js";
 import SessionSidebar from "./components/SessionSidebar.js";
@@ -35,6 +35,58 @@ export default function App() {
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
 
+  const consumeAgentStream = useCallback(async (events: AsyncIterable<{ event: string; data: unknown }>) => {
+    let fullText = "";
+    const toolCalls: ToolCallInfo[] = [];
+
+    for await (const event of events) {
+      const d = event.data as Record<string, unknown>;
+      switch (event.event) {
+        case "text_delta":
+          fullText += (d.text as string) ?? "";
+          setStreamingText(fullText);
+          break;
+        case "tool_call":
+          toolCalls.push({
+            name: (d.name as string) ?? "",
+            input: (d.input as Record<string, unknown>) ?? {},
+          });
+          setStreamingToolCalls([...toolCalls]);
+          break;
+        case "tool_result": {
+          const name = (d.name as string) ?? "";
+          const tc = toolCalls.find((t) => t.name === name && t.result === undefined);
+          if (tc) tc.result = (d.result as string) ?? "";
+          setStreamingToolCalls([...toolCalls]);
+          break;
+        }
+        case "done": {
+          const sid = (d.session_id as string) ?? null;
+          if (sid) setActiveSessionId(sid);
+          const assistantMessage = { role: "assistant" as const, text: fullText, toolCalls: [...toolCalls], timestamp: Date.now() };
+          setMessages((prev) => d.clear_messages === true ? [assistantMessage] : [...prev, assistantMessage]);
+          setStreamingText("");
+          setStreamingToolCalls([]);
+          setSidebarRefreshKey((k) => k + 1);
+          break;
+        }
+        case "error":
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              text: `Error: ${(d.message as string) ?? "未知错误"}`,
+              toolCalls: [],
+              timestamp: Date.now(),
+            },
+          ]);
+          setStreamingText("");
+          setStreamingToolCalls([]);
+          break;
+      }
+    }
+  }, []);
+
   // 首次加载时，从 URL hash 恢复会话消息
   useEffect(() => {
     const sid = readHashSession();
@@ -61,55 +113,7 @@ export default function App() {
     setStreamingToolCalls([]);
 
     try {
-      let fullText = "";
-      const toolCalls: ToolCallInfo[] = [];
-
-      for await (const event of streamChat(text, activeSessionId ?? undefined, controller.signal)) {
-        const d = event.data as Record<string, unknown>;
-        switch (event.event) {
-          case "text_delta":
-            fullText += (d.text as string) ?? "";
-            setStreamingText(fullText);
-            break;
-          case "tool_call":
-            toolCalls.push({
-              name: (d.name as string) ?? "",
-              input: (d.input as Record<string, unknown>) ?? {},
-            });
-            setStreamingToolCalls([...toolCalls]);
-            break;
-          case "tool_result": {
-            const name = (d.name as string) ?? "";
-            const tc = toolCalls.find((t) => t.name === name && t.result === undefined);
-            if (tc) tc.result = (d.result as string) ?? "";
-            setStreamingToolCalls([...toolCalls]);
-            break;
-          }
-          case "done": {
-            const sid = (d.session_id as string) ?? null;
-            if (sid) setActiveSessionId(sid);
-            const assistantMessage = { role: "assistant" as const, text: fullText, toolCalls: [...toolCalls], timestamp: Date.now() };
-            setMessages((prev) => d.clear_messages === true ? [assistantMessage] : [...prev, assistantMessage]);
-            setStreamingText("");
-            setStreamingToolCalls([]);
-            setSidebarRefreshKey((k) => k + 1);
-            break;
-          }
-          case "error":
-            setMessages((prev) => [
-              ...prev,
-              {
-                role: "assistant",
-                text: `Error: ${(d.message as string) ?? "未知错误"}`,
-                toolCalls: [],
-                timestamp: Date.now(),
-              },
-            ]);
-            setStreamingText("");
-            setStreamingToolCalls([]);
-            break;
-        }
-      }
+      await consumeAgentStream(streamChat(text, activeSessionId ?? undefined, controller.signal));
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       const msg = err instanceof Error ? err.message : String(err);
@@ -120,7 +124,28 @@ export default function App() {
     } finally {
       setIsStreaming(false);
     }
-  }, [activeSessionId]);
+  }, [activeSessionId, consumeAgentStream]);
+
+  const handleApproveAndResume = useCallback(async (approvalId: string) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setIsStreaming(true);
+    setStreamingText("");
+    setStreamingToolCalls([]);
+    try {
+      await consumeAgentStream(streamApprovalResume(approvalId, controller.signal));
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      const msg = err instanceof Error ? err.message : String(err);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: `连接失败: ${msg}`, toolCalls: [], timestamp: Date.now() },
+      ]);
+    } finally {
+      setIsStreaming(false);
+    }
+  }, [consumeAgentStream]);
 
   const handleNewChat = useCallback(() => {
     abortRef.current?.abort();
@@ -194,6 +219,7 @@ export default function App() {
               activeSessionId={activeSessionId}
               isRefreshing={isRefreshingMessages}
               onRefreshMessages={handleRefreshMessages}
+              onApproveAndResume={handleApproveAndResume}
             />
             <ChatInput onSend={handleSend} onStop={handleStop} disabled={isStreaming} />
           </>

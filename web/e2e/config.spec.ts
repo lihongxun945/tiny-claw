@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("edits the nested shell permission mode", async ({ page }) => {
+test("edits the global dangerous operation mode", async ({ page }) => {
   let savedConfig: Record<string, unknown> | undefined;
   await page.route("**/history/sessions", async (route) => {
     await route.fulfill({ json: { sessions: [] } });
@@ -25,13 +25,13 @@ test("edits the nested shell permission mode", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "配置" }).click();
 
-  const mode = page.getByLabel("Shell 权限模式");
-  await expect(mode).toHaveValue("deny");
+  const mode = page.getByLabel("全局危险操作模式");
+  await expect(mode).toHaveValue("allow");
   await mode.selectOption("ask");
   await page.getByRole("button", { name: "保存", exact: true }).click();
 
   await expect(page.getByText("配置已保存")).toBeVisible();
-  expect(savedConfig).toMatchObject({ security: { bash: { mode: "ask" } } });
+  expect(savedConfig).toMatchObject({ security: { mode: "ask" } });
 });
 
 test("shows config save errors", async ({ page }) => {
@@ -56,7 +56,7 @@ test("shows config save errors", async ({ page }) => {
 
   await page.goto("/");
   await page.getByRole("button", { name: "配置" }).click();
-  await page.getByLabel("Shell 权限模式").selectOption("allow");
+  await page.getByLabel("全局危险操作模式").selectOption("deny");
   await page.getByRole("button", { name: "保存", exact: true }).click();
 
   await expect(page.getByText("保存失败")).toBeVisible();

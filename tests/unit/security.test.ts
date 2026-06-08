@@ -28,8 +28,8 @@ describe("security boundary", () => {
     symlinkSync(outsidePath, resolve(workspacePath, "escape"));
 
     const read = createFileReadTool(workspacePath);
-    const write = createFileWriteTool(workspacePath);
-    const edit = createFileEditTool(workspacePath);
+    const write = createFileWriteTool(workspacePath, () => loadConfig(workspacePath));
+    const edit = createFileEditTool(workspacePath, () => loadConfig(workspacePath));
 
     expect(await read.execute({ path: "inside.txt" })).toContain("inside");
     expect(await read.execute({ path: resolve(outsidePath, "outside.txt") })).toContain("outside");
@@ -51,11 +51,11 @@ describe("security boundary", () => {
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
     expect(await bash.execute({ command: "pwd" })).toContain(workspacePath);
 
-    config.security = { bash: { mode: "deny" } };
+    config.security = { tools: { bash: { mode: "deny" } } };
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
     expect(await bash.execute({ command: "pwd" })).toContain("bash 执行已禁用");
 
-    config.security = { bash: { mode: "ask" } };
+    config.security = { tools: { bash: { mode: "ask" } } };
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
     const pending = JSON.parse(await bash.execute({ command: "pwd", cwd: outsidePath }));
     expect(pending).toMatchObject({ requiresConfirmation: true, command: "pwd", cwd: outsidePath });
@@ -63,14 +63,14 @@ describe("security boundary", () => {
     expect(await bash.execute({ command: "pwd", cwd: outsidePath })).toContain(outsidePath);
     expect(await bash.execute({ command: "pwd", cwd: outsidePath })).toContain('"requiresConfirmation":true');
 
-    config.security.bash.mode = "allow";
+    config.security.tools.bash.mode = "allow";
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
     expect(await bash.execute({ command: "pwd" })).toContain(workspacePath);
     expect(await bash.execute({ command: "pwd", cwd: outsidePath })).toContain(outsidePath);
   });
 
   it("terminates an allowed bash command when cancelled", async () => {
-    const workspacePath = createTempWorkspace({ security: { bash: { mode: "allow" } } });
+    const workspacePath = createTempWorkspace({ security: { tools: { bash: { mode: "allow" } } } });
     paths.push(workspacePath);
     const bash = createBashTool(workspacePath, () => loadConfig(workspacePath));
     const controller = new AbortController();
@@ -121,19 +121,19 @@ describe("security boundary", () => {
     expect(await skill.execute({ name: "../config" })).toContain("未找到技能");
 
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    config.security = { bash: { mode: "deny" } };
+    config.security = { tools: { bash: { mode: "deny" } } };
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
-    expect(await skill.execute({ name: "dynamic" })).toContain("动态命令已禁用");
+    expect(await skill.execute({ name: "dynamic" })).toContain("bash 执行已禁用");
 
-    config.security = { bash: { mode: "ask" } };
+    config.security = { tools: { bash: { mode: "ask" } } };
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
-    expect(await skill.execute({ name: "dynamic" })).toContain("动态命令需要用户确认");
+    expect(await skill.execute({ name: "dynamic" })).toContain('"requiresConfirmation":true');
     for (const approval of listApprovals(workspacePath)) approveRequest(workspacePath, approval.id);
     const approvedSkill = await skill.execute({ name: "dynamic" });
     expect(approvedSkill).toContain("result: executed");
     expect(approvedSkill).toContain("block-executed");
 
-    config.security.bash.mode = "allow";
+    config.security.tools.bash.mode = "allow";
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
     expect(await skill.execute({ name: "dynamic" })).toContain("result: executed");
     expect(await skill.execute({ name: "dynamic" })).toContain("block-executed");
@@ -159,20 +159,20 @@ describe("security boundary", () => {
     const workspacePath = createTempWorkspace();
     paths.push(workspacePath);
 
-    const first = requestApproval(workspacePath, "bash", "pwd", workspacePath);
-    const duplicate = requestApproval(workspacePath, "bash", "pwd", workspacePath);
+    const first = requestApproval(workspacePath, "bash", { command: "pwd", cwd: workspacePath }, undefined, undefined, undefined, { command: "pwd", cwd: workspacePath });
+    const duplicate = requestApproval(workspacePath, "bash", { cwd: workspacePath, command: "pwd" }, undefined, undefined, undefined, { command: "pwd", cwd: workspacePath });
     expect(duplicate.approval?.id).toBe(first.approval?.id);
     expect(listApprovals(workspacePath)).toHaveLength(1);
 
     expect(approveRequest(workspacePath, first.approval!.id)?.status).toBe("approved");
-    expect(requestApproval(workspacePath, "bash", "pwd", workspacePath)).toEqual({ approved: true });
+    expect(requestApproval(workspacePath, "bash", { command: "pwd", cwd: workspacePath })).toEqual({ approved: true });
     expect(listApprovals(workspacePath)).toEqual([]);
 
-    const rejected = requestApproval(workspacePath, "bash", "ls", workspacePath);
+    const rejected = requestApproval(workspacePath, "bash", { command: "ls", cwd: workspacePath }, undefined, undefined, undefined, { command: "ls", cwd: workspacePath });
     expect(rejectRequest(workspacePath, rejected.approval!.id)).toBe(true);
     expect(rejectRequest(workspacePath, rejected.approval!.id)).toBe(false);
 
-    requestApproval(workspacePath, "bash", "expired", workspacePath, -1);
+    requestApproval(workspacePath, "bash", { command: "expired", cwd: workspacePath }, -1);
     expect(listApprovals(workspacePath)).toEqual([]);
   });
 });

@@ -246,22 +246,28 @@ Debug 日志可能包含用户输入、工具结果和提示词内容，建议�
 
 ### 安全边界
 
-文件工具支持读取和修改 workspace 之外的文件：相对路径以 workspace 为基准，也可以传入绝对路径。`bash` 也可以通过 `cwd` 在任意目录执行命令，默认自动执行；如果需要更严格的安全边界，可以显式改为 `ask` 或 `deny`：
+文件工具支持读取和修改 workspace 之外的文件：相对路径以 workspace 为基准，也可以传入绝对路径。危险操作默认自动执行；如果需要更严格的安全边界，可以通过全局模式或工具级模式改为 `ask` / `deny`：
 
 ```json
 {
   "security": {
-    "bash": { "mode": "allow" },
+    "mode": "allow",
+    "tools": {
+      "bash": { "mode": "ask" },
+      "file_write": { "mode": "ask" },
+      "memory_delete": { "mode": "deny" }
+    },
     "auditTools": true
   }
 }
 ```
 
-`bash.mode` 支持 `deny`、`ask` 和 `allow`，默认 `allow`。该策略同时控制 `bash` 工具和技能文件中的动态 shell 注入。`ask` 会创建一次性审批记录；在 Web UI 的聊天工具块中点击批准后，重新发起原任务即可执行一次。飞书中回复完整 `/approve <审批 ID>` 后会立即执行本次记录的 bash 命令。工具调用默认写入审计日志，可通过 `auditTools: false` 关闭。
+权限决策顺序为：`security.tools.<tool>.mode` > `security.mode` > `allow`。`bash` 工具和技能文件中的动态 shell 注入都使用 `bash` 的工具级权限。`ask` 会创建一次性审批记录；Web UI 点击批准后会自动继续原任务，飞书中回复完整 `/approve <审批 ID>` 后也会尝试继续原会话。工具调用默认写入审计日志，可通过 `auditTools: false` 关闭。
 
 | 配置项 | 默认值 | 示例 | 说明 |
 |---|---:|---|---|
-| `security.bash.mode` | `"allow"` | `"ask"` | bash 权限模式：`deny`、`ask`、`allow` |
+| `security.mode` | `"allow"` | `"ask"` | 全局危险操作权限模式：`deny`、`ask`、`allow` |
+| `security.tools.<tool>.mode` | 继承全局 | `"deny"` | 单个工具权限模式，覆盖 `security.mode` |
 | `security.gateway.host` | `"127.0.0.1"` | `"0.0.0.0"` | Gateway 监听地址；暴露到非回环地址时必须配置 token |
 | `security.gateway.token` | 无 | `"YOUR_GATEWAY_TOKEN"` | Gateway Bearer token |
 | `security.auditTools` | `true` | `true` | 是否记录工具调用审计日志 |
@@ -350,15 +356,15 @@ POST /chat 请求示例：
 
 启动后日志显示 `飞书长连接已建立` 即表示连接成功，可以在飞书中给机器人发消息测试。
 
-当 `security.bash.mode` 为 `ask` 时，飞书用户可以直接发送文字命令处理自己发起的审批：
+当相关工具权限为 `ask` 时，飞书用户可以直接发送文字命令处理自己发起的审批：
 
 | 命令 | 说明 |
 |------|------|
 | `/approvals` | 列出当前用户在当前会话中可以处理的审批 |
-| `/approve <审批 ID>` | 批准并立即执行本次记录的 bash 命令 |
+| `/approve <审批 ID>` | 批准审批，并尝试继续原会话任务 |
 | `/reject <审批 ID>` | 拒绝命令执行 |
 
-飞书审批绑定发起用户和会话。批准后会立即执行审批记录中的 bash 命令；其他用户无法查看、批准或拒绝该审批。
+飞书审批绑定发起用户和会话。批准后会继续原会话中暂停的工具调用；其他用户无法查看、批准或拒绝该审批。
 
 ## 插件开发
 

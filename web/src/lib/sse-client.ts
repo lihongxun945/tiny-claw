@@ -8,10 +8,25 @@ export async function* streamChat(
   const body: Record<string, string> = { message };
   if (sessionId) body.session_id = sessionId;
 
-  const response = await fetch("/chat", {
+  yield* streamPost("/chat", body, signal);
+}
+
+export async function* streamApprovalResume(
+  approvalId: string,
+  signal?: AbortSignal,
+): AsyncGenerator<SSEEvent> {
+  yield* streamPost(`/approvals/${encodeURIComponent(approvalId)}/approve-and-resume`, undefined, signal);
+}
+
+async function* streamPost(
+  url: string,
+  body: Record<string, string> | undefined,
+  signal?: AbortSignal,
+): AsyncGenerator<SSEEvent> {
+  const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    headers: body ? { "content-type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
     signal,
   });
 

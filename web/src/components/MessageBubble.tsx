@@ -6,6 +6,7 @@ import ToolCallBlock from "./ToolCallBlock.js";
 interface Props {
   message: Message;
   isStreaming?: boolean;
+  onApproveAndResume?: (approvalId: string) => Promise<void>;
 }
 
 function formatTime(ts: number): string {
@@ -15,7 +16,7 @@ function formatTime(ts: number): string {
   return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function MessageBubble({ message, isStreaming }: Props) {
+export default function MessageBubble({ message, isStreaming, onApproveAndResume }: Props) {
   const isUser = message.role === "user";
 
   return (
@@ -26,7 +27,7 @@ export default function MessageBubble({ message, isStreaming }: Props) {
         ) : (
           <>
             {message.toolCalls.map((tc, i) => (
-              <ToolCallBlock key={i} toolCall={tc} />
+              <ToolCallBlock key={i} toolCall={tc} onApproveAndResume={onApproveAndResume} />
             ))}
             {message.text && (
               <div className={`markdown-content ${isStreaming ? "streaming-cursor" : ""}`}>

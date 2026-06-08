@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Tool } from "../types.js";
+import type { Config, Tool } from "../types.js";
+import { checkDangerousToolPermission } from "./permission.js";
 
 // === 文件操作 ===
 
@@ -426,7 +427,7 @@ export function loadAllMemories(workspacePath: string): string {
 
 // === 工具定义 ===
 
-export function createMemorySaveTool(workspacePath: string): Tool {
+export function createMemorySaveTool(workspacePath: string, getConfig: () => Config): Tool {
   return {
     name: "memory_save",
     description: "保存或覆盖一条长期记忆。当用户明确告诉你需要记住的信息时（偏好、约定、事实等），用此工具记录下来。name 是文件名（不含 .md），content 是记忆内容",
@@ -461,7 +462,18 @@ export function createMemorySaveTool(workspacePath: string): Tool {
       },
       required: ["name", "content"],
     },
-    execute: async (args: Record<string, unknown>): Promise<string> => {
+    execute: async (args: Record<string, unknown>, context): Promise<string> => {
+      const permission = checkDangerousToolPermission({
+        workspacePath,
+        config: getConfig(),
+        toolName: "memory_save",
+        args,
+        context,
+        command: `memory_save ${String(args.name ?? "")}`,
+        cwd: memoryDir(workspacePath),
+      });
+      if (!permission.allowed) return permission.result;
+
       const name = String(args.name ?? "");
       const content = String(args.content ?? "");
       return saveMemory(workspacePath, name, content, {
@@ -474,7 +486,7 @@ export function createMemorySaveTool(workspacePath: string): Tool {
   };
 }
 
-export function createMemoryAppendTool(workspacePath: string): Tool {
+export function createMemoryAppendTool(workspacePath: string, getConfig: () => Config): Tool {
   return {
     name: "memory_append",
     description: "追加内容到已有的长期记忆文件。当有新的信息需要补充到已保存的记忆中时使用，如果文件不存在会创建",
@@ -492,7 +504,18 @@ export function createMemoryAppendTool(workspacePath: string): Tool {
       },
       required: ["name", "content"],
     },
-    execute: async (args: Record<string, unknown>): Promise<string> => {
+    execute: async (args: Record<string, unknown>, context): Promise<string> => {
+      const permission = checkDangerousToolPermission({
+        workspacePath,
+        config: getConfig(),
+        toolName: "memory_append",
+        args,
+        context,
+        command: `memory_append ${String(args.name ?? "")}`,
+        cwd: memoryDir(workspacePath),
+      });
+      if (!permission.allowed) return permission.result;
+
       const name = String(args.name ?? "");
       const content = String(args.content ?? "");
       return appendMemory(workspacePath, name, content);
@@ -578,7 +601,7 @@ export function createMemorySearchTool(workspacePath: string): Tool {
   };
 }
 
-export function createMemoryDeleteTool(workspacePath: string): Tool {
+export function createMemoryDeleteTool(workspacePath: string, getConfig: () => Config): Tool {
   return {
     name: "memory_delete",
     description: "删除指定长期记忆。仅当用户明确要求删除某条记忆时使用",
@@ -592,7 +615,18 @@ export function createMemoryDeleteTool(workspacePath: string): Tool {
       },
       required: ["name"],
     },
-    execute: async (args: Record<string, unknown>): Promise<string> => {
+    execute: async (args: Record<string, unknown>, context): Promise<string> => {
+      const permission = checkDangerousToolPermission({
+        workspacePath,
+        config: getConfig(),
+        toolName: "memory_delete",
+        args,
+        context,
+        command: `memory_delete ${String(args.name ?? "")}`,
+        cwd: memoryDir(workspacePath),
+      });
+      if (!permission.allowed) return permission.result;
+
       return deleteMemory(workspacePath, String(args.name ?? ""));
     },
   };

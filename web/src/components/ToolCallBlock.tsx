@@ -5,6 +5,7 @@ import { approveCommand, rejectCommand } from "../lib/api.js";
 
 interface Props {
   toolCall: ToolCallInfo;
+  onApproveAndResume?: (approvalId: string) => Promise<void>;
 }
 
 interface ApprovalResult {
@@ -53,7 +54,7 @@ function parseApprovalResult(result: string | undefined): ApprovalResult | undef
   return undefined;
 }
 
-export default function ToolCallBlock({ toolCall }: Props) {
+export default function ToolCallBlock({ toolCall, onApproveAndResume }: Props) {
   const approval = parseApprovalResult(toolCall.result);
   const [approvalStatus, setApprovalStatus] = useState<"pending" | "approved" | "rejected">("pending");
   const [approvalMessage, setApprovalMessage] = useState("");
@@ -67,9 +68,14 @@ export default function ToolCallBlock({ toolCall }: Props) {
     setIsSubmittingApproval(true);
     setApprovalMessage("");
     try {
-      await approveCommand(approval.approvalId);
+      if (onApproveAndResume) {
+        setApprovalMessage("已批准，正在继续执行...");
+        await onApproveAndResume(approval.approvalId);
+      } else {
+        await approveCommand(approval.approvalId);
+      }
       setApprovalStatus("approved");
-      setApprovalMessage("已批准。请重新发送原任务，下一次相同命令会执行一次。");
+      setApprovalMessage("已批准，并已继续执行原任务。");
     } catch (err) {
       setApprovalMessage(err instanceof Error ? err.message : "批准失败");
     } finally {
@@ -107,7 +113,7 @@ export default function ToolCallBlock({ toolCall }: Props) {
             <div style={{ marginTop: 8 }}><strong>Result:</strong></div>
             {approval ? (
               <div className="tool-approval">
-                <div className="tool-approval-title">此命令需要批准</div>
+                <div className="tool-approval-title">此工具调用需要批准</div>
                 {approval.error && <div>{approval.error}</div>}
                 <div>审批 ID：<code>{approval.approvalId}</code></div>
                 {approval.command && <pre>{approval.command}</pre>}

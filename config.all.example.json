@@ -33,8 +33,26 @@
     "rawStreamEvents": true
   },
   "security": {
-    "bash": {
-      "mode": "allow"
+    "mode": "allow",
+    "tools": {
+      "bash": {
+        "mode": "allow"
+      },
+      "file_write": {
+        "mode": "allow"
+      },
+      "file_edit": {
+        "mode": "allow"
+      },
+      "memory_save": {
+        "mode": "allow"
+      },
+      "memory_append": {
+        "mode": "allow"
+      },
+      "memory_delete": {
+        "mode": "allow"
+      }
     },
     "gateway": {
       "host": "127.0.0.1",

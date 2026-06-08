@@ -2,7 +2,8 @@ import { expect, test } from "@playwright/test";
 
 const approval = {
   id: "approval-1",
-  source: "bash",
+  toolName: "bash",
+  args: { command: "npm test", cwd: "/tmp/workspace" },
   command: "npm test",
   cwd: "/tmp/workspace",
   status: "pending",
@@ -42,14 +43,33 @@ test("approves a pending command from the chat tool block", async ({ page }) => 
       },
     });
   });
-  await page.route("**/approvals/approval-1/approve", async (route) => {
-    await route.fulfill({ json: { approval: { ...approval, status: "approved" } } });
+  await page.route("**/approvals/approval-1/approve-and-resume", async (route) => {
+    await route.fulfill({
+      headers: { "content-type": "text/event-stream" },
+      body: [
+        "event: tool_call",
+        "data: {\"name\":\"bash\",\"input\":{\"command\":\"npm test\"}}",
+        "",
+        "event: tool_result",
+        "data: {\"name\":\"bash\",\"result\":\"{\\\"stdout\\\":\\\"approved output\\\",\\\"stderr\\\":\\\"\\\",\\\"exitCode\\\":0}\"}",
+        "",
+        "event: text_delta",
+        "data: {\"text\":\"继续完成\"}",
+        "",
+        "event: done",
+        "data: {\"text\":\"继续完成\",\"session_id\":\"approval-chat\"}",
+        "",
+        "",
+      ].join("\n"),
+    });
   });
 
   await page.goto("/");
   await page.locator(".session-id", { hasText: "approval" }).click();
 
-  await expect(page.getByText("此命令需要批准")).toBeVisible();
+  await expect(page.getByText("此工具调用需要批准")).toBeVisible();
   await page.getByRole("button", { name: "批准" }).click();
-  await expect(page.getByText("已批准。请重新发送原任务，下一次相同命令会执行一次。")).toBeVisible();
+  await expect(page.getByText("已批准，并已继续执行原任务。")).toBeVisible();
+  await expect(page.getByText("approved output", { exact: true })).toBeVisible();
+  await expect(page.getByText("继续完成")).toBeVisible();
 });

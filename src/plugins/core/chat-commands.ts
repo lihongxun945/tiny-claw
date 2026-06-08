@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { loadConfig } from "../../config.js";
 import { estimateTokens } from "../../estimate-tokens.js";
 import { approveRequest, listApprovals, rejectRequest } from "../../tools/approval.js";
-import { createBashTool } from "../../tools/bash.js";
 import { deleteStoredSession } from "../../session-store.js";
 import type { ChatCommand, ChatCommandContext, Plugin } from "../types.js";
 
@@ -128,8 +126,8 @@ function listApprovalText(ctx: ChatCommandContext): string {
   return approvals.map((approval) => [
     `审批 ID：${approval.id}`,
     `状态：${approval.status === "approved" ? "已允许一次" : "待审批"}`,
-    `来源：${approval.source}`,
-    `命令：${approval.command}`,
+    `工具：${approval.toolName}`,
+    approval.command ? `命令：${approval.command}` : `参数：${JSON.stringify(approval.args)}`,
     `有效期至：${approval.expiresAt}`,
     `批准：/approve ${approval.id}`,
     `拒绝：/reject ${approval.id}`,
@@ -147,16 +145,7 @@ async function approveCommand(pluginCtx: Parameters<Plugin["init"]>[0], ctx: Cha
     if (resumed) return { text: resumed };
   }
 
-  if (ctx.channel !== "feishu" || approval.source !== "bash") {
-    return { text: "已批准该命令执行一次。请重新发送原任务，下一次相同命令会执行一次。" };
-  }
-
-  const bash = createBashTool(ctx.workspacePath, () => loadConfig(ctx.workspacePath));
-  const result = await bash.execute(
-    { command: approval.command, cwd: approval.cwd },
-    { actor: approval.actor, sessionId: approval.sessionId },
-  );
-  return { text: formatApprovedBashResult(approval.command, result) };
+  return { text: "已批准该工具调用执行一次。原会话不可恢复时，请重新发送原任务，下一次相同工具调用会执行一次。" };
 }
 
 async function resumeApprovedSession(
@@ -209,37 +198,6 @@ function rejectApprovalText(ctx: ChatCommandContext): string {
   return rejectRequest(ctx.workspacePath, id, ctx.actor)
     ? "已拒绝该命令。"
     : "审批记录不存在、已过期，或你无权处理该审批。";
-}
-
-function formatApprovedBashResult(command: string, result: string): string {
-  try {
-    const parsed = JSON.parse(result) as {
-      stdout?: string;
-      stderr?: string;
-      exitCode?: number;
-      error?: string;
-      requiresConfirmation?: boolean;
-    };
-    if (parsed.requiresConfirmation) {
-      return [
-        "已批准，但命令没有被执行。",
-        parsed.error ?? "执行时仍然需要新的授权；请重新查看最新审批。",
-      ].join("\n");
-    }
-    return [
-      "已批准并执行该命令。",
-      `命令：${truncate(command, 500)}`,
-      parsed.stdout ? `标准输出：\n${parsed.stdout.trimEnd()}` : "",
-      parsed.stderr ? `标准错误：\n${parsed.stderr.trimEnd()}` : "",
-      `退出码：${parsed.exitCode ?? -1}`,
-    ].filter(Boolean).join("\n\n");
-  } catch {
-    return [
-      "已批准并执行该命令。",
-      `命令：${truncate(command, 500)}`,
-      `[工具结果] ${truncate(result, 500)}`,
-    ].join("\n\n");
-  }
 }
 
 function truncate(value: string, maxLength: number): string {

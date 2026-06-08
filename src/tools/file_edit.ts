@@ -1,8 +1,9 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
-import type { Tool } from "../types.js";
+import { dirname, resolve } from "node:path";
+import type { Config, Tool } from "../types.js";
+import { checkDangerousToolPermission } from "./permission.js";
 
-export function createFileEditTool(workspacePath: string): Tool {
+export function createFileEditTool(workspacePath: string, getConfig: () => Config): Tool {
   return {
     name: "file_edit",
     description:
@@ -25,7 +26,7 @@ export function createFileEditTool(workspacePath: string): Tool {
       },
       required: ["path", "old_text", "new_text"],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       const filePath = resolve(workspacePath, args.path as string);
       const oldText = args.old_text as string;
       const newText = args.new_text as string;
@@ -35,6 +36,17 @@ export function createFileEditTool(workspacePath: string): Tool {
       }
 
       try {
+        const permission = checkDangerousToolPermission({
+          workspacePath,
+          config: getConfig(),
+          toolName: "file_edit",
+          args,
+          context,
+          command: `edit ${filePath}`,
+          cwd: dirname(filePath),
+        });
+        if (!permission.allowed) return permission.result;
+
         const content = readFileSync(filePath, "utf-8");
 
         const index = content.indexOf(oldText);
