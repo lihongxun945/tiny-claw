@@ -115,7 +115,7 @@ http://localhost:3001
 | `sessionSummary` | 见下文 | `{ "enabled": true }` | 会话滚动摘要与持久化配置 |
 | `autoMemory` | 见下文 | `{ "mode": "hybrid" }` | 自动长期记忆配置 |
 | `debug` | `false` | `{ "enabled": true, "modelIO": true }` | 模型输入输出调试日志 |
-| `security` | 见下文 | `{ "bash": { "mode": "ask" } }` | bash、Gateway、工具审计安全配置 |
+| `security` | 见下文 | `{ "bash": { "mode": "allow" } }` | bash、Gateway、工具审计安全配置 |
 
 ### Sub-agent 配置
 
@@ -246,7 +246,7 @@ Debug 日志可能包含用户输入、工具结果和提示词内容，建议�
 
 ### 安全边界
 
-文件工具支持读取和修改 workspace 之外的文件：相对路径以 workspace 为基准，也可以传入绝对路径。`bash` 也可以通过 `cwd` 在任意目录执行命令，但默认禁用；需要执行 shell 时显式开启：
+文件工具支持读取和修改 workspace 之外的文件：相对路径以 workspace 为基准，也可以传入绝对路径。`bash` 也可以通过 `cwd` 在任意目录执行命令，默认自动执行；如果需要更严格的安全边界，可以显式改为 `ask` 或 `deny`：
 
 ```json
 {
@@ -257,11 +257,11 @@ Debug 日志可能包含用户输入、工具结果和提示词内容，建议�
 }
 ```
 
-`bash.mode` 支持 `deny`、`ask` 和 `allow`。该策略同时控制 `bash` 工具和技能文件中的动态 shell 注入。`ask` 会创建一次性审批记录；在 Web UI 的聊天工具块中点击批准后，重新发起原任务即可执行一次。飞书中回复完整 `/approve <审批 ID>` 后会立即执行本次记录的 bash 命令。工具调用默认写入审计日志，可通过 `auditTools: false` 关闭。
+`bash.mode` 支持 `deny`、`ask` 和 `allow`，默认 `allow`。该策略同时控制 `bash` 工具和技能文件中的动态 shell 注入。`ask` 会创建一次性审批记录；在 Web UI 的聊天工具块中点击批准后，重新发起原任务即可执行一次。飞书中回复完整 `/approve <审批 ID>` 后会立即执行本次记录的 bash 命令。工具调用默认写入审计日志，可通过 `auditTools: false` 关闭。
 
 | 配置项 | 默认值 | 示例 | 说明 |
 |---|---:|---|---|
-| `security.bash.mode` | `"deny"` | `"ask"` | bash 权限模式：`deny`、`ask`、`allow` |
+| `security.bash.mode` | `"allow"` | `"ask"` | bash 权限模式：`deny`、`ask`、`allow` |
 | `security.gateway.host` | `"127.0.0.1"` | `"0.0.0.0"` | Gateway 监听地址；暴露到非回环地址时必须配置 token |
 | `security.gateway.token` | 无 | `"YOUR_GATEWAY_TOKEN"` | Gateway Bearer token |
 | `security.auditTools` | `true` | `true` | 是否记录工具调用审计日志 |
@@ -406,7 +406,7 @@ tiny-claw 采用插件化架构，所有业务逻辑由插件实现。框架通�
 2. [x] **Skill** — 技能系统，支持可插拔的专项能力（skills/<name>/SKILL.md）
 3. [x] **网关** — HTTP Gateway（SSE 流式 API、会话管理）
 4. [x] **插件系统** — 内置/外部插件加载，路由注册，生命周期管理
-5. [x] **基础权限边界** — 文件工具支持 workspace 外路径；bash 默认禁用；Gateway 默认仅本机监听并支持 token 鉴权
+5. [x] **基础权限边界** — 文件工具支持 workspace 外路径；bash 支持 `allow`/`ask`/`deny` 权限模式；Gateway 默认仅本机监听并支持 token 鉴权
 6. [ ] **模式切换** — 可以以不同模式执行任务，比如 询问模式、自动模式、计划模式等。
 7. [x] **飞书接入** — 飞书机器人（WebSocket 长连接模式）
 8. [ ] **心跳** — 定时启动，执行定期任务

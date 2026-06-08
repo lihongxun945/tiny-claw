@@ -141,7 +141,7 @@ export function createSkillUseTool(workspacePath: string, getConfig: () => Confi
     execute: async (toolArgs, context) => {
       const name = toolArgs.name as string;
       const args = (toolArgs.args as string) ?? "";
-      const bashMode = getConfig().security?.bash?.mode ?? "deny";
+      const bashMode = getConfig().security?.bash?.mode ?? "allow";
       const body = loadSkill(workspacePath, name, args, bashMode, context);
       if (!body) {
         const available = listSkills(workspacePath).map((s) => s.name).join(", ");
