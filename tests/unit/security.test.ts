@@ -41,16 +41,20 @@ describe("security boundary", () => {
     expect(readFileSync(resolve(outsidePath, "outside.txt"), "utf-8")).toBe("edited");
   });
 
-  it("denies bash by default and supports ask and allow modes", async () => {
+  it("allows bash by default and supports deny, ask and allow modes", async () => {
     const workspacePath = createTempWorkspace();
     const outsidePath = mkdtempSync(resolve(tmpdir(), "tiny-claw-bash-outside-"));
     paths.push(workspacePath, outsidePath);
     const configPath = resolve(workspacePath, "config.json");
     const bash = createBashTool(workspacePath, () => loadConfig(workspacePath));
 
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    expect(await bash.execute({ command: "pwd" })).toContain(workspacePath);
+
+    config.security = { bash: { mode: "deny" } };
+    writeFileSync(configPath, JSON.stringify(config), "utf-8");
     expect(await bash.execute({ command: "pwd" })).toContain("bash 执行已禁用");
 
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
     config.security = { bash: { mode: "ask" } };
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
     const pending = JSON.parse(await bash.execute({ command: "pwd", cwd: outsidePath }));
@@ -112,10 +116,15 @@ describe("security boundary", () => {
     const configPath = resolve(workspacePath, "config.json");
     const skill = createSkillUseTool(workspacePath, () => loadConfig(workspacePath));
 
-    expect(await skill.execute({ name: "dynamic" })).toContain("动态命令已禁用");
+    expect(await skill.execute({ name: "dynamic" })).toContain("result: executed");
+    expect(await skill.execute({ name: "dynamic" })).toContain("block-executed");
     expect(await skill.execute({ name: "../config" })).toContain("未找到技能");
 
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    config.security = { bash: { mode: "deny" } };
+    writeFileSync(configPath, JSON.stringify(config), "utf-8");
+    expect(await skill.execute({ name: "dynamic" })).toContain("动态命令已禁用");
+
     config.security = { bash: { mode: "ask" } };
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
     expect(await skill.execute({ name: "dynamic" })).toContain("动态命令需要用户确认");

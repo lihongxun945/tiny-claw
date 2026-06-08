@@ -40,7 +40,7 @@
   "ollamaApiKey": "YOUR_OLLAMA_API_KEY",
   "security": {
     "bash": {
-      "mode": "ask"
+      "mode": "allow"
     }
   }
 }

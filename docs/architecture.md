@@ -183,7 +183,7 @@ workspace/
 {
   "security": {
     "bash": {
-      "mode": "deny"
+      "mode": "allow"
     },
     "gateway": {
       "host": "127.0.0.1",
@@ -194,7 +194,7 @@ workspace/
 }
 ```
 
-- `bash.mode`：统一控制 `bash` 工具和技能动态 shell。`deny` 默认拒绝执行；`ask` 创建一次性审批记录，批准后相同目录中的相同请求可在下次调用时执行一次；`allow` 允许执行。`bash.cwd` 工具参数支持相对 workspace 的路径或绝对路径。
+- `bash.mode`：统一控制 `bash` 工具和技能动态 shell。默认 `allow` 自动执行；`ask` 创建一次性审批记录，批准后相同目录中的相同请求可在下次调用时执行一次；`deny` 拒绝执行。`bash.cwd` 工具参数支持相对 workspace 的路径或绝对路径。
 - `gateway.host`：Gateway API 监听地址，默认 `127.0.0.1`。暴露到其他机器时应同时配置 token。
 - `gateway.token`：可选 Bearer token。配置后 API 请求需要携带 `Authorization: Bearer <token>`。
 - `auditTools`：是否把工具调用和完成状态写入日志，默认开启。审计日志不会记录文件内容或记忆内容。
@@ -385,7 +385,7 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 
 插件也可以注册自己的工具，通过 `PluginContext.registerTool()` 方法。所有插件的工具统一合并到 PluginManager 的 ToolRegistry 中，模型调用时通过 `getTool(name)` 查找执行。新增工具只需：1) 在任意插件中实现 Tool 接口 2) 在插件 init 中注册。
 
-`PluginManager` 支持工具白名单/黑名单过滤（`allowedTools` / `disabledTools`），用于 sub-agent 等需要收敛权限的场景。工具在注册阶段被过滤，模型看不到被禁用的工具定义，也无法调用这些工具。文件工具支持 workspace 外路径；`bash` 默认禁用，需要通过 `security.bash.mode` 显式开放。
+`PluginManager` 支持工具白名单/黑名单过滤（`allowedTools` / `disabledTools`），用于 sub-agent 等需要收敛权限的场景。工具在注册阶段被过滤，模型看不到被禁用的工具定义，也无法调用这些工具。文件工具支持 workspace 外路径；`bash` 默认允许执行，可通过 `security.bash.mode` 改为 `ask` 或 `deny`。
 
 ### 聊天命令注册：插件化
 

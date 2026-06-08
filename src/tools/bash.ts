@@ -36,7 +36,7 @@ export function createBashTool(workspacePath: string, getConfig: () => Config): 
       const command = args.command as string;
       const timeout = (args.timeout as number) ?? DEFAULT_TIMEOUT;
       const cwd = resolve(workspacePath, (args.cwd as string | undefined) ?? ".");
-      const mode = getConfig().security?.bash?.mode ?? "deny";
+      const mode = getConfig().security?.bash?.mode ?? "allow";
 
       if (mode === "deny") {
         return JSON.stringify({ error: "bash 执行已禁用。需要在 security.bash.mode 中显式配置 allow。" });
