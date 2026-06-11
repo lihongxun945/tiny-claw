@@ -3,6 +3,7 @@ import { estimateTokens } from "../../estimate-tokens.js";
 import { approveRequest, listApprovals, rejectRequest } from "../../tools/approval.js";
 import { deleteStoredSession } from "../../session-store.js";
 import type { ChatCommand, ChatCommandContext, Plugin } from "../types.js";
+import { runWorkspaceAutoMemoryAnalysis } from "./auto-memory.js";
 
 export const coreChatCommandsPlugin: Plugin = {
   name: "core-chat-commands",
@@ -34,6 +35,12 @@ export const coreChatCommandsPlugin: Plugin = {
         description: "显示当前会话上下文长度估算",
         usage: "/context",
         execute: (commandCtx) => ({ text: contextLengthText(commandCtx) }),
+      },
+      {
+        name: "dream",
+        description: "立即触发工作区长期记忆整理",
+        usage: "/dream",
+        execute: (commandCtx) => dreamCommand(commandCtx),
       },
       {
         name: "approve",
@@ -118,6 +125,38 @@ function contextLengthText(ctx: ChatCommandContext): string {
     "",
     "说明：这是粗略估算，用于判断是否接近上下文上限；实际模型 token 统计可能不同。",
   ].join("\n");
+}
+
+async function dreamCommand(ctx: ChatCommandContext): Promise<{ text: string }> {
+  if (!ctx.config || !ctx.client || !ctx.history) {
+    return { text: "当前会话尚未初始化，无法触发记忆整理。" };
+  }
+  if (ctx.config.autoMemory?.enabled === false) {
+    return { text: "自动记忆已关闭，无法触发记忆整理。" };
+  }
+
+  const result = await runWorkspaceAutoMemoryAnalysis({
+    workspacePath: ctx.workspacePath,
+    config: ctx.config,
+    client: ctx.client,
+    triggerSessionId: ctx.sessionId,
+    getToolDefinitions: ctx.getToolDefinitions,
+    getTool: ctx.getTool,
+    actor: ctx.actor,
+  });
+
+  return {
+    text: [
+      "已完成记忆整理：",
+      `- 分析轮数：${result.analyzedTurns}`,
+      `- 涉及会话：${result.affectedSessions?.length ?? 0}`,
+      `- 保存/更新：${result.saved}`,
+      `- 删除：${result.deleted}`,
+      `- 工具调用：${result.toolCalls}`,
+      result.requiresConfirmation ? "- 状态：等待权限审批" : "",
+      result.finalText ? `- 模型结果：${result.finalText}` : "",
+    ].filter(Boolean).join("\n"),
+  };
 }
 
 function listApprovalText(ctx: ChatCommandContext): string {

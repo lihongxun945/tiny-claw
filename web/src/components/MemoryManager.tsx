@@ -12,7 +12,6 @@ function emptyDraft(): MemoryRecord {
     content: "",
     tags: [],
     scope: "global",
-    sensitive: false,
     disabled: false,
     source: "manual",
     createdAt: now,
@@ -104,7 +103,6 @@ export default function MemoryManager() {
         summary: draft.summary,
         tags: draft.tags,
         scope: draft.scope,
-        sensitive: draft.sensitive,
         disabled: draft.disabled,
         source: draft.source,
       });
@@ -180,7 +178,6 @@ export default function MemoryManager() {
               <span className="memory-summary">{memory.summary || "无摘要"}</span>
               <span className="memory-meta">
                 {memory.source}
-                {memory.sensitive ? " · 敏感" : ""}
                 {memory.scope ? ` · ${memory.scope}` : ""}
               </span>
             </button>
@@ -244,14 +241,6 @@ export default function MemoryManager() {
                 </label>
               </div>
               <div className="memory-checks">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={draft.sensitive}
-                    onChange={(e) => setDraft((prev) => ({ ...prev, sensitive: e.target.checked }))}
-                  />
-                  敏感
-                </label>
                 <label>
                   <input
                     type="checkbox"

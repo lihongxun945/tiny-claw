@@ -23,9 +23,9 @@
     "enabled": true,
     "mode": "hybrid",
     "turnThreshold": 10,
-    "minConfidence": 0.75,
     "maxCandidates": 5,
-    "maxBatchChars": 8000
+    "maxBatchChars": 8000,
+    "maxMemoryChars": 20000
   },
   "debug": {
     "enabled": false,
@@ -65,7 +65,7 @@
   "searxngUrl": "http://localhost:8080",
   "braveApiKey": "YOUR_BRAVE_API_KEY",
   "subAgent": {
-    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "memory_search", "skill_list", "skill_use"],
+    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "skill_list", "skill_use"],
     "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "sub_agent_run"],
     "maxIterations": 3,
     "maxConcurrency": 3

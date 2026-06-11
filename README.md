@@ -124,7 +124,7 @@ http://localhost:3001
 ```json
 {
   "subAgent": {
-    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "memory_search", "skill_list", "skill_use"],
+    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "skill_list", "skill_use"],
     "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "sub_agent_run"],
     "maxIterations": 3,
     "maxConcurrency": 3
@@ -171,7 +171,7 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 
 ### 自动记忆配置
 
-`core-auto-memory` 可以在多轮对话后自动分析是否需要写入长期记忆。长期记忆存储在 `workspace/memory/*.md`，不同于会话摘要；它更适合保存用户偏好、项目约定等跨会话信息。
+`core-auto-memory` 可以在多轮对话后自动整理长期记忆：新增稳定记忆、更新已有记忆，压缩碎片化记忆，并在允许时删除过期记忆。每轮最终问答会先按 session 持久化到 `state.json`，但触发和整理是 workspace 级的：达到阈值或执行 `/dream` 时，会聚合所有主会话的待整理增量一起处理。长期记忆存储在 `workspace/memory/*.md`，不同于会话摘要；它更适合保存用户偏好、项目约定等跨会话信息。未禁用的长期记忆会以全文形式注入 system prompt，`memory_list` 仍返回摘要索引，避免工具结果过大。
 
 ```json
 {
@@ -179,9 +179,9 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
     "enabled": true,
     "mode": "hybrid",
     "turnThreshold": 10,
-    "minConfidence": 0.75,
     "maxCandidates": 5,
-    "maxBatchChars": 8000
+    "maxBatchChars": 8000,
+    "maxMemoryChars": 20000
   }
 }
 ```
@@ -189,11 +189,13 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 | 配置项 | 默认值 | 示例 | 说明 |
 |---|---:|---|---|
 | `autoMemory.enabled` | `true` | `true` | 是否启用自动记忆 |
-| `autoMemory.mode` | `"hybrid"` | `"hybrid"` | `auto` 自动写入、`hybrid` 混合模式、`suggest` 仅建议 |
-| `autoMemory.turnThreshold` | `10` | `10` | 每多少轮触发一次分析 |
-| `autoMemory.minConfidence` | `0.75` | `0.75` | 写入候选的最低置信度 |
-| `autoMemory.maxCandidates` | `5` | `5` | 单次最多写入候选数 |
+| `autoMemory.mode` | `"hybrid"` | `"hybrid"` | `auto` 开放保存/更新/删除；`hybrid` 只开放保存/更新，删除只建议；`suggest` 只读并输出建议 |
+| `autoMemory.turnThreshold` | `10` | `10` | workspace 内累计多少轮主会话最终问答后触发一次分析 |
+| `autoMemory.maxCandidates` | `5` | `5` | 单次最多允许的 memory 工具调用次数 |
 | `autoMemory.maxBatchChars` | `8000` | `8000` | 单次分析输入的最大字符数 |
+| `autoMemory.maxMemoryChars` | `20000` | `20000` | 单条记忆整理后的正文最大字符数 |
+
+自动记忆整理会把“已保存长期记忆全文 + workspace 内上次成功整理后累计的用户问题和最终回答 + 配置的长度限制”一起交给整理模型，不包含中间工具调用、工具结果或调试日志。待整理增量保存在各自的 `workspace/sessions/<session>/state.json`，gateway 重启或切换会话后仍会继续累计；整理成功后清空本次涉及会话的 pending，失败或等待权限审批时保留。整理模型不输出自定义 JSON actions，而是直接调用已有 `memory_*` 工具；默认 `hybrid` 模式不会暴露 `memory_delete`。`memory_save` 执行前会按 `maxMemoryChars` 对正文做硬限制；已有记忆过长、重复或过期时，模型可以用同名 `memory_save` 写回压缩整理后的完整正文。
 
 ### 聊天命令
 
@@ -207,6 +209,7 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 | `/reset` | `/new` 的别名 |
 | `/context` | 显示当前会话上下文长度估算 |
 | `/ctx` | `/context` 的别名 |
+| `/dream` | 立即触发 workspace 级 auto-memory 整理 |
 | `/approvals` | 列出当前可处理的命令审批 |
 | `/approve <审批 ID>` | 批准一条命令审批；可恢复原任务时会继续执行 |
 | `/reject <审批 ID>` | 拒绝一条命令审批 |
@@ -310,7 +313,7 @@ POST /chat 请求示例：
 { "message": "你好", "session_id": "optional" }
 ```
 
-聊天输入支持插件注册的斜杠命令。输入 `/help` 可查看当前可用命令；输入 `/new` 可开启新会话；输入 `/context` 可查看当前上下文长度估算。
+聊天输入支持插件注册的斜杠命令。输入 `/help` 可查看当前可用命令；输入 `/new` 可开启新会话；输入 `/context` 可查看当前上下文长度估算；输入 `/dream` 可立即触发 workspace 级 auto-memory 整理。
 
 同一 session 同一时间只允许执行一个任务。客户端断开 SSE 连接时，Gateway 会自动取消后台任务；已知 session 也可以通过 `/sessions/:id/cancel` 主动取消。默认最多执行 20 次 Agent Loop 迭代，可通过 `maxAgentIterations` 调整，显式配置 `0` 表示不限。
 
@@ -399,7 +402,7 @@ tiny-claw 采用插件化架构，所有业务逻辑由插件实现。框架通�
 3. [x] **工具调用** — 脚本执行、文件读写等
    - 声明式工具注册：使用 JSON Schema 定义工具的参数和描述（类似 OpenAI function calling）
    - 工具发现：自动发现和注册可用工具
-   - 内置工具：web_search、web_fetch、bash、file_read、file_write、file_edit、memory_save、memory_append、memory_list、memory_read、memory_search、memory_delete、skill_use、skill_list、sub_agent_run
+   - 内置工具：web_search、web_fetch、bash、file_read、file_write、file_edit、memory_save、memory_append、memory_list、memory_read、memory_delete、skill_use、skill_list、sub_agent_run
 4. [x] **History** — 历史消息管理
 5. [x] **日志** — 方便排查问题
 6. [x] **上下文压缩** — 长任务导致上下文溢出时自动压缩

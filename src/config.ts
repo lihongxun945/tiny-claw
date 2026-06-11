@@ -104,9 +104,9 @@ export function validateConfig(raw: Record<string, unknown>): void {
       throw new Error("配置字段 autoMemory.mode 不受支持");
     }
     assertOptionalNumber(raw.autoMemory.turnThreshold, "autoMemory.turnThreshold", { min: 1, integer: true });
-    assertOptionalNumber(raw.autoMemory.minConfidence, "autoMemory.minConfidence", { min: 0, max: 1 });
     assertOptionalNumber(raw.autoMemory.maxCandidates, "autoMemory.maxCandidates", { min: 1, integer: true });
     assertOptionalNumber(raw.autoMemory.maxBatchChars, "autoMemory.maxBatchChars", { min: 1, integer: true });
+    assertOptionalNumber(raw.autoMemory.maxMemoryChars, "autoMemory.maxMemoryChars", { min: 1000, integer: true });
   }
 
   if (raw.debug !== undefined && typeof raw.debug !== "boolean") {
@@ -187,10 +187,23 @@ export function loadConfig(workspacePath: string): Config {
     plugins: raw.plugins as Record<string, Record<string, unknown>> | undefined,
     subAgent: raw.subAgent as Config["subAgent"] | undefined,
     sessionSummary: raw.sessionSummary as Config["sessionSummary"] | undefined,
-    autoMemory: raw.autoMemory as Config["autoMemory"] | undefined,
+    autoMemory: normalizeAutoMemoryConfig(raw.autoMemory),
     debug: raw.debug as Config["debug"] | undefined,
     security: raw.security as Config["security"] | undefined,
     workspacePath,
     systemPrompt: loadIdentity(workspacePath),
+  };
+}
+
+function normalizeAutoMemoryConfig(value: unknown): Config["autoMemory"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  return {
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : undefined,
+    mode: raw.mode === "auto" || raw.mode === "hybrid" || raw.mode === "suggest" ? raw.mode : undefined,
+    turnThreshold: typeof raw.turnThreshold === "number" ? raw.turnThreshold : undefined,
+    maxCandidates: typeof raw.maxCandidates === "number" ? raw.maxCandidates : undefined,
+    maxBatchChars: typeof raw.maxBatchChars === "number" ? raw.maxBatchChars : undefined,
+    maxMemoryChars: typeof raw.maxMemoryChars === "number" ? raw.maxMemoryChars : undefined,
   };
 }

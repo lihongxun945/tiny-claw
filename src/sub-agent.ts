@@ -15,7 +15,6 @@ export const DEFAULT_SUB_AGENT_TOOLS = [
   "file_read",
   "memory_list",
   "memory_read",
-  "memory_search",
   "skill_list",
   "skill_use",
 ];

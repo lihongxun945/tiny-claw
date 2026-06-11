@@ -18,6 +18,10 @@ describe("session-state persistence", () => {
         summary: "用户希望持久化会话记忆",
         pendingMessages: [{ role: "user", content: "hello", _timestamp: 1 }],
         turnsSinceSummary: 2,
+        autoMemory: {
+          pendingTurns: [{ user: "记住偏好", assistant: "已记住", at: "2026-06-11T00:00:00.000Z" }],
+          turnsSinceAnalysis: 1,
+        },
       });
 
       const path = sessionStatePath(workspacePath, sessionId);
@@ -31,6 +35,10 @@ describe("session-state persistence", () => {
         summary: "用户希望持久化会话记忆",
         pendingMessages: [{ role: "user", content: "hello", _timestamp: 1 }],
         turnsSinceSummary: 2,
+        autoMemory: {
+          pendingTurns: [{ user: "记住偏好", assistant: "已记住", at: "2026-06-11T00:00:00.000Z" }],
+          turnsSinceAnalysis: 1,
+        },
       });
     } finally {
       removeTempWorkspace(workspacePath);
@@ -57,6 +65,41 @@ describe("session-state persistence", () => {
       });
       expect(deleteSessionState(workspacePath, sessionId)).toBe(true);
       expect(deleteSessionState(workspacePath, sessionId)).toBe(false);
+    } finally {
+      removeTempWorkspace(workspacePath);
+    }
+  });
+
+  it("preserves auto-memory state when saving summary-only state", () => {
+    const workspacePath = createTempWorkspace();
+    const sessionId = "merge-state";
+    try {
+      saveSessionState(workspacePath, {
+        sessionId,
+        summary: "",
+        pendingMessages: [],
+        turnsSinceSummary: 0,
+        autoMemory: {
+          pendingTurns: [{ user: "新增问题", assistant: "最终回答", at: "2026-06-11T00:00:00.000Z" }],
+          turnsSinceAnalysis: 1,
+        },
+      });
+
+      saveSessionState(workspacePath, {
+        sessionId,
+        summary: "会话摘要",
+        pendingMessages: [{ role: "assistant", content: "摘要后待处理", _timestamp: 2 }],
+        turnsSinceSummary: 3,
+      });
+
+      expect(loadSessionState(workspacePath, sessionId)).toMatchObject({
+        summary: "会话摘要",
+        turnsSinceSummary: 3,
+        autoMemory: {
+          pendingTurns: [{ user: "新增问题", assistant: "最终回答", at: "2026-06-11T00:00:00.000Z" }],
+          turnsSinceAnalysis: 1,
+        },
+      });
     } finally {
       removeTempWorkspace(workspacePath);
     }

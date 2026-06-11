@@ -11,6 +11,7 @@ export interface PersistedSessionState {
   summary: string;
   pendingMessages: Message[];
   turnsSinceSummary: number;
+  autoMemory: PersistedAutoMemoryState;
   updatedAt: string;
 }
 
@@ -19,6 +20,37 @@ export interface SessionStateInput {
   summary: string;
   pendingMessages: Message[];
   turnsSinceSummary: number;
+  autoMemory?: AutoMemoryStateInput;
+}
+
+export interface PersistedAutoMemoryTurn {
+  user: string;
+  assistant: string;
+  at: string;
+}
+
+export interface PersistedAutoMemoryResult {
+  analyzedTurns: number;
+  toolCalls: number;
+  saved: number;
+  deleted: number;
+  at: string;
+}
+
+export interface PersistedAutoMemoryState {
+  pendingTurns: PersistedAutoMemoryTurn[];
+  turnsSinceAnalysis: number;
+  lastAnalyzedAt?: string;
+  lastAnalyzedTurnAt?: string;
+  lastResult?: PersistedAutoMemoryResult;
+}
+
+export interface AutoMemoryStateInput {
+  pendingTurns: PersistedAutoMemoryTurn[];
+  turnsSinceAnalysis: number;
+  lastAnalyzedAt?: string;
+  lastAnalyzedTurnAt?: string;
+  lastResult?: PersistedAutoMemoryResult;
 }
 
 export function emptySessionState(sessionId: string): PersistedSessionState {
@@ -28,6 +60,7 @@ export function emptySessionState(sessionId: string): PersistedSessionState {
     summary: "",
     pendingMessages: [],
     turnsSinceSummary: 0,
+    autoMemory: emptyAutoMemoryState(),
     updatedAt: new Date(0).toISOString(),
   };
 }
@@ -48,6 +81,7 @@ export function loadSessionState(workspacePath: string, sessionId: string): Pers
       turnsSinceSummary: typeof turnsSinceSummary === "number" && Number.isInteger(turnsSinceSummary) && turnsSinceSummary >= 0
         ? turnsSinceSummary
         : 0,
+      autoMemory: sanitizeAutoMemoryState(parsed.autoMemory),
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
     };
   } catch {
@@ -56,12 +90,14 @@ export function loadSessionState(workspacePath: string, sessionId: string): Pers
 }
 
 export function saveSessionState(workspacePath: string, state: SessionStateInput): PersistedSessionState {
+  const existing = loadSessionState(workspacePath, state.sessionId);
   const persisted: PersistedSessionState = {
     version: STATE_VERSION,
     sessionId: state.sessionId,
     summary: state.summary,
     pendingMessages: sanitizeMessages(state.pendingMessages),
     turnsSinceSummary: Math.max(0, Math.floor(state.turnsSinceSummary)),
+    autoMemory: state.autoMemory === undefined ? existing.autoMemory : sanitizeAutoMemoryState(state.autoMemory),
     updatedAt: new Date().toISOString(),
   };
 
@@ -71,6 +107,13 @@ export function saveSessionState(workspacePath: string, state: SessionStateInput
   writeFileSync(tmpPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf-8");
   renameSync(tmpPath, path);
   return persisted;
+}
+
+export function emptyAutoMemoryState(): PersistedAutoMemoryState {
+  return {
+    pendingTurns: [],
+    turnsSinceAnalysis: 0,
+  };
 }
 
 export function deleteSessionState(workspacePath: string, sessionId: string): boolean {
@@ -98,4 +141,58 @@ function sanitizeMessages(messages: unknown[]): Message[] {
     });
   }
   return result;
+}
+
+function sanitizeAutoMemoryState(value: unknown): PersistedAutoMemoryState {
+  if (!value || typeof value !== "object") return emptyAutoMemoryState();
+  const record = value as Partial<PersistedAutoMemoryState>;
+  const turnsSinceAnalysis = record.turnsSinceAnalysis;
+  const pendingTurns = Array.isArray(record.pendingTurns)
+    ? sanitizeAutoMemoryTurns(record.pendingTurns)
+    : [];
+  const lastResult = sanitizeAutoMemoryResult(record.lastResult);
+  return {
+    pendingTurns,
+    turnsSinceAnalysis: typeof turnsSinceAnalysis === "number" && Number.isInteger(turnsSinceAnalysis) && turnsSinceAnalysis >= 0
+      ? turnsSinceAnalysis
+      : pendingTurns.length,
+    lastAnalyzedAt: typeof record.lastAnalyzedAt === "string" ? record.lastAnalyzedAt : undefined,
+    lastAnalyzedTurnAt: typeof record.lastAnalyzedTurnAt === "string" ? record.lastAnalyzedTurnAt : undefined,
+    lastResult,
+  };
+}
+
+function sanitizeAutoMemoryTurns(value: unknown[]): PersistedAutoMemoryTurn[] {
+  const turns: PersistedAutoMemoryTurn[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Partial<PersistedAutoMemoryTurn>;
+    if (typeof record.user !== "string" || typeof record.assistant !== "string") continue;
+    turns.push({
+      user: record.user,
+      assistant: record.assistant,
+      at: typeof record.at === "string" ? record.at : new Date(0).toISOString(),
+    });
+  }
+  return turns;
+}
+
+function sanitizeAutoMemoryResult(value: unknown): PersistedAutoMemoryResult | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Partial<PersistedAutoMemoryResult>;
+  if (
+    typeof record.analyzedTurns !== "number"
+    || typeof record.toolCalls !== "number"
+    || typeof record.saved !== "number"
+    || typeof record.deleted !== "number"
+  ) {
+    return undefined;
+  }
+  return {
+    analyzedTurns: Math.max(0, Math.floor(record.analyzedTurns)),
+    toolCalls: Math.max(0, Math.floor(record.toolCalls)),
+    saved: Math.max(0, Math.floor(record.saved)),
+    deleted: Math.max(0, Math.floor(record.deleted)),
+    at: typeof record.at === "string" ? record.at : new Date(0).toISOString(),
+  };
 }

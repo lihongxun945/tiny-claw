@@ -44,12 +44,15 @@ export interface ChatCommandContext {
   channel: AgentActor["channel"];
   actor?: AgentActor;
   config?: Config;
+  client?: ModelClient;
   history?: MessageHistory;
   commandName: string;
   args: string[];
   rawArgs: string;
   rawInput: string;
   getChatCommands(): ChatCommand[];
+  getToolDefinitions(): ToolDefinition[];
+  getTool(name: string): Tool | undefined;
 }
 
 export interface ExecuteChatCommandOptions {
@@ -92,6 +95,7 @@ export interface HookContext {
   history: MessageHistory;
   turnStartIndex: number;
   getToolDefinitions(): ToolDefinition[];
+  getTool(name: string): Tool | undefined;
 }
 
 // === 提示词片段 ===

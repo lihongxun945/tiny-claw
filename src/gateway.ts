@@ -264,6 +264,13 @@ function restoreMaskedSecrets(value: unknown, existing: unknown, key = ""): unkn
   return value;
 }
 
+function stripDeprecatedConfigFields(config: Record<string, unknown>): Record<string, unknown> {
+  const autoMemory = config.autoMemory;
+  if (!autoMemory || typeof autoMemory !== "object" || Array.isArray(autoMemory)) return config;
+  const { minConfidence: _minConfidence, ...restAutoMemory } = autoMemory as Record<string, unknown>;
+  return { ...config, autoMemory: restAutoMemory };
+}
+
 function isMemorySource(value: unknown): value is MemorySource {
   return value === "manual" || value === "tool" || value === "auto";
 }
@@ -549,9 +556,8 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     // GET /memory — 长期记忆列表
     if (req.method === "GET" && url.pathname === "/memory") {
       try {
-        const includeSensitive = url.searchParams.get("include_sensitive") === "true";
         const includeDisabled = url.searchParams.get("include_disabled") !== "false";
-        const memories = listMemoryRecords(workspacePath, { includeSensitive, includeDisabled });
+        const memories = listMemoryRecords(workspacePath, { includeDisabled });
         sendJSON(res, 200, { memories });
       } catch (err) {
         sendJSON(res, 500, { error: err instanceof Error ? err.message : String(err) });
@@ -562,7 +568,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     // GET /memory/:name — 读取单条长期记忆
     if (req.method === "GET" && url.pathname.startsWith("/memory/")) {
       const name = decodeURIComponent(url.pathname.slice("/memory/".length));
-      const memory = getMemoryRecord(workspacePath, name, true);
+      const memory = getMemoryRecord(workspacePath, name);
       if (!memory) {
         sendJSON(res, 404, { error: "记忆不存在" });
         return;
@@ -580,7 +586,6 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
           content: typeof body.content === "string" ? body.content : undefined,
           summary: typeof body.summary === "string" ? body.summary : undefined,
           tags: Array.isArray(body.tags) ? body.tags.map(String) : undefined,
-          sensitive: typeof body.sensitive === "boolean" ? body.sensitive : undefined,
           disabled: typeof body.disabled === "boolean" ? body.disabled : undefined,
           scope: typeof body.scope === "string" ? body.scope : undefined,
           source: isMemorySource(body.source) ? body.source : undefined,
@@ -705,7 +710,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         sendJSON(res, 404, { error: "配置文件不存在" });
         return;
       }
-      const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+      const raw = stripDeprecatedConfigFields(JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>);
       raw.searchProvider ??= "ollama";
       sendJSON(res, 200, { config: maskConfigSecrets(raw) });
       return;
@@ -717,7 +722,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         const configPath = resolve(workspacePath, "config.json");
         const existing = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf-8")) : {};
         const updates = restoreMaskedSecrets(JSON.parse(await readBody(req)), existing) as Record<string, unknown>;
-        const merged = { ...existing, ...updates };
+        const merged = stripDeprecatedConfigFields({ ...existing, ...updates });
         validateConfig(merged);
         writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n", "utf-8");
         sendJSON(res, 200, { config: maskConfigSecrets(merged) });

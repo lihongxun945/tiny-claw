@@ -8,7 +8,6 @@ import {
   createMemoryListTool,
   createMemoryReadTool,
   createMemorySaveTool,
-  createMemorySearchTool,
   deleteMemory,
   getMemoryRecord,
   listMemories,
@@ -16,7 +15,6 @@ import {
   loadAllMemories,
   readMemory,
   saveMemory,
-  searchMemories,
   setMemoryDisabled,
   updateMemoryRecord,
 } from "../../src/tools/memory.js";
@@ -48,7 +46,6 @@ describe("memory storage", () => {
       tags: ["preference"],
       scope: "user",
       source: "manual",
-      sensitive: false,
       disabled: false,
     });
 
@@ -69,30 +66,44 @@ describe("memory storage", () => {
     expect(getMemoryRecord(workspacePath, "user-pref")).toBeNull();
   });
 
-  it("keeps sensitive and disabled memories out of default prompt and search", () => {
+  it("injects all enabled memories and keeps disabled memories out of prompts", () => {
     saveMemory(workspacePath, "public", "公开项目背景", { tags: ["project"] });
-    saveMemory(workspacePath, "sensitive", "private token", { sensitive: true });
+    writeFileSync(resolve(workspacePath, "memory", "legacy-sensitive.md"), [
+      "---",
+      "name: legacy-sensitive",
+      "sensitive: true",
+      "disabled: false",
+      "---",
+      "",
+      "旧敏感字段会被忽略并全文注入",
+    ].join("\n"), "utf-8");
     saveMemory(workspacePath, "disabled", "旧项目背景", { disabled: true });
 
     expect(loadAllMemories(workspacePath)).toContain("public");
-    expect(loadAllMemories(workspacePath)).not.toContain("sensitive");
+    expect(loadAllMemories(workspacePath)).toContain("公开项目背景");
+    expect(loadAllMemories(workspacePath)).toContain("legacy-sensitive");
+    expect(loadAllMemories(workspacePath)).toContain("旧敏感字段会被忽略并全文注入");
     expect(loadAllMemories(workspacePath)).not.toContain("disabled");
-    expect(listMemoryRecords(workspacePath).map((memory) => memory.name)).toEqual(["public"]);
-    expect(JSON.parse(searchMemories(workspacePath, "背景")).results.map((memory: { name: string }) => memory.name)).toEqual(["public"]);
+    expect(listMemoryRecords(workspacePath).map((memory) => memory.name)).toEqual(["legacy-sensitive", "public"]);
 
     expect(listMemoryRecords(workspacePath, {
-      includeSensitive: true,
       includeDisabled: true,
-    }).map((memory) => memory.name)).toEqual(["disabled", "public", "sensitive"]);
+    }).map((memory) => memory.name)).toEqual(["disabled", "legacy-sensitive", "public"]);
   });
 
-  it("requires explicit permission to read sensitive memories", () => {
-    saveMemory(workspacePath, "secret", "private token", { sensitive: true });
-
-    expect(JSON.parse(readMemory(workspacePath, "secret"))).toEqual({
-      error: "记忆 secret 标记为敏感，请显式设置 include_sensitive=true 后读取",
+  it("injects full enabled memory content into prompts", () => {
+    saveMemory(workspacePath, "long-rule", "第一条规则：输出必须完整。\n第二条规则：不要只发送摘要。", {
+      tags: ["rule"],
+      summary: "规则摘要",
     });
-    expect(JSON.parse(readMemory(workspacePath, "secret", true)).content).toBe("private token");
+
+    const injected = loadAllMemories(workspacePath);
+    expect(injected).toContain("以下是已启用的长期记忆全文。");
+    expect(injected).toContain("## long-rule");
+    expect(injected).toContain("tags=rule");
+    expect(injected).toContain("第一条规则：输出必须完整。");
+    expect(injected).toContain("第二条规则：不要只发送摘要。");
+    expect(injected).not.toContain("规则摘要");
   });
 
   it("supports disabling and enabling an existing memory", () => {
@@ -112,7 +123,6 @@ describe("memory storage", () => {
       summary: "legacy content",
       scope: "global",
       source: "tool",
-      sensitive: false,
       disabled: false,
     });
   });
@@ -148,7 +158,6 @@ describe("memory storage", () => {
     })).toBe("已追加记忆: tool-memory");
     expect(JSON.parse(await createMemoryListTool(workspacePath).execute({})).memories).toHaveLength(1);
     expect(JSON.parse(await createMemoryReadTool(workspacePath).execute({ name: "tool-memory" })).content).toContain("more content");
-    expect(JSON.parse(await createMemorySearchTool(workspacePath).execute({ query: "tool", limit: 1 })).results).toHaveLength(1);
     expect(await createMemoryDeleteTool(workspacePath, getConfig).execute({ name: "tool-memory" })).toBe("已删除记忆: tool-memory");
   });
 });

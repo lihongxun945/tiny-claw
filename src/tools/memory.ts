@@ -15,7 +15,6 @@ export interface MemoryMeta {
   tags: string[];
   createdAt: string;
   updatedAt: string;
-  sensitive: boolean;
   disabled: boolean;
   scope: string;
   source: MemorySource;
@@ -35,7 +34,6 @@ export interface MemoryRecord {
   content: string;
   tags: string[];
   scope: string;
-  sensitive: boolean;
   disabled: boolean;
   source: MemorySource;
   createdAt: string;
@@ -97,7 +95,6 @@ function parseFrontmatter(raw: string, name: string): { meta: MemoryMeta; conten
     tags: [],
     createdAt: fallbackTime,
     updatedAt: fallbackTime,
-    sensitive: false,
     disabled: false,
     scope: "global",
     source: "tool",
@@ -132,9 +129,6 @@ function parseFrontmatter(raw: string, name: string): { meta: MemoryMeta; conten
       case "updatedAt":
         meta.updatedAt = value || fallbackTime;
         break;
-      case "sensitive":
-        meta.sensitive = parseBoolValue(value);
-        break;
       case "disabled":
         meta.disabled = parseBoolValue(value);
         break;
@@ -160,7 +154,6 @@ function formatFrontmatter(meta: MemoryMeta): string {
     `tags: [${meta.tags.join(", ")}]`,
     `createdAt: ${meta.createdAt}`,
     `updatedAt: ${meta.updatedAt}`,
-    `sensitive: ${meta.sensitive}`,
     `disabled: ${meta.disabled}`,
     `scope: ${meta.scope}`,
     `source: ${meta.source}`,
@@ -227,7 +220,6 @@ function toMemoryRecord(entry: MemoryEntry): MemoryRecord {
     content: entry.content,
     tags: entry.meta.tags,
     scope: entry.meta.scope,
-    sensitive: entry.meta.sensitive,
     disabled: entry.meta.disabled,
     source: entry.meta.source,
     createdAt: entry.meta.createdAt,
@@ -235,17 +227,15 @@ function toMemoryRecord(entry: MemoryEntry): MemoryRecord {
   };
 }
 
-export function listMemoryRecords(workspacePath: string, options: { includeSensitive?: boolean; includeDisabled?: boolean } = {}): MemoryRecord[] {
+export function listMemoryRecords(workspacePath: string, options: { includeDisabled?: boolean } = {}): MemoryRecord[] {
   return listMemoryEntries(workspacePath)
-    .filter((entry) => options.includeSensitive || !entry.meta.sensitive)
     .filter((entry) => options.includeDisabled || !entry.meta.disabled)
     .map(toMemoryRecord);
 }
 
-export function getMemoryRecord(workspacePath: string, name: string, includeSensitive = true): MemoryRecord | null {
+export function getMemoryRecord(workspacePath: string, name: string): MemoryRecord | null {
   const entry = readMemoryEntry(workspacePath, name);
   if (!entry) return null;
-  if (entry.meta.sensitive && !includeSensitive) return null;
   return toMemoryRecord(entry);
 }
 
@@ -256,7 +246,6 @@ export function updateMemoryRecord(
     content?: string;
     summary?: string;
     tags?: string[];
-    sensitive?: boolean;
     disabled?: boolean;
     scope?: string;
     source?: MemorySource;
@@ -271,7 +260,6 @@ export function updateMemoryRecord(
   existing.content = content;
   existing.meta.updatedAt = nowIso();
   if (Array.isArray(updates.tags)) existing.meta.tags = updates.tags.map(String).filter(Boolean);
-  if (typeof updates.sensitive === "boolean") existing.meta.sensitive = updates.sensitive;
   if (typeof updates.disabled === "boolean") existing.meta.disabled = updates.disabled;
   if (typeof updates.scope === "string") existing.meta.scope = updates.scope.trim() || "global";
   if (updates.source) existing.meta.source = updates.source;
@@ -289,7 +277,7 @@ export function saveMemory(
   workspacePath: string,
   name: string,
   content: string,
-  options: { tags?: string[]; sensitive?: boolean; disabled?: boolean; scope?: string; summary?: string; source?: MemorySource } = {},
+  options: { tags?: string[]; disabled?: boolean; scope?: string; summary?: string; source?: MemorySource } = {},
 ): string {
   const filePath = memoryPath(workspacePath, name);
   const existing = readMemoryEntry(workspacePath, name);
@@ -299,7 +287,6 @@ export function saveMemory(
     tags: options.tags ?? existing?.meta.tags ?? [],
     createdAt: existing?.meta.createdAt ?? timestamp,
     updatedAt: timestamp,
-    sensitive: options.sensitive ?? existing?.meta.sensitive ?? false,
     disabled: options.disabled ?? existing?.meta.disabled ?? false,
     scope: options.scope ?? existing?.meta.scope ?? "global",
     source: options.source ?? existing?.meta.source ?? "tool",
@@ -323,12 +310,9 @@ export function appendMemory(workspacePath: string, name: string, content: strin
   return `已追加记忆: ${name}`;
 }
 
-export function readMemory(workspacePath: string, name: string, includeSensitive = false): string {
+export function readMemory(workspacePath: string, name: string): string {
   const entry = readMemoryEntry(workspacePath, name);
   if (!entry) return JSON.stringify({ error: `记忆不存在: ${name}` });
-  if (entry.meta.sensitive && !includeSensitive) {
-    return JSON.stringify({ error: `记忆 ${name} 标记为敏感，请显式设置 include_sensitive=true 后读取` });
-  }
   return JSON.stringify({
     name: entry.name,
     meta: entry.meta,
@@ -343,10 +327,9 @@ export function deleteMemory(workspacePath: string, name: string): string {
   return `已删除记忆: ${name}`;
 }
 
-export function listMemories(workspacePath: string, includeSensitive = false): string {
+export function listMemories(workspacePath: string): string {
   const entries = listMemoryEntries(workspacePath)
-    .filter((entry) => !entry.meta.disabled)
-    .filter((entry) => includeSensitive || !entry.meta.sensitive);
+    .filter((entry) => !entry.meta.disabled);
 
   if (entries.length === 0) return "暂无记忆";
 
@@ -356,53 +339,6 @@ export function listMemories(workspacePath: string, includeSensitive = false): s
       tags: entry.meta.tags,
       scope: entry.meta.scope,
       updatedAt: entry.meta.updatedAt,
-      sensitive: entry.meta.sensitive,
-      disabled: entry.meta.disabled,
-      source: entry.meta.source,
-      summary: buildSummary(entry.content, entry.meta.summary),
-    })),
-  });
-}
-
-function scoreMemory(entry: MemoryEntry, query: string): number {
-  const normalizedQuery = query.toLowerCase().trim();
-  if (!normalizedQuery) return 0;
-  const haystack = [
-    entry.name,
-    entry.meta.tags.join(" "),
-    entry.meta.scope,
-    entry.meta.summary ?? "",
-    entry.content,
-  ].join("\n").toLowerCase();
-  const terms = normalizedQuery.split(/\s+/).filter(Boolean);
-  let score = haystack.includes(normalizedQuery) ? 5 : 0;
-  for (const term of terms) {
-    if (haystack.includes(term)) score += 1;
-  }
-  return score;
-}
-
-export function searchMemories(workspacePath: string, query: string, limit = 5, includeSensitive = false): string {
-  const entries = listMemoryEntries(workspacePath)
-    .filter((entry) => !entry.meta.disabled)
-    .filter((entry) => includeSensitive || !entry.meta.sensitive)
-    .map((entry) => ({ entry, score: scoreMemory(entry, query) }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, Math.max(1, Math.min(limit, 20)));
-
-  if (entries.length === 0) {
-    return JSON.stringify({ results: [] });
-  }
-
-  return JSON.stringify({
-    results: entries.map(({ entry, score }) => ({
-      name: entry.name,
-      score,
-      tags: entry.meta.tags,
-      scope: entry.meta.scope,
-      updatedAt: entry.meta.updatedAt,
-      sensitive: entry.meta.sensitive,
       disabled: entry.meta.disabled,
       source: entry.meta.source,
       summary: buildSummary(entry.content, entry.meta.summary),
@@ -411,16 +347,20 @@ export function searchMemories(workspacePath: string, query: string, limit = 5, 
 }
 
 export function loadAllMemories(workspacePath: string): string {
-  const entries = listMemoryEntries(workspacePath).filter((entry) => !entry.meta.sensitive && !entry.meta.disabled);
+  const entries = listMemoryEntries(workspacePath).filter((entry) => !entry.meta.disabled);
   if (entries.length === 0) return "";
 
   const parts = entries.map((entry) => {
     const tags = entry.meta.tags.length > 0 ? ` tags=${entry.meta.tags.join(",")}` : "";
-    return `- ${entry.name}${tags} scope=${entry.meta.scope} updated=${entry.meta.updatedAt}: ${buildSummary(entry.content, entry.meta.summary)}`;
+    return [
+      `## ${entry.name}`,
+      `meta:${tags} scope=${entry.meta.scope} updated=${entry.meta.updatedAt}`,
+      entry.content.trim(),
+    ].join("\n");
   });
 
   return [
-    "以下是非敏感长期记忆的摘要索引。需要完整内容时，请使用 memory_read 或 memory_search 工具。",
+    "以下是已启用的长期记忆全文。",
     ...parts,
   ].join("\n");
 }
@@ -446,10 +386,6 @@ export function createMemorySaveTool(workspacePath: string, getConfig: () => Con
           type: "array",
           description: "可选标签，用于后续检索",
           items: { type: "string" },
-        },
-        sensitive: {
-          type: "boolean",
-          description: "是否为敏感记忆；敏感记忆不会自动注入 system prompt，默认 false",
         },
         scope: {
           type: "string",
@@ -478,9 +414,9 @@ export function createMemorySaveTool(workspacePath: string, getConfig: () => Con
       const content = String(args.content ?? "");
       return saveMemory(workspacePath, name, content, {
         tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
-        sensitive: typeof args.sensitive === "boolean" ? args.sensitive : undefined,
         scope: typeof args.scope === "string" ? args.scope : undefined,
         summary: typeof args.summary === "string" ? args.summary : undefined,
+        source: args.source === "auto" ? "auto" : undefined,
       });
     },
   };
@@ -526,18 +462,13 @@ export function createMemoryAppendTool(workspacePath: string, getConfig: () => C
 export function createMemoryListTool(workspacePath: string): Tool {
   return {
     name: "memory_list",
-    description: "列出长期记忆摘要索引。当用户询问你记住了什么、或者你想回顾已有记忆时使用。默认不包含敏感记忆",
+    description: "列出长期记忆摘要索引。当用户询问你记住了什么、或者你想回顾已有记忆时使用",
     inputSchema: {
       type: "object" as const,
-      properties: {
-        include_sensitive: {
-          type: "boolean",
-          description: "是否包含敏感记忆索引，默认 false",
-        },
-      },
+      properties: {},
     },
-    execute: async (args: Record<string, unknown>): Promise<string> => {
-      return listMemories(workspacePath, args.include_sensitive === true);
+    execute: async (): Promise<string> => {
+      return listMemories(workspacePath);
     },
   };
 }
@@ -553,50 +484,11 @@ export function createMemoryReadTool(workspacePath: string): Tool {
           type: "string",
           description: "记忆名称，不含 .md",
         },
-        include_sensitive: {
-          type: "boolean",
-          description: "是否允许读取敏感记忆，默认 false",
-        },
       },
       required: ["name"],
     },
     execute: async (args: Record<string, unknown>): Promise<string> => {
-      return readMemory(workspacePath, String(args.name ?? ""), args.include_sensitive === true);
-    },
-  };
-}
-
-export function createMemorySearchTool(workspacePath: string): Tool {
-  return {
-    name: "memory_search",
-    description: "按关键词搜索长期记忆摘要。需要从记忆中查找相关信息但不知道具体记忆名称时使用。默认不搜索敏感记忆",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        query: {
-          type: "string",
-          description: "搜索关键词",
-        },
-        limit: {
-          type: "number",
-          description: "返回数量，默认 5，最大 20",
-          minimum: 1,
-          maximum: 20,
-        },
-        include_sensitive: {
-          type: "boolean",
-          description: "是否搜索敏感记忆，默认 false",
-        },
-      },
-      required: ["query"],
-    },
-    execute: async (args: Record<string, unknown>): Promise<string> => {
-      return searchMemories(
-        workspacePath,
-        String(args.query ?? ""),
-        Number(args.limit ?? 5),
-        args.include_sensitive === true,
-      );
+      return readMemory(workspacePath, String(args.name ?? ""));
     },
   };
 }

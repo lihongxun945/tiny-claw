@@ -8,7 +8,10 @@ import { destroyPlugins, loadPlugins } from "../../src/plugins/loader.js";
 import type { ModelClient } from "../../src/model/index.js";
 import type { PluginContext, PluginHooks } from "../../src/plugins/types.js";
 import type { AgentSession } from "../../src/agent.js";
+import type { Message } from "../../src/types.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
+import { getMemoryRecord, saveMemory } from "../../src/tools/memory.js";
+import { loadSessionState, saveSessionState } from "../../src/session-state.js";
 
 function modelClient(): ModelClient {
   return {
@@ -145,6 +148,110 @@ describe("PluginManager hook lifecycle", () => {
     })).resolves.toEqual({
       text: "未知命令：/missing\n发送 /help 查看可用命令。",
     });
+  });
+
+  it("runs /dream through the auto-memory analyzer", async () => {
+    const dreamWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "auto", turnThreshold: 2 },
+      sessionSummary: { enabled: false },
+    });
+    const dreamManager = new PluginManager(dreamWorkspace);
+    const chatCalls: Message[][] = [];
+    const chatTools: string[][] = [];
+    const client: ModelClient = {
+      complete: async () => "unused",
+      chat: async (messages, _onDelta, tools) => {
+        chatCalls.push([...messages]);
+        chatTools.push((tools ?? []).map((tool) => tool.name).sort());
+        if (chatCalls.length === 1) {
+          return {
+            text: "",
+            toolCalls: [{
+              type: "tool_use",
+              id: "dream-save",
+              name: "memory_save",
+              input: {
+                name: "dream-memory",
+                summary: "梦境整理记忆",
+                content: "用户希望 /dream 可以立即触发长期记忆整理。",
+                tags: ["memory"],
+                scope: "project",
+              },
+            }],
+          };
+        }
+        return { text: "已整理 /dream 相关长期记忆。", toolCalls: [] };
+      },
+    };
+    const history = new MessageHistory();
+
+    try {
+      await dreamManager.loadCorePlugins();
+      saveSessionState(dreamWorkspace, {
+        sessionId: "dream-session",
+        summary: "",
+        pendingMessages: [],
+        turnsSinceSummary: 0,
+        autoMemory: {
+          pendingTurns: [{
+            user: "我需要 /dream 触发 auto-memory",
+            assistant: "最终回答：会增加 /dream 命令",
+            at: new Date(6).toISOString(),
+          }],
+          turnsSinceAnalysis: 1,
+        },
+      });
+      dreamManager.setRuntimeDeps(loadConfig(dreamWorkspace), client, history, "dream-session");
+
+      const result = await dreamManager.executeChatCommand("/dream", {
+        sessionId: "dream-session",
+        channel: "web",
+      });
+
+      expect(result?.text).toContain("已完成记忆整理");
+      expect(result?.text).toContain("- 保存/更新：1");
+      expect(getMemoryRecord(dreamWorkspace, "dream-memory")?.content).toBe("用户希望 /dream 可以立即触发长期记忆整理。");
+      expect(chatCalls).toHaveLength(2);
+      expect(String(chatCalls[0][0].content)).toContain("[user] 我需要 /dream 触发 auto-memory");
+      expect(String(chatCalls[0][0].content)).toContain("[assistant] 最终回答：会增加 /dream 命令");
+      expect(chatTools[0]).toEqual(["memory_delete", "memory_list", "memory_read", "memory_save"]);
+      expect(loadSessionState(dreamWorkspace, "dream-session").autoMemory.pendingTurns).toHaveLength(0);
+    } finally {
+      await dreamManager.destroy();
+      removeTempWorkspace(dreamWorkspace);
+    }
+  });
+
+  it("runs /dream even when there are no pending turns", async () => {
+    const dreamWorkspace = createTempWorkspace();
+    const dreamManager = new PluginManager(dreamWorkspace);
+    const chatCalls: Message[][] = [];
+    const client: ModelClient = {
+      complete: async () => "unused",
+      chat: async (messages) => {
+        chatCalls.push([...messages]);
+        return { text: "已有记忆无需更新。", toolCalls: [] };
+      },
+    };
+    try {
+      await dreamManager.loadCorePlugins();
+      saveMemory(dreamWorkspace, "existing-memory", "用户希望记忆整理可以手动触发。", { source: "manual" });
+      dreamManager.setRuntimeDeps(loadConfig(dreamWorkspace), client, new MessageHistory(), "empty-dream");
+
+      await expect(dreamManager.executeChatCommand("/dream", {
+        sessionId: "empty-dream",
+        channel: "web",
+      })).resolves.toEqual(expect.objectContaining({
+        text: expect.stringContaining("已完成记忆整理"),
+      }));
+      expect(chatCalls).toHaveLength(1);
+      const prompt = String(chatCalls[0][0].content);
+      expect(prompt).toContain("## existing-memory");
+      expect(prompt).toContain("本次没有新增对话");
+    } finally {
+      await dreamManager.destroy();
+      removeTempWorkspace(dreamWorkspace);
+    }
   });
 
   it("passes tool results through hooks and emits iteration and error hooks", async () => {

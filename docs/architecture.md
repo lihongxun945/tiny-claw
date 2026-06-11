@@ -86,9 +86,11 @@ workspace/
 ├── sub_agent_prompt.md # 可选：自定义 sub-agent 任务提示词模板
 ├── skills/            # 自定义技能（skills/<name>/SKILL.md）
 ├── memory/            # 跨会话长期记忆（Markdown + frontmatter）
-│   └── pending/       # 自动记忆候选，等待确认或后续处理
-├── history/           # 对话历史持久化，JSONL 格式，每日轮转
-│   └── 2026-05-19.jsonl
+├── sessions/          # 按会话持久化消息、会话摘要、auto-memory 增量状态
+│   └── <encoded-session-id>/
+│       ├── messages.jsonl
+│       ├── meta.json
+│       └── state.json
 └── logs/              # 执行日志，[时间] [级别] 消息，每日轮转
     └── 2026-05-19.log
 ```
@@ -161,7 +163,7 @@ workspace/
 ```json
 {
   "subAgent": {
-    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "memory_search", "skill_list", "skill_use"],
+    "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "skill_list", "skill_use"],
     "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "sub_agent_run"],
     "maxIterations": 3,
     "maxConcurrency": 3
@@ -212,7 +214,7 @@ workspace/
 
 ### autoMemory 配置
 
-`core-auto-memory` 插件在主会话最终回复后统计完整对话轮数，默认每 10 轮触发一次模型整理。它不会每轮额外调用模型；只有达到阈值时，才把这 10 轮增量对话、已有记忆摘要索引交给模型，生成长期记忆候选。
+`core-auto-memory` 插件在主会话最终回复后记录完整对话轮数，默认 workspace 内累计 10 轮后触发一次模型整理。它不会每轮额外调用模型；每轮最终问答会先按 session 持久化到 `workspace/sessions/<session>/state.json` 的 `autoMemory.pendingTurns`。达到阈值或用户执行 `/dream` 时，插件会聚合所有主会话的待整理增量，把已保存长期记忆全文、增量对话和配置的长度限制交给模型，并通过受限的 memory 工具调用链路整理长期记忆。
 
 ```json
 {
@@ -220,21 +222,21 @@ workspace/
     "enabled": true,
     "mode": "hybrid",
     "turnThreshold": 10,
-    "minConfidence": 0.75,
     "maxCandidates": 5,
-    "maxBatchChars": 8000
+    "maxBatchChars": 8000,
+    "maxMemoryChars": 20000
   }
 }
 ```
 
 - `enabled`：是否启用自动记忆；默认启用，设置为 `false` 可关闭
-- `mode`：`auto` 直接保存高置信非敏感候选；`hybrid` 保存高置信候选并将不确定候选写入 `memory/pending/`；`suggest` 只写 pending
-- `turnThreshold`：触发模型整理的完整对话轮数，默认 10
-- `minConfidence`：自动保存最低置信度，默认 0.75
-- `maxCandidates`：单次最多生成的记忆候选数量，默认 5
-- `maxBatchChars`：传给记忆整理模型的增量对话字符上限，默认 8000
+- `mode`：`auto` 向整理模型开放 `memory_save/memory_delete/memory_list/memory_read`；`hybrid` 只开放保存、读取和列表，删除只能在最终文本中建议；`suggest` 只开放读取和列表，不允许写入
+- `turnThreshold`：workspace 内触发模型整理的主会话完整对话轮数，默认 10
+- `maxCandidates`：单次最多允许的 memory 工具调用次数，默认 5
+- `maxBatchChars`：传给记忆整理模型的总输入字符上限，默认 8000，会分配给已有记忆和增量对话
+- `maxMemoryChars`：单条记忆整理后的正文最大字符数，默认 20000
 
-自动记忆会跳过 `sub:` 开头的 sub-agent 会话，也会跳过模型中间工具调用，只在最终回复时计入一轮。模型输出 `save / pending / ignore` 三类决策；敏感内容不会自动保存为正式长期记忆。
+自动记忆会跳过 `sub:` 开头的 sub-agent 会话，也会跳过模型中间工具调用，只在最终回复时计入一轮。传给整理模型的增量对话只包含用户问题和最终回答，不包含工具调用、工具结果、调试日志或代码 diff 细节；同时会注入未禁用长期记忆全文，帮助模型判断新增、同名重写压缩或删除。整理成功后会清空本次涉及会话的 `pendingTurns` 并记录 `lastAnalyzedAt/lastResult`；整理失败或触发权限审批时保留 pending，后续继续增量整理。即使没有新增对话，`/dream` 也会运行一次 workspace 级整理，让模型检查已有长期记忆是否需要压缩、合并或删除。整理模型不输出自定义 JSON actions，而是直接调用已有 `memory_*` 工具；`memory_save` 执行前会按 `maxMemoryChars` 对正文做硬限制；密钥、token、密码等凭证类内容应被模型忽略。
 
 ## 核心数据流
 
@@ -396,7 +398,7 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 
 ### 聊天命令注册：插件化
 
-聊天命令通过 `PluginContext.registerChatCommand()` 注册，由 `PluginManager` 在用户输入进入 Agent Loop 前统一解析和分发。命令只在用户显式输入 `/command` 时触发，不暴露给模型调用。核心插件 `plugins/core/chat-commands.ts` 注册 `/help`、`/new`、`/context`、`/approvals`、`/approve` 和 `/reject`；workspace 插件也可以注册自己的命令。
+聊天命令通过 `PluginContext.registerChatCommand()` 注册，由 `PluginManager` 在用户输入进入 Agent Loop 前统一解析和分发。命令只在用户显式输入 `/command` 时触发，不暴露给模型调用。核心插件 `plugins/core/chat-commands.ts` 注册 `/help`、`/new`、`/context`、`/dream`、`/approvals`、`/approve` 和 `/reject`；workspace 插件也可以注册自己的命令。`/dream` 会复用 `core-auto-memory` 的整理入口，立即触发 workspace 级长期记忆整理。
 
 Web `/chat` 和飞书消息入口都会先调用 `executeChatCommand()`，命中命令时直接返回结果，不写入模型上下文。未以 `/` 开头的普通消息才进入 Agent Loop。
 
@@ -425,9 +427,8 @@ web_search 工具支持四个搜索引擎，通过 `config.json` 的 `searchProv
 | file_edit | 精确替换文本 | old_text 必须唯一匹配，防止误替换 |
 | memory_save | 保存/覆盖长期记忆，写入 frontmatter 元数据 | name 防路径遍历（仅允许字母、数字、_-） |
 | memory_append | 追加内容到已有记忆 | 同上 |
-| memory_list | 列出长期记忆摘要索引 | 默认过滤敏感记忆 |
-| memory_read | 读取指定记忆完整内容 | 敏感记忆需显式 include_sensitive |
-| memory_search | 按关键词搜索记忆摘要 | 默认过滤敏感记忆 |
+| memory_list | 列出长期记忆摘要索引 | 用于快速查看记忆列表 |
+| memory_read | 读取指定记忆完整内容 | 已知记忆名称时使用 |
 | memory_delete | 删除指定记忆 | 仅在用户明确要求删除时使用 |
 | skill_use | 激活一个技能 | 技能不存在时返回可用列表 |
 | skill_list | 列出所有可用技能 | 无参数 |
@@ -485,7 +486,7 @@ runSubAgents() 并发创建临时 AgentSession
 
 **权限模型：**
 
-Sub-agent 默认只允许 `web_search`、`web_fetch`、`file_read`、`memory_list`、`memory_read`、`memory_search`、`skill_list`、`skill_use`。`bash`、`file_write`、`file_edit`、`memory_save`、`memory_append`、`memory_delete` 默认不可用。`sub_agent_run` 始终不可用，防止递归创建。
+Sub-agent 默认只允许 `web_search`、`web_fetch`、`file_read`、`memory_list`、`memory_read`、`skill_list`、`skill_use`。`bash`、`file_write`、`file_edit`、`memory_save`、`memory_append`、`memory_delete` 默认不可用。`sub_agent_run` 始终不可用，防止递归创建。
 
 权限通过 `config.json` 的 `subAgent.allowedTools` 和 `subAgent.disabledTools` 配置。实现上，sub-agent 创建专用 `PluginManager`，并在工具注册阶段过滤工具定义，因此被禁用的工具不会进入模型可见工具列表。
 
@@ -505,11 +506,10 @@ Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prom
 记忆系统采用工具驱动的方式，让模型自主决定何时保存和读取信息：
 
 - **写路径**：`memory_save` 和 `memory_append` 两个工具，写入 `workspace/memory/*.md`
-- **读路径**：启动时 `loadAllMemories()` 只读取非敏感记忆摘要索引，注入到 system prompt 的"长期记忆"章节；需要全文时使用 `memory_read` 或 `memory_search`
+- **读路径**：启动时 `loadAllMemories()` 读取未禁用记忆全文，注入到 system prompt 的"长期记忆"章节；`memory_list` 仍返回摘要索引，避免工具结果过大
 - **文件格式**：带 frontmatter 的 Markdown，名称语义化（如 `user-preferences.md`、`project-context.md`）
 - **安全**：文件名仅允许字母、数字、下划线、连字符，防止路径遍历
-- **敏感过滤**：`sensitive: true` 的记忆默认不进入 prompt，也不会被 `memory_list` / `memory_search` 返回，除非显式传入 `include_sensitive`
-- **启停控制**：`disabled: true` 的记忆保留在磁盘中，但不进入 system prompt，也不参与默认 `memory_list` / `memory_search`
+- **启停控制**：`disabled: true` 的记忆保留在磁盘中，但不进入 system prompt，也不参与默认 `memory_list`
 - **来源标记**：`source` 记录记忆来源，取值为 `auto`、`tool`、`manual`，便于 Web UI 审计和人工整理
 
 对比"自动提取"方案，工具驱动的优势是实现简单、透明可控，适合早期阶段。后续可在此基础上叠加自动提取（Phase 2）。
@@ -763,7 +763,7 @@ npm run test:all      # 类型检查 + coverage + WebUI build + E2E
 当前覆盖范围：
 
 - `MessageHistory`：历史窗口、当前轮保护、压缩替换
-- 长期记忆：CRUD、敏感过滤、禁用过滤、旧文件兼容、工具包装器
+- 长期记忆：CRUD、禁用过滤、旧文件兼容、工具包装器
 - 配置加载：默认值、搜索配置、必填字段校验
 - 搜索 provider：Ollama、DuckDuckGo、Brave、SearXNG、动态 key 刷新
 - `ToolRegistry`：注册、定义导出、同名覆盖

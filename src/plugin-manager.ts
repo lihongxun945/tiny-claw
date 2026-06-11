@@ -244,12 +244,15 @@ export class PluginManager {
       channel: options.channel,
       actor: options.actor,
       config: deps?.config ?? this.config,
+      client: deps?.client ?? this.client,
       history: deps?.history ?? this.history,
       commandName: parsed.name,
       args: parsed.args,
       rawArgs: parsed.rawArgs,
       rawInput: input,
       getChatCommands: () => this.getChatCommands(),
+      getToolDefinitions: () => this.getToolDefinitions(),
+      getTool: (name) => this.getTool(name),
     });
   }
 
@@ -283,6 +286,7 @@ export class PluginManager {
       client,
       history,
       getToolDefinitions: () => this.getToolDefinitions(),
+      getTool: (name) => this.getTool(name),
     };
   }
 

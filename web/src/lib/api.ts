@@ -74,7 +74,7 @@ async function parseJSON<T>(res: Response): Promise<T> {
 }
 
 export async function fetchMemories(): Promise<MemoryRecord[]> {
-  const res = await fetch("/memory?include_sensitive=true&include_disabled=true");
+  const res = await fetch("/memory?include_disabled=true");
   const data = await parseJSON<{ memories: MemoryRecord[] }>(res);
   return data.memories ?? [];
 }

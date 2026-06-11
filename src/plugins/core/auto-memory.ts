@@ -1,73 +1,76 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import type { Plugin, HookContext } from "../types.js";
-import type { ChatResponse, ContentBlock, Message, ToolUseBlock } from "../../types.js";
-import { listMemories, saveMemory } from "../../tools/memory.js";
+import type { ChatResponse, Config, Message, Tool, ToolDefinition, ToolResultBlock, ToolUseBlock, AgentActor } from "../../types.js";
+import type { ModelClient } from "../../model/index.js";
+import { loadSessionState, saveSessionState, type PersistedSessionState } from "../../session-state.js";
+import { listSessionMetas } from "../../session-store.js";
+import { loadAllMemories } from "../../tools/memory.js";
 
 const DEFAULT_TURN_THRESHOLD = 10;
-const DEFAULT_MIN_CONFIDENCE = 0.75;
 const DEFAULT_MAX_CANDIDATES = 5;
 const DEFAULT_MAX_BATCH_CHARS = 8000;
+const DEFAULT_MAX_MEMORY_CHARS = 20000;
 
-const AUTO_MEMORY_PROMPT = `你是 tiny-claw 的长期记忆整理器。请从一段增量对话中判断是否有值得长期记住的信息。
+const AUTO_MEMORY_PROMPT = `你是 tiny-claw 的长期记忆整理器。你的任务不是总结对话，而是维护长期有效的 memory 文件。
 
-只保留对未来对话持续有用、稳定、可复用的信息，例如：
-- 用户长期偏好、身份信息、工作方式、输出风格要求。
-- 当前项目的稳定约定、技术栈、架构决策、重要路径。
-- 用户明确要求以后遵守的规则。
+你必须通过可用的 memory 工具完成整理，不要输出自定义 JSON actions。
+
+输入包含：
+1. 当前已保存的长期记忆全文。
+2. 最近若干轮增量对话。每轮只包含用户问题和最终回答，不包含工具调用过程、工具结果或调试日志。
+
+你需要判断是否要新增、更新、压缩、删除或忽略长期记忆。
+
+只处理对未来对话持续有用、稳定、可复用的信息：
+- 用户明确要求“记住”“以后都按这个”。
+- 用户长期偏好、称呼方式、输出风格、工作方式。
+- 当前项目稳定约定、架构决策、技术栈、重要路径。
+- 已确认的流程规范、长期规则、反复出现的需求。
 
 不要保存：
-- 一次性任务过程、临时 debug 信息、普通问答内容、工具日志、代码 diff 细节。
-- API key、token、cookie、密码、AppSecret 等凭证。此类内容必须标记 sensitive=true，decision=pending 或 ignore。
-- 不确定、含糊、只在当前任务有效的信息。
+- 一次性任务过程、临时 debug 信息、普通问答内容。
+- 工具调用过程、工具结果、搜索片段、代码 diff 细节。
+- 没被用户确认的推测。
+- 只在当前会话或当前任务有效的信息。
+- API key、token、cookie、密码、AppSecret 等凭证。
 
-请只输出 JSON，不要输出解释。格式：
-{
-  "memories": [
-    {
-      "decision": "save" | "pending" | "ignore",
-      "name": "kebab-case-or-snake_case",
-      "summary": "不超过80字的中文摘要",
-      "content": "Markdown 格式的记忆正文",
-      "tags": ["preference", "project"],
-      "scope": "global" | "project" | "user",
-      "sensitive": false,
-      "confidence": 0.0,
-      "reason": "简短原因"
-    }
-  ]
-}
+工具使用规则：
+- 输入已经包含已保存记忆全文；只有需要核对最新磁盘状态时，才调用 memory_list 或 memory_read。
+- 新主题使用 memory_save 创建记忆。
+- 同主题已有记忆时，优先用 memory_save 覆盖同名记忆。content 必须是整理后的完整正文，包含仍然有效的旧信息和新信息，并移除冲突或过期内容。不要 append 式堆叠碎片。
+- 已有记忆过长、重复、碎片化或包含过期内容时，即使没有新增事实，也可以调用 memory_save 用同名记忆写回压缩整理后的完整正文。
+- 只有用户明确要求忘记/删除、明确表示某条规则已废弃、新规则明确替代旧规则且旧规则不应继续使用、或已有 memory 被确认错误时，才可以调用 memory_delete。
+- 如果没有值得长期保存或更新的内容，不要调用写入工具，直接说明无需更新。
 
-decision 规则：
-- save：高置信、非敏感、长期稳定，适合直接写入长期记忆。
-- pending：有价值但需要用户确认，或包含敏感/不确定信息。
-- ignore：不应保存。
+置信度规则：
+- 用户明确表达且几乎无歧义，才写入或删除。
+- 强相关但仍有不确定时，只在最终文本中提出建议，不要写入或删除。
+- 不要因为“暂时没提到”就删除。
 
-最多返回指定数量的候选；没有候选时返回 {"memories": []}。`;
+内容要求：
+- memory_save 的 content 使用 Markdown，必须完整、可独立理解，不要只写摘要。
+- 每条记忆正文不得超过系统给出的最大字符数；如果过长，必须整理、合并、去重和压缩到限制内。
+- 最终文本用一句话概括本次整理结果。`;
 
-interface PendingTurn {
+export interface AutoMemoryTurn {
   user: string;
   assistant: string;
   at: string;
+  sessionId?: string;
 }
 
-interface SessionMemoryState {
-  turnsSinceAnalysis: number;
-  pendingTurns: PendingTurn[];
-  analyzing: boolean;
+export interface AutoMemoryAnalysisResult {
+  saved: number;
+  updated: number;
+  deleted: number;
+  pending: number;
+  toolCalls: number;
+  analyzedTurns: number;
+  finalText: string;
+  requiresConfirmation: boolean;
+  affectedSessions?: string[];
 }
 
-interface MemoryCandidate {
-  decision?: string;
-  name?: string;
-  summary?: string;
-  content?: string;
-  tags?: unknown;
-  scope?: string;
-  sensitive?: boolean;
-  confidence?: number;
-  reason?: string;
-}
+type AutoMemoryMode = "auto" | "hybrid" | "suggest";
 
 function isEnabled(ctx: HookContext): boolean {
   return ctx.config.autoMemory?.enabled !== false;
@@ -83,123 +86,45 @@ function getTurnThreshold(ctx: HookContext): number {
   return Math.min(Math.floor(value), 100);
 }
 
-function getMinConfidence(ctx: HookContext): number {
-  const value = ctx.config.autoMemory?.minConfidence;
-  if (!Number.isFinite(value)) return DEFAULT_MIN_CONFIDENCE;
-  return Math.max(0, Math.min(value ?? DEFAULT_MIN_CONFIDENCE, 1));
-}
-
-function getMaxCandidates(ctx: HookContext): number {
-  const value = ctx.config.autoMemory?.maxCandidates;
+function getMaxCandidates(config: Config): number {
+  const value = config.autoMemory?.maxCandidates;
   if (!Number.isFinite(value) || !value || value < 1) return DEFAULT_MAX_CANDIDATES;
   return Math.min(Math.floor(value), 20);
 }
 
-function getMaxBatchChars(ctx: HookContext): number {
-  const value = ctx.config.autoMemory?.maxBatchChars;
+function getMaxBatchChars(config: Config): number {
+  const value = config.autoMemory?.maxBatchChars;
   if (!Number.isFinite(value) || !value || value < 1000) return DEFAULT_MAX_BATCH_CHARS;
   return Math.min(Math.floor(value), 30000);
 }
 
-function getMode(ctx: HookContext): "auto" | "hybrid" | "suggest" {
-  const mode = ctx.config.autoMemory?.mode;
+function getMaxMemoryChars(config: Config): number {
+  const value = config.autoMemory?.maxMemoryChars;
+  if (!Number.isFinite(value) || !value || value < 1000) return DEFAULT_MAX_MEMORY_CHARS;
+  return Math.floor(value);
+}
+
+function getMode(config: Config): AutoMemoryMode {
+  const mode = config.autoMemory?.mode;
   if (mode === "auto" || mode === "suggest" || mode === "hybrid") return mode;
   return "hybrid";
 }
 
-function blockToText(block: ContentBlock): string {
-  if (block.type === "text") return block.text;
-  if (block.type === "tool_use") return `[工具调用 ${block.name}]: ${JSON.stringify(block.input)}`;
-  if (block.type === "tool_result") return `[工具结果]: ${block.content.slice(0, 1000)}`;
-  return "";
-}
-
 function messageToText(message: Message): string {
   if (typeof message.content === "string") return message.content;
-  return message.content.map(blockToText).filter(Boolean).join("\n");
-}
-
-function responseToText(response: ChatResponse): string {
-  const parts: string[] = [];
-  if (response.text.trim()) parts.push(response.text.trim());
-  for (const toolCall of response.toolCalls) {
-    parts.push(`[工具调用 ${toolCall.name}]: ${JSON.stringify(toolCall.input)}`);
-  }
-  return parts.join("\n");
-}
-
-function assistantMessageFromResponse(response: ChatResponse): Message {
-  const content: Array<ToolUseBlock | { type: "text"; text: string }> = [];
-  if (response.text.trim()) content.push({ type: "text", text: response.text });
-  content.push(...response.toolCalls);
-  return { role: "assistant", content };
+  return message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
 }
 
 function truncateText(text: string, maxChars: number): string {
   return text.length > maxChars ? `${text.slice(0, maxChars)}\n...[已截断]` : text;
 }
 
-function extractJsonObject(text: string): unknown {
-  const trimmed = text.trim();
-  if (!trimmed) throw new Error("empty model response");
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    const start = trimmed.indexOf("{");
-    const end = trimmed.lastIndexOf("}");
-    if (start === -1 || end === -1 || end <= start) throw new Error("no JSON object found");
-    return JSON.parse(trimmed.slice(start, end + 1));
-  }
-}
-
-function normalizeName(value: string | undefined, fallback: string): string {
-  const raw = (value || fallback).trim().toLowerCase();
-  const normalized = raw
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^[-_]+|[-_]+$/g, "");
-  return normalized || fallback;
-}
-
-function normalizeTags(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => String(item).trim())
-    .filter(Boolean)
-    .slice(0, 10);
-}
-
-function pendingDir(workspacePath: string): string {
-  const dir = resolve(workspacePath, "memory", "pending");
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-function writePendingMemory(workspacePath: string, candidate: MemoryCandidate, sessionId: string): void {
-  const timestamp = new Date().toISOString();
-  const baseName = normalizeName(candidate.name, `memory-${Date.now()}`);
-  const fileName = `${Date.now()}-${baseName}.json`;
-  const filePath = resolve(pendingDir(workspacePath), fileName);
-  writeFileSync(
-    filePath,
-    JSON.stringify({ ...candidate, sessionId, createdAt: timestamp }, null, 2),
-    "utf-8",
-  );
-}
-
-function shouldSaveCandidate(ctx: HookContext, candidate: MemoryCandidate): boolean {
-  if (getMode(ctx) === "suggest") return false;
-  if (candidate.decision !== "save") return false;
-  if (candidate.sensitive === true) return false;
-  if ((candidate.confidence ?? 0) < getMinConfidence(ctx)) return false;
-  return Boolean(candidate.name?.trim() && candidate.content?.trim());
-}
-
-function shouldKeepPending(ctx: HookContext, candidate: MemoryCandidate): boolean {
-  if (!candidate.name?.trim() && !candidate.content?.trim() && !candidate.summary?.trim()) return false;
-  if (candidate.decision === "ignore") return false;
-  if (getMode(ctx) === "auto" && candidate.sensitive !== true) return false;
-  return true;
+function clampMemoryContent(content: string, maxChars: number): string {
+  const trimmed = content.trim();
+  return trimmed.length > maxChars ? trimmed.slice(0, maxChars).trimEnd() : trimmed;
 }
 
 function findCurrentUserInput(ctx: HookContext): string {
@@ -212,110 +137,387 @@ function findCurrentUserInput(ctx: HookContext): string {
   return recentUser ? messageToText(recentUser) : "";
 }
 
-function parseCandidates(raw: string, maxCandidates: number): MemoryCandidate[] {
-  const parsed = extractJsonObject(raw) as { memories?: unknown };
-  if (!Array.isArray(parsed.memories)) return [];
-  return parsed.memories
-    .filter((item): item is MemoryCandidate => typeof item === "object" && item !== null)
-    .slice(0, maxCandidates);
+function saveAutoMemoryState(workspacePath: string, state: PersistedSessionState): PersistedSessionState {
+  return saveSessionState(workspacePath, {
+    sessionId: state.sessionId,
+    summary: state.summary,
+    pendingMessages: state.pendingMessages,
+    turnsSinceSummary: state.turnsSinceSummary,
+    autoMemory: state.autoMemory,
+  });
 }
 
-function formatTurns(turns: PendingTurn[]): string {
-  return turns.map((turn, index) => [
-    `### Turn ${index + 1} (${turn.at})`,
-    `[user] ${turn.user}`,
-    `[assistant] ${turn.assistant}`,
+function appendPendingTurn(state: PersistedSessionState, turn: AutoMemoryTurn, maxPendingTurns: number): PersistedSessionState {
+  const pendingTurns = [...state.autoMemory.pendingTurns, turn].slice(-maxPendingTurns);
+  return {
+    ...state,
+    autoMemory: {
+      ...state.autoMemory,
+      pendingTurns,
+      turnsSinceAnalysis: pendingTurns.length,
+    },
+  };
+}
+
+function markAutoMemoryAnalyzed(
+  state: PersistedSessionState,
+  result: AutoMemoryAnalysisResult,
+): PersistedSessionState {
+  const now = new Date().toISOString();
+  return {
+    ...state,
+    autoMemory: {
+      pendingTurns: [],
+      turnsSinceAnalysis: 0,
+      lastAnalyzedAt: now,
+      lastAnalyzedTurnAt: state.autoMemory.pendingTurns.at(-1)?.at,
+      lastResult: {
+        analyzedTurns: result.analyzedTurns,
+        toolCalls: result.toolCalls,
+        saved: result.saved,
+        deleted: result.deleted,
+        at: now,
+      },
+    },
+  };
+}
+
+function collectWorkspaceAutoMemoryTurns(workspacePath: string, includeSessionIds: string[] = []): {
+  turns: AutoMemoryTurn[];
+  states: PersistedSessionState[];
+} {
+  const sessionIds = new Set<string>(includeSessionIds);
+  for (const meta of listSessionMetas(workspacePath)) {
+    if (!isSubAgentSession(meta.id)) sessionIds.add(meta.id);
+  }
+
+  const states: PersistedSessionState[] = [];
+  const turns: AutoMemoryTurn[] = [];
+  for (const sessionId of sessionIds) {
+    if (isSubAgentSession(sessionId)) continue;
+    const state = loadSessionState(workspacePath, sessionId);
+    if (state.autoMemory.pendingTurns.length === 0) continue;
+    states.push(state);
+    for (const turn of state.autoMemory.pendingTurns) {
+      turns.push({ ...turn, sessionId });
+    }
+  }
+
+  turns.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  return { turns, states };
+}
+
+function countWorkspacePendingTurns(workspacePath: string, includeSessionIds: string[] = []): number {
+  return collectWorkspaceAutoMemoryTurns(workspacePath, includeSessionIds).turns.length;
+}
+
+function markWorkspaceAutoMemoryAnalyzed(
+  workspacePath: string,
+  states: PersistedSessionState[],
+  result: AutoMemoryAnalysisResult,
+): void {
+  for (const state of states) {
+    saveAutoMemoryState(workspacePath, markAutoMemoryAnalyzed(state, result));
+  }
+}
+
+function formatTurns(turns: AutoMemoryTurn[]): string {
+  if (turns.length === 0) {
+    return "本次没有新增对话，请只检查已有长期记忆是否需要压缩、合并、删除或保持不变。";
+  }
+
+  const groups = new Map<string, AutoMemoryTurn[]>();
+  for (const turn of turns) {
+    const sessionId = turn.sessionId ?? "unknown";
+    groups.set(sessionId, [...(groups.get(sessionId) ?? []), turn]);
+  }
+
+  return [...groups.entries()].map(([sessionId, sessionTurns]) => [
+    `### Session ${sessionId}`,
+    ...sessionTurns.map((turn, index) => [
+      `#### Turn ${index + 1} (${turn.at})`,
+      `[user] ${turn.user}`,
+      `[assistant] ${turn.assistant}`,
+    ].join("\n")),
   ].join("\n")).join("\n\n");
+}
+
+function allowedToolNames(mode: AutoMemoryMode): Set<string> {
+  if (mode === "auto") {
+    return new Set(["memory_list", "memory_read", "memory_save", "memory_delete"]);
+  }
+  if (mode === "hybrid") {
+    return new Set(["memory_list", "memory_read", "memory_save"]);
+  }
+  return new Set(["memory_list", "memory_read"]);
+}
+
+function filterToolDefinitions(definitions: ToolDefinition[], mode: AutoMemoryMode): ToolDefinition[] {
+  const allowed = allowedToolNames(mode);
+  return definitions.filter((definition) => allowed.has(definition.name));
+}
+
+function buildUserPrompt(workspacePath: string, config: Config, turns: AutoMemoryTurn[]): string {
+  const mode = getMode(config);
+  const modeRule = mode === "auto"
+    ? "auto：可以自动保存、更新和删除高确定性的长期记忆。"
+    : mode === "hybrid"
+      ? "hybrid：可以自动保存和更新；如果发现需要删除的记忆，只能在最终文本中提出建议，不要删除。"
+      : "suggest：只能读取记忆并在最终文本中提出建议，不要保存、更新或删除。";
+
+  const maxBatchChars = getMaxBatchChars(config);
+  const memoryBudget = Math.max(1000, Math.floor(maxBatchChars / 2));
+  const turnBudget = Math.max(1000, maxBatchChars - memoryBudget);
+  const memories = loadAllMemories(workspacePath).trim() || "暂无已保存长期记忆。";
+
+  return [
+    `当前模式：${modeRule}`,
+    `最多 memory 工具调用次数：${getMaxCandidates(config)}`,
+    `单条记忆正文最大字符数：${getMaxMemoryChars(config)}`,
+    `整理输入字符预算：已有记忆最多 ${memoryBudget} 字，增量对话最多 ${turnBudget} 字`,
+    "",
+    "当前已保存的长期记忆全文：",
+    truncateText(memories, memoryBudget),
+    "",
+    "本次需要整理的增量对话：",
+    truncateText(formatTurns(turns), turnBudget),
+  ].join("\n");
+}
+
+function responseToAssistantMessage(response: ChatResponse): Message {
+  const content = [
+    ...(response.text ? [{ type: "text" as const, text: response.text }] : []),
+    ...response.toolCalls,
+  ];
+  return {
+    role: "assistant",
+    content: content.length > 0 ? content : "",
+  };
+}
+
+function toolResultsToUserMessage(results: ToolResultBlock[]): Message {
+  return {
+    role: "user",
+    content: results,
+  };
+}
+
+function normalizeToolInput(toolCall: ToolUseBlock, config: Config): Record<string, unknown> {
+  if (toolCall.name !== "memory_save") return toolCall.input;
+  const input = { ...toolCall.input };
+  input.source = "auto";
+  if (typeof input.content === "string") {
+    input.content = clampMemoryContent(input.content, getMaxMemoryChars(config));
+  }
+  return input;
+}
+
+function isConfirmationResult(raw: string): boolean {
+  try {
+    const parsed = JSON.parse(raw) as { requiresConfirmation?: boolean };
+    return parsed.requiresConfirmation === true;
+  } catch {
+    return false;
+  }
+}
+
+async function executeMemoryTool(options: {
+  toolCall: ToolUseBlock;
+  tool: Tool;
+  config: Config;
+  sessionId: string;
+  actor?: AgentActor;
+}): Promise<string> {
+  const input = normalizeToolInput(options.toolCall, options.config);
+  return options.tool.execute(input, {
+    sessionId: options.sessionId,
+    actor: options.actor,
+  });
+}
+
+export async function runAutoMemoryAnalysis(options: {
+  workspacePath: string;
+  config: Config;
+  client: ModelClient;
+  sessionId: string;
+  turns: AutoMemoryTurn[];
+  getToolDefinitions: () => ToolDefinition[];
+  getTool: (name: string) => Tool | undefined;
+  actor?: AgentActor;
+}): Promise<AutoMemoryAnalysisResult> {
+  const turnsToAnalyze = options.turns.filter((turn) => turn.user.trim() && turn.assistant.trim());
+  const empty = {
+    saved: 0,
+    updated: 0,
+    deleted: 0,
+    pending: 0,
+    toolCalls: 0,
+    analyzedTurns: 0,
+    finalText: "",
+    requiresConfirmation: false,
+  };
+
+  const mode = getMode(options.config);
+  const allowedTools = allowedToolNames(mode);
+  const tools = filterToolDefinitions(options.getToolDefinitions(), mode);
+  if (tools.length === 0) {
+    return {
+      ...empty,
+      analyzedTurns: turnsToAnalyze.length,
+      finalText: "没有可用的 memory 工具，已跳过记忆整理。",
+    };
+  }
+
+  const messages: Message[] = [{ role: "user", content: buildUserPrompt(options.workspacePath, options.config, turnsToAnalyze) }];
+  const maxToolCalls = getMaxCandidates(options.config);
+  let toolCalls = 0;
+  let saved = 0;
+  let deleted = 0;
+  let finalText = "";
+
+  while (toolCalls < maxToolCalls) {
+    const response = await options.client.chat(messages, () => {}, tools, AUTO_MEMORY_PROMPT);
+    finalText = response.text.trim();
+    if (response.toolCalls.length === 0) break;
+
+    messages.push(responseToAssistantMessage(response));
+    const results: ToolResultBlock[] = [];
+    for (const toolCall of response.toolCalls) {
+      if (toolCalls >= maxToolCalls) break;
+      toolCalls += 1;
+
+      const tool = allowedTools.has(toolCall.name) ? options.getTool(toolCall.name) : undefined;
+      let result: string;
+      let executed = false;
+      if (!tool) {
+        result = `工具不可用或不允许自动记忆调用：${toolCall.name}`;
+      } else {
+        result = await executeMemoryTool({
+          toolCall,
+          tool,
+          config: options.config,
+          sessionId: options.sessionId,
+          actor: options.actor,
+        });
+        executed = true;
+      }
+
+      results.push({
+        type: "tool_result",
+        tool_use_id: toolCall.id,
+        content: result,
+      });
+
+      if (isConfirmationResult(result)) {
+        return {
+          saved,
+          updated: 0,
+          deleted,
+          pending: 0,
+          toolCalls,
+          analyzedTurns: turnsToAnalyze.length,
+          finalText: "记忆整理触发了权限审批，等待用户批准后才能继续。",
+          requiresConfirmation: true,
+        };
+      }
+      if (executed && toolCall.name === "memory_save") saved += 1;
+      if (executed && toolCall.name === "memory_delete") deleted += 1;
+    }
+
+    messages.push(toolResultsToUserMessage(results));
+  }
+
+  return {
+    saved,
+    updated: 0,
+    deleted,
+    pending: 0,
+    toolCalls,
+    analyzedTurns: turnsToAnalyze.length,
+    finalText,
+    requiresConfirmation: false,
+  };
+}
+
+export async function runWorkspaceAutoMemoryAnalysis(options: {
+  workspacePath: string;
+  config: Config;
+  client: ModelClient;
+  triggerSessionId: string;
+  getToolDefinitions: () => ToolDefinition[];
+  getTool: (name: string) => Tool | undefined;
+  actor?: AgentActor;
+}): Promise<AutoMemoryAnalysisResult> {
+  const { turns, states } = collectWorkspaceAutoMemoryTurns(options.workspacePath, [options.triggerSessionId]);
+  const result = await runAutoMemoryAnalysis({
+    workspacePath: options.workspacePath,
+    config: options.config,
+    client: options.client,
+    sessionId: options.triggerSessionId,
+    turns,
+    getToolDefinitions: options.getToolDefinitions,
+    getTool: options.getTool,
+    actor: options.actor,
+  });
+
+  if (!result.requiresConfirmation) {
+    markWorkspaceAutoMemoryAnalyzed(options.workspacePath, states, result);
+  }
+
+  return {
+    ...result,
+    affectedSessions: states.map((state) => state.sessionId),
+  };
 }
 
 export const coreAutoMemoryPlugin: Plugin = {
   name: "core-auto-memory",
   async init(ctx) {
-    const states = new Map<string, SessionMemoryState>();
+    let analyzing = false;
 
     ctx.registerHooks({
       onChatResponse: async (hookCtx: HookContext, response: ChatResponse) => {
         if (!isEnabled(hookCtx) || isSubAgentSession(hookCtx.sessionId)) return response;
         if (response.toolCalls.length > 0) return response;
+        const assistant = response.text.trim();
+        if (!assistant) return response;
 
-        const state = states.get(hookCtx.sessionId) ?? {
-          turnsSinceAnalysis: 0,
-          pendingTurns: [],
-          analyzing: false,
-        };
-
-        state.turnsSinceAnalysis += 1;
-        state.pendingTurns.push({
+        const sessionState = appendPendingTurn(loadSessionState(hookCtx.config.workspacePath, hookCtx.sessionId), {
           user: findCurrentUserInput(hookCtx),
-          assistant: messageToText(assistantMessageFromResponse(response)) || responseToText(response),
+          assistant,
           at: new Date().toISOString(),
-        });
+        }, getTurnThreshold(hookCtx) * 2);
 
-        states.set(hookCtx.sessionId, state);
+        saveAutoMemoryState(hookCtx.config.workspacePath, sessionState);
 
-        if (state.analyzing || state.turnsSinceAnalysis < getTurnThreshold(hookCtx)) {
+        const workspacePendingTurns = countWorkspacePendingTurns(hookCtx.config.workspacePath, [hookCtx.sessionId]);
+        if (analyzing || workspacePendingTurns < getTurnThreshold(hookCtx)) {
           return response;
         }
 
-        state.analyzing = true;
-        const turnsToAnalyze = [...state.pendingTurns];
-        state.pendingTurns = [];
-        state.turnsSinceAnalysis = 0;
-        states.set(hookCtx.sessionId, state);
+        analyzing = true;
 
         try {
-          const existingMemories = listMemories(hookCtx.config.workspacePath, false);
-          const prompt = `${AUTO_MEMORY_PROMPT}
+          const result = await runWorkspaceAutoMemoryAnalysis({
+            workspacePath: hookCtx.config.workspacePath,
+            config: hookCtx.config,
+            client: hookCtx.client,
+            triggerSessionId: hookCtx.sessionId,
+            getToolDefinitions: hookCtx.getToolDefinitions,
+            getTool: hookCtx.getTool,
+          });
 
-最多候选数量：${getMaxCandidates(hookCtx)}
-最低自动保存置信度：${getMinConfidence(hookCtx)}
-当前模式：${getMode(hookCtx)}
-
-已有非敏感长期记忆索引：
-${existingMemories}
-
-本次需要整理的增量对话：
-${truncateText(formatTurns(turnsToAnalyze), getMaxBatchChars(hookCtx))}`;
-
-          const raw = await hookCtx.client.complete(
-            [{ role: "user", content: prompt }],
-            "你是长期记忆整理器。只输出严格 JSON。",
-          );
-          const candidates = parseCandidates(raw, getMaxCandidates(hookCtx));
-
-          let saved = 0;
-          let pending = 0;
-          for (const candidate of candidates) {
-            if (shouldSaveCandidate(hookCtx, candidate)) {
-              const name = normalizeName(candidate.name, `auto-memory-${Date.now()}-${saved + pending}`);
-              saveMemory(hookCtx.config.workspacePath, name, candidate.content!, {
-                tags: normalizeTags(candidate.tags),
-                sensitive: false,
-                scope: candidate.scope || "global",
-                summary: candidate.summary,
-                source: "auto",
-              });
-              saved += 1;
-            } else if (shouldKeepPending(hookCtx, candidate)) {
-              writePendingMemory(hookCtx.config.workspacePath, candidate, hookCtx.sessionId);
-              pending += 1;
-            }
-          }
-
-          if (saved > 0 || pending > 0) {
-            ctx.log("INFO", `自动记忆整理完成: saved=${saved}, pending=${pending}`, hookCtx.sessionId);
+          if (result.toolCalls > 0 || result.requiresConfirmation) {
+            ctx.log("INFO", `自动记忆整理完成: toolCalls=${result.toolCalls}, savedOrUpdated=${result.saved}, deleted=${result.deleted}, requiresConfirmation=${result.requiresConfirmation}`, hookCtx.sessionId);
           }
         } catch (err) {
-          state.pendingTurns = [...turnsToAnalyze, ...state.pendingTurns].slice(-getTurnThreshold(hookCtx) * 2);
-          state.turnsSinceAnalysis = Math.min(state.pendingTurns.length, getTurnThreshold(hookCtx) - 1);
           ctx.log(
             "WARN",
             `自动记忆整理失败: ${err instanceof Error ? err.message : String(err)}`,
             hookCtx.sessionId,
           );
         } finally {
-          state.analyzing = false;
-          states.set(hookCtx.sessionId, state);
+          analyzing = false;
         }
 
         return response;

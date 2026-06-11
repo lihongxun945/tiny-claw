@@ -10,7 +10,6 @@ import {
   createMemoryAppendTool,
   createMemoryListTool,
   createMemoryReadTool,
-  createMemorySearchTool,
   createMemoryDeleteTool,
 } from "../../tools/memory.js";
 import { createSkillUseTool, createSkillListTool } from "../../tools/skill.js";
@@ -58,7 +57,6 @@ export const coreToolsPlugin: Plugin = {
       createMemoryAppendTool(ctx.workspacePath, getConfig),
       createMemoryListTool(ctx.workspacePath),
       createMemoryReadTool(ctx.workspacePath),
-      createMemorySearchTool(ctx.workspacePath),
       createMemoryDeleteTool(ctx.workspacePath, getConfig),
       createSkillUseTool(ctx.workspacePath, getConfig),
       createSkillListTool(ctx.workspacePath),

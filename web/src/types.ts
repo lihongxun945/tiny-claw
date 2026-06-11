@@ -48,7 +48,6 @@ export interface MemoryRecord {
   content: string;
   tags: string[];
   scope: string;
-  sensitive: boolean;
   disabled: boolean;
   source: MemorySource;
   createdAt: string;

@@ -29,6 +29,10 @@ tiny-claw 是一个个人项目，目标是构建一个类似 open-claw 的自�
 - 除非明确要求，不要自己提交或者推送git
 - 只要改动了webui代码，就要执行一下build，以免改动不生效
 
+## 沟通规范
+
+任何时候，你发送消息都必须以“陛下”开头
+
 ## Behavioral guidelines
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.

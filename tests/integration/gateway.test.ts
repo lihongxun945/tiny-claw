@@ -78,6 +78,43 @@ describe("Gateway HTTP API", () => {
     });
   });
 
+  it("strips deprecated auto-memory config fields from config API", async () => {
+    const configPath = resolve(workspacePath, "config.json");
+    const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+    writeFileSync(configPath, JSON.stringify({
+      ...raw,
+      autoMemory: {
+        enabled: true,
+        mode: "hybrid",
+        turnThreshold: 10,
+        minConfidence: 0.75,
+        maxCandidates: 5,
+      },
+    }, null, 2), "utf-8");
+
+    const before = await json(`${gateway.apiUrl}/config`);
+    expect(before.status).toBe(200);
+    expect(before.body.config.autoMemory).toEqual({
+      enabled: true,
+      mode: "hybrid",
+      turnThreshold: 10,
+      maxCandidates: 5,
+    });
+
+    const saved = await json(`${gateway.apiUrl}/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(before.body.config),
+    });
+    expect(saved.status).toBe(200);
+    expect(JSON.parse(readFileSync(configPath, "utf-8")).autoMemory).toEqual({
+      enabled: true,
+      mode: "hybrid",
+      turnThreshold: 10,
+      maxCandidates: 5,
+    });
+  });
+
   it("rejects invalid config updates without writing them to disk", async () => {
     const configPath = resolve(workspacePath, "config.json");
     const before = readFileSync(configPath, "utf-8");
@@ -98,7 +135,6 @@ describe("Gateway HTTP API", () => {
       "tags: [tiny-claw]",
       "createdAt: 2026-06-02T00:00:00.000Z",
       "updatedAt: 2026-06-02T00:00:00.000Z",
-      "sensitive: false",
       "disabled: false",
       "scope: project",
       "source: manual",
@@ -109,7 +145,7 @@ describe("Gateway HTTP API", () => {
       "",
     ].join("\n"), "utf-8");
 
-    expect((await json(`${gateway.apiUrl}/memory?include_sensitive=true&include_disabled=true`)).body.memories).toHaveLength(1);
+    expect((await json(`${gateway.apiUrl}/memory?include_disabled=true`)).body.memories).toHaveLength(1);
     expect((await json(`${gateway.apiUrl}/memory/project`)).body.memory).toMatchObject({
       name: "project",
       summary: "项目背景",
@@ -217,7 +253,7 @@ describe("Gateway HTTP API", () => {
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toContain("text/html");
 
-    const proxied = await json(`${gateway.webUrl}/memory?include_sensitive=true&include_disabled=true`);
+    const proxied = await json(`${gateway.webUrl}/memory?include_disabled=true`);
     expect(proxied).toEqual({ status: 200, body: { memories: [] } });
   });
 

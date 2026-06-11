@@ -59,6 +59,28 @@ describe("loadConfig", () => {
     });
   });
 
+  it("drops deprecated auto-memory fields when loading config", () => {
+    const workspacePath = createTempWorkspace({
+      autoMemory: {
+        enabled: true,
+        mode: "hybrid",
+        turnThreshold: 10,
+        minConfidence: 0.75,
+        maxCandidates: 5,
+      },
+    });
+    workspaces.push(workspacePath);
+
+    expect(loadConfig(workspacePath).autoMemory).toEqual({
+      enabled: true,
+      mode: "hybrid",
+      turnThreshold: 10,
+      maxCandidates: 5,
+      maxBatchChars: undefined,
+      maxMemoryChars: undefined,
+    });
+  });
+
   it.each([
     [{ apiKey: "key", model: "model" }, "配置缺少 apiUrl"],
     [{ apiUrl: "url", model: "model" }, "配置缺少 apiKey"],
@@ -83,7 +105,7 @@ describe("loadConfig", () => {
     [{ security: { tools: { bash: { mode: "unknown" } } } }, "配置字段 security.tools.bash.mode 不受支持"],
     [{ security: { gateway: { host: "0.0.0.0" } } }, "Gateway 暴露到非回环地址时必须配置 security.gateway.token"],
     [{ subAgent: { maxConcurrency: 9 } }, "配置字段 subAgent.maxConcurrency 超出允许范围"],
-    [{ autoMemory: { minConfidence: 2 } }, "配置字段 autoMemory.minConfidence 超出允许范围"],
+    [{ autoMemory: { maxMemoryChars: 999 } }, "配置字段 autoMemory.maxMemoryChars 超出允许范围"],
     [{ sessionSummary: { enabled: "yes" } }, "配置字段 sessionSummary.enabled 必须是布尔值"],
     [{ sessionSummary: { persistent: "yes" } }, "配置字段 sessionSummary.persistent 必须是布尔值"],
     [{ enabledPlugins: "feishu" }, "配置字段 enabledPlugins 必须是字符串数组"],

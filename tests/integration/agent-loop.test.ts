@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { AgentSession, type AgentEvent } from "../../src/agent.js";
 import type { ModelClient } from "../../src/model/index.js";
 import { PluginManager } from "../../src/plugin-manager.js";
 import { loadSessionState, saveSessionState } from "../../src/session-state.js";
 import { appendSessionMessage, sessionMessagesPath } from "../../src/session-store.js";
+import { getMemoryRecord, saveMemory } from "../../src/tools/memory.js";
 import type { ChatResponse, Message, Tool, ToolDefinition } from "../../src/types.js";
 import { FakeModelClient } from "../helpers/fake-model-client.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
@@ -47,6 +49,41 @@ class SummaryModelClient implements ModelClient {
     this.calls.push([...messages]);
     const response = this.chats.shift();
     if (!response) throw new Error("SummaryModelClient: 没有剩余响应");
+    if (response.text) onDelta(response.text);
+    return response;
+  }
+}
+
+class AutoMemoryModelClient implements ModelClient {
+  readonly calls: Message[][] = [];
+  readonly completeCalls: Message[][] = [];
+  readonly toolDefinitions: (ToolDefinition[] | undefined)[] = [];
+  readonly systemPrompts: (string | undefined)[] = [];
+
+  constructor(
+    private chats: ChatResponse[],
+    private completes: string[] = [],
+  ) {}
+
+  async complete(messages: Message[]): Promise<string> {
+    this.completeCalls.push([...messages]);
+    const response = this.completes.shift();
+    if (response === undefined) throw new Error("AutoMemoryModelClient: 没有剩余 complete 响应");
+    return response;
+  }
+
+  async chat(
+    messages: Message[],
+    onDelta: (text: string) => void,
+    _tools?: ToolDefinition[],
+    _systemPrompt?: string,
+    _signal?: AbortSignal,
+  ): Promise<ChatResponse> {
+    this.calls.push([...messages]);
+    this.toolDefinitions.push(_tools);
+    this.systemPrompts.push(_systemPrompt);
+    const response = this.chats.shift();
+    if (!response) throw new Error("AutoMemoryModelClient: 没有剩余 chat 响应");
     if (response.text) onDelta(response.text);
     return response;
   }
@@ -129,6 +166,413 @@ describe("AgentSession loop", () => {
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "call-1", content: "echo:value" }],
     }));
+  });
+
+  it("auto-memory analyzes only user questions and final answers", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "auto", turnThreshold: 1, maxMemoryChars: 1000 },
+      sessionSummary: { enabled: false },
+    });
+    const autoManager = new PluginManager(autoWorkspace);
+    try {
+      await autoManager.loadCorePlugins();
+      registerTool(autoManager, {
+        name: "echo",
+        description: "echo",
+        inputSchema: { type: "object", properties: {} },
+        execute: async () => "工具过程结果",
+      });
+      const client = new AutoMemoryModelClient([
+        { text: "", toolCalls: [{ type: "tool_use", id: "call-1", name: "echo", input: { text: "value" } }] },
+        { text: "最终回答：长期结论", toolCalls: [] },
+        { text: "无需更新长期记忆。", toolCalls: [] },
+      ]);
+      const session = new AgentSession("auto-memory-input", autoWorkspace, autoManager, {}, client);
+
+      expect(await collect(session.chat("用户原始问题"))).toEqual([
+        { type: "tool_call", name: "echo", input: { text: "value" } },
+        { type: "tool_result", name: "echo", result: "工具过程结果" },
+        { type: "text_delta", text: "最终回答：长期结论" },
+        { type: "done", text: "最终回答：长期结论" },
+      ]);
+
+      expect(client.completeCalls).toHaveLength(0);
+      expect(client.systemPrompts[2]).toContain("你的任务不是总结对话，而是维护长期有效的 memory 文件");
+      expect(client.systemPrompts[2]).toContain("同主题已有记忆时");
+      expect(client.systemPrompts[2]).toContain("不要 append 式堆叠碎片");
+      expect(client.systemPrompts[2]).toContain("已有记忆过长、重复、碎片化");
+      expect(client.systemPrompts[2]).toContain("不要因为“暂时没提到”就删除");
+      const prompt = String(client.calls[2][0].content);
+      expect(prompt).toContain("单条记忆正文最大字符数：1000");
+      expect(prompt).toContain("当前已保存的长期记忆全文：");
+      expect(prompt).toContain("暂无已保存长期记忆。");
+      expect(prompt).toContain("[user] 用户原始问题");
+      expect(prompt).toContain("[assistant] 最终回答：长期结论");
+      expect(prompt).not.toContain("工具过程结果");
+      expect(prompt).not.toContain("tool_use");
+      expect(prompt).not.toContain("[工具调用");
+      expect(client.toolDefinitions[2]?.map((tool) => tool.name).sort()).toEqual([
+        "memory_delete",
+        "memory_list",
+        "memory_read",
+        "memory_save",
+      ]);
+    } finally {
+      await autoManager.destroy();
+      removeTempWorkspace(autoWorkspace);
+    }
+  });
+
+  it("persists auto-memory pending turns across plugin manager restarts", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "auto", turnThreshold: 2 },
+      sessionSummary: { enabled: false },
+    });
+    const firstManager = new PluginManager(autoWorkspace);
+    const secondManager = new PluginManager(autoWorkspace);
+    try {
+      await firstManager.loadCorePlugins();
+      const firstClient = new AutoMemoryModelClient([
+        { text: "第一轮最终回答", toolCalls: [] },
+      ]);
+      const firstSession = new AgentSession("auto-memory-persistent", autoWorkspace, firstManager, {}, firstClient);
+
+      await collect(firstSession.chat("第一轮用户问题"));
+
+      expect(loadSessionState(autoWorkspace, "auto-memory-persistent").autoMemory).toMatchObject({
+        turnsSinceAnalysis: 1,
+        pendingTurns: [{ user: "第一轮用户问题", assistant: "第一轮最终回答" }],
+      });
+
+      await firstManager.destroy();
+
+      await secondManager.loadCorePlugins();
+      const secondClient = new AutoMemoryModelClient([
+        { text: "第二轮最终回答", toolCalls: [] },
+        { text: "无需更新长期记忆。", toolCalls: [] },
+      ]);
+      const secondSession = new AgentSession("auto-memory-persistent", autoWorkspace, secondManager, {}, secondClient);
+
+      await collect(secondSession.chat("第二轮用户问题"));
+
+      const prompt = String(secondClient.calls[1][0].content);
+      expect(prompt).toContain("[user] 第一轮用户问题");
+      expect(prompt).toContain("[assistant] 第一轮最终回答");
+      expect(prompt).toContain("[user] 第二轮用户问题");
+      expect(prompt).toContain("[assistant] 第二轮最终回答");
+      expect(loadSessionState(autoWorkspace, "auto-memory-persistent").autoMemory).toMatchObject({
+        turnsSinceAnalysis: 0,
+        pendingTurns: [],
+        lastResult: { analyzedTurns: 2 },
+      });
+    } finally {
+      await firstManager.destroy();
+      await secondManager.destroy();
+      removeTempWorkspace(autoWorkspace);
+    }
+  });
+
+  it("triggers auto-memory from pending turns across all workspace sessions", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "auto", turnThreshold: 3 },
+      sessionSummary: { enabled: false },
+    });
+    const autoManager = new PluginManager(autoWorkspace);
+    try {
+      await autoManager.loadCorePlugins();
+      appendSessionMessage(autoWorkspace, "session-a", { role: "user", content: "会话 A", _timestamp: 1 });
+      appendSessionMessage(autoWorkspace, "session-b", { role: "user", content: "会话 B", _timestamp: 2 });
+      saveSessionState(autoWorkspace, {
+        sessionId: "session-a",
+        summary: "",
+        pendingMessages: [],
+        turnsSinceSummary: 0,
+        autoMemory: {
+          pendingTurns: [{
+            user: "会话 A 的长期偏好",
+            assistant: "最终回答 A",
+            at: new Date(1).toISOString(),
+          }],
+          turnsSinceAnalysis: 1,
+        },
+      });
+      saveSessionState(autoWorkspace, {
+        sessionId: "session-b",
+        summary: "",
+        pendingMessages: [],
+        turnsSinceSummary: 0,
+        autoMemory: {
+          pendingTurns: [{
+            user: "会话 B 的项目规则",
+            assistant: "最终回答 B",
+            at: new Date(2).toISOString(),
+          }],
+          turnsSinceAnalysis: 1,
+        },
+      });
+
+      const client = new AutoMemoryModelClient([
+        { text: "会话 C 最终回答", toolCalls: [] },
+        { text: "已整理整个工作区的长期记忆。", toolCalls: [] },
+      ]);
+      const session = new AgentSession("session-c", autoWorkspace, autoManager, {}, client);
+
+      await collect(session.chat("会话 C 的新增信息"));
+
+      const prompt = String(client.calls[1][0].content);
+      expect(prompt).toContain("### Session session-a");
+      expect(prompt).toContain("[user] 会话 A 的长期偏好");
+      expect(prompt).toContain("### Session session-b");
+      expect(prompt).toContain("[user] 会话 B 的项目规则");
+      expect(prompt).toContain("### Session session-c");
+      expect(prompt).toContain("[user] 会话 C 的新增信息");
+      expect(loadSessionState(autoWorkspace, "session-a").autoMemory.pendingTurns).toHaveLength(0);
+      expect(loadSessionState(autoWorkspace, "session-b").autoMemory.pendingTurns).toHaveLength(0);
+      expect(loadSessionState(autoWorkspace, "session-c").autoMemory.pendingTurns).toHaveLength(0);
+    } finally {
+      await autoManager.destroy();
+      removeTempWorkspace(autoWorkspace);
+    }
+  });
+
+  it("keeps persisted auto-memory pending turns when analysis fails", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "auto", turnThreshold: 1 },
+      sessionSummary: { enabled: false },
+    });
+    const autoManager = new PluginManager(autoWorkspace);
+    try {
+      await autoManager.loadCorePlugins();
+      const client = new AutoMemoryModelClient([
+        { text: "最终回答", toolCalls: [] },
+      ]);
+      const session = new AgentSession("auto-memory-failure", autoWorkspace, autoManager, {}, client);
+
+      await collect(session.chat("用户问题"));
+
+      expect(loadSessionState(autoWorkspace, "auto-memory-failure").autoMemory).toMatchObject({
+        turnsSinceAnalysis: 1,
+        pendingTurns: [{ user: "用户问题", assistant: "最终回答" }],
+      });
+    } finally {
+      await autoManager.destroy();
+      removeTempWorkspace(autoWorkspace);
+    }
+  });
+
+  it("auto-memory clamps saved memory content to configured length before tool execution", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "hybrid", turnThreshold: 1, maxMemoryChars: 1000 },
+      sessionSummary: { enabled: false },
+    });
+    const autoManager = new PluginManager(autoWorkspace);
+    try {
+      await autoManager.loadCorePlugins();
+      const longSaved = "A".repeat(1500);
+      const client = new AutoMemoryModelClient([
+        { text: "我会整理这些记忆", toolCalls: [] },
+        {
+          text: "",
+          toolCalls: [{
+            type: "tool_use",
+            id: "save-long",
+            name: "memory_save",
+            input: {
+              name: "long-saved",
+              summary: "长记忆",
+              content: longSaved,
+              tags: ["test"],
+              scope: "project",
+            },
+          }],
+        },
+        { text: "已保存长记忆。", toolCalls: [] },
+      ]);
+      const session = new AgentSession("auto-memory-clamp", autoWorkspace, autoManager, {}, client);
+
+      await collect(session.chat("请整理长记忆"));
+
+      expect(getMemoryRecord(autoWorkspace, "long-saved")?.content).toHaveLength(1000);
+    } finally {
+      await autoManager.destroy();
+      removeTempWorkspace(autoWorkspace);
+    }
+  });
+
+  it("auto-memory includes existing memories and can rewrite them with compressed content", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "auto", turnThreshold: 1, maxMemoryChars: 1000, maxBatchChars: 8000 },
+      sessionSummary: { enabled: false },
+    });
+    const autoManager = new PluginManager(autoWorkspace);
+    try {
+      await autoManager.loadCorePlugins();
+      saveMemory(autoWorkspace, "project-rule", [
+        "旧项目规则：",
+        "- README 要保持简洁。",
+        "- README 要保持简洁。",
+        "- 已废弃：每次回答都必须输出超长解释。",
+      ].join("\n"), { summary: "项目规则", source: "manual" });
+
+      const client = new AutoMemoryModelClient([
+        { text: "我会整理项目规则", toolCalls: [] },
+        {
+          text: "",
+          toolCalls: [{
+            type: "tool_use",
+            id: "compress-rule",
+            name: "memory_save",
+            input: {
+              name: "project-rule",
+              summary: "项目规则",
+              content: "项目规则：README 要保持简洁。",
+              tags: ["project"],
+              scope: "project",
+            },
+          }],
+        },
+        { text: "已压缩整理 project-rule。", toolCalls: [] },
+      ]);
+      const session = new AgentSession("auto-memory-compress-existing", autoWorkspace, autoManager, {}, client);
+
+      await collect(session.chat("刚才的 README 规则可以整理一下"));
+
+      const prompt = String(client.calls[1][0].content);
+      expect(prompt).toContain("## project-rule");
+      expect(prompt).toContain("旧项目规则");
+      expect(prompt).toContain("README 要保持简洁");
+      expect(prompt).toContain("本次需要整理的增量对话");
+      expect(getMemoryRecord(autoWorkspace, "project-rule")).toMatchObject({
+        content: "项目规则：README 要保持简洁。",
+        source: "auto",
+      });
+    } finally {
+      await autoManager.destroy();
+      removeTempWorkspace(autoWorkspace);
+    }
+  });
+
+  it("auto-memory saves and updates memory through tool calls", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "auto", turnThreshold: 1 },
+      sessionSummary: { enabled: false },
+    });
+    const autoManager = new PluginManager(autoWorkspace);
+    try {
+      await autoManager.loadCorePlugins();
+      saveMemory(autoWorkspace, "project-rule", "旧规则", { summary: "旧规则", source: "manual" });
+      const client = new AutoMemoryModelClient([
+        { text: "我会记住这些规则", toolCalls: [] },
+        {
+          text: "",
+          toolCalls: [
+            {
+              type: "tool_use",
+              id: "save-new",
+              name: "memory_save",
+              input: {
+                name: "user-preference",
+                summary: "用户偏好",
+                content: "用户偏好直接、简洁的回答。",
+                tags: ["preference"],
+                scope: "user",
+              },
+            },
+            {
+              type: "tool_use",
+              id: "save-existing",
+              name: "memory_save",
+              input: {
+                name: "project-rule",
+                summary: "项目规则",
+                content: "项目规则：README 必须保持简洁。",
+                tags: ["project"],
+                scope: "project",
+              },
+            },
+          ],
+        },
+        { text: "已保存并更新长期记忆。", toolCalls: [] },
+      ]);
+      const session = new AgentSession("auto-memory-save-update", autoWorkspace, autoManager, {}, client);
+
+      await collect(session.chat("请记住我的偏好，并更新项目规则"));
+
+      expect(getMemoryRecord(autoWorkspace, "user-preference")).toMatchObject({
+        content: "用户偏好直接、简洁的回答。",
+        summary: "用户偏好",
+        source: "auto",
+      });
+      expect(getMemoryRecord(autoWorkspace, "project-rule")).toMatchObject({
+        content: "项目规则：README 必须保持简洁。",
+        summary: "项目规则",
+        source: "auto",
+      });
+    } finally {
+      await autoManager.destroy();
+      removeTempWorkspace(autoWorkspace);
+    }
+  });
+
+  it("auto-memory deletes stale memories only when memory_delete is allowed", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "auto", turnThreshold: 1, maxCandidates: 1 },
+      sessionSummary: { enabled: false },
+    });
+    const autoManager = new PluginManager(autoWorkspace);
+    try {
+      await autoManager.loadCorePlugins();
+      saveMemory(autoWorkspace, "old-rule", "旧规则", { source: "manual" });
+      saveMemory(autoWorkspace, "other-rule", "另一个旧规则", { source: "manual" });
+      const client = new AutoMemoryModelClient([
+        { text: "旧规则已经废弃", toolCalls: [] },
+        {
+          text: "",
+          toolCalls: [
+            { type: "tool_use", id: "delete-old", name: "memory_delete", input: { name: "old-rule" } },
+            { type: "tool_use", id: "delete-other", name: "memory_delete", input: { name: "other-rule" } },
+          ],
+        },
+      ]);
+      const session = new AgentSession("auto-memory-delete", autoWorkspace, autoManager, {}, client);
+
+      await collect(session.chat("旧规则已经废弃"));
+
+      expect(getMemoryRecord(autoWorkspace, "old-rule")).toBeNull();
+      expect(getMemoryRecord(autoWorkspace, "other-rule")).not.toBeNull();
+    } finally {
+      await autoManager.destroy();
+      removeTempWorkspace(autoWorkspace);
+    }
+  });
+
+  it("does not expose memory_delete in hybrid mode", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "hybrid", turnThreshold: 1 },
+      sessionSummary: { enabled: false },
+    });
+    const autoManager = new PluginManager(autoWorkspace);
+    try {
+      await autoManager.loadCorePlugins();
+      saveMemory(autoWorkspace, "old-rule", "旧规则", { source: "manual" });
+      const client = new AutoMemoryModelClient([
+        { text: "旧规则可能已经废弃", toolCalls: [] },
+        { text: "建议人工确认是否删除 old-rule。", toolCalls: [] },
+      ]);
+      const session = new AgentSession("auto-memory-hybrid-delete", autoWorkspace, autoManager, {}, client);
+
+      await collect(session.chat("旧规则可能已经废弃"));
+
+      expect(getMemoryRecord(autoWorkspace, "old-rule")).not.toBeNull();
+      expect(client.toolDefinitions[1]?.map((tool) => tool.name).sort()).toEqual([
+        "memory_list",
+        "memory_read",
+        "memory_save",
+      ]);
+    } finally {
+      await autoManager.destroy();
+      removeTempWorkspace(autoWorkspace);
+    }
   });
 
   it("returns structured results for unknown tools and tool failures", async () => {

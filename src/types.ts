@@ -76,9 +76,9 @@ export interface AutoMemoryConfig {
   enabled?: boolean;
   mode?: "auto" | "hybrid" | "suggest";
   turnThreshold?: number;
-  minConfidence?: number;
   maxCandidates?: number;
   maxBatchChars?: number;
+  maxMemoryChars?: number;
 }
 
 export interface DebugConfig {

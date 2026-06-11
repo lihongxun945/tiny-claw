@@ -22,9 +22,9 @@
     "enabled": true,
     "mode": "hybrid",
     "turnThreshold": 10,
-    "minConfidence": 0.75,
     "maxCandidates": 5,
-    "maxBatchChars": 8000
+    "maxBatchChars": 8000,
+    "maxMemoryChars": 20000
   },
   "enabledPlugins": [
     "feishu"
