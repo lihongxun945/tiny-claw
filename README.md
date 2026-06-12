@@ -75,6 +75,7 @@ SearXNG 示例：
 推荐使用 Gateway + WebUI 模式进行本地使用和开发：
 
 ```bash
+npm run web:build
 npm run gateway -- --port 3000
 ```
 
@@ -85,6 +86,15 @@ http://localhost:3001
 ```
 
 启动后即可在 WebUI 中创建会话并与 Agent 对话。
+
+注意：`npm run gateway` 会以 daemon 模式启动 Gateway。daemon 模式只有在 `web/dist/index.html` 已存在时才会启动 WebUI 静态服务；首次启动、刚拉代码或清理过构建产物后，需要先执行 `npm run web:build`，再启动或重启 Gateway。否则可能只启动了 Gateway API，`http://localhost:3001` 会提示无法访问。
+
+前端开发时也可以单独启动 Vite dev server：
+
+```bash
+npm run gateway -- --port 3000
+npm run web:dev
+```
 
 ## 配置参考
 
