@@ -1,6 +1,8 @@
 .claude/settings.local.json
 node_modules/
 dist/
+desktop-dist/
+release/
 config.json
 workspace/config.json
 workspace/history/
@@ -16,3 +18,4 @@ __pycache__/
 coverage/
 playwright-report/
 test-results/
+.DS_Store

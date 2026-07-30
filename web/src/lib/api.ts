@@ -51,7 +51,7 @@ export async function fetchLog(date: string, tail = 200): Promise<{ date: string
 
 export async function fetchConfig(): Promise<Record<string, unknown>> {
   const res = await fetch("/config");
-  const data = await res.json();
+  const data = await parseJSON<{ config: Record<string, unknown> }>(res);
   return data.config ?? {};
 }
 

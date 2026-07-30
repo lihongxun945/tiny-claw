@@ -72,7 +72,17 @@ web/                    # Web UI（React + Vite）
 │   └── components/    # UI 组件
 ├── dist/              # 构建产物（Gateway 直接服务）
 └── package.json       # 前端独立依赖
+desktop/                # Electron macOS 桌面壳
+├── main.ts             # 应用生命周期、Gateway 子进程与 BrowserWindow
+├── workspace.ts        # 桌面 workspace 首次初始化
+└── tsconfig.json       # 桌面主进程独立编译配置
 ```
+
+## 桌面应用
+
+macOS 桌面版使用 Electron 承载现有 Web UI，不改变 Agent Loop 和插件边界。Electron 主进程启动独立 Gateway 子进程，通过本机随机端口加载 Web UI；窗口不直接开放 Node.js 能力。关闭应用时，主进程向 Gateway 发送 `SIGTERM`，等待其销毁插件并关闭 HTTP 服务。
+
+桌面版 workspace 默认位于 `~/Library/Application Support/tiny-claw/workspace`。首次启动由统一配置初始化器生成不含真实密钥的完整默认配置，应用升级和重新安装不会覆盖已有配置、会话、记忆、技能及插件。开发模式和 CLI/Gateway 模式仍使用原有 `./workspace` 或显式指定的目录。
 
 ## 工作目录结构
 
@@ -98,6 +108,8 @@ workspace/
 ### config.json
 
 仓库提供两个配置示例：`config.simple.example.json` 是推荐入门配置，`config.all.example.json` 是完整配置参考。实际运行时只读取 `workspace/config.json`。
+
+Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件不存在时生成完整默认配置，已存在时绝不覆盖。首次配置允许 `apiKey` 为空，以保证用户能够进入 WebUI 完成设置；AgentSession 在模型调用前检查空密钥并返回明确错误。配置 API 保存后会释放空闲会话，使模型与上下文配置在下一次消息时重新加载；插件启停、Gateway host/token 等启动期配置仍需重启服务。
 
 | 字段 | 说明 | 默认值 |
 |------|------|--------|

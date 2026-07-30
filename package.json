@@ -3,11 +3,12 @@
   "version": "0.1.0",
   "description": "一个自主规划、执行任务的 Agent",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "desktop-dist/main.js",
   "scripts": {
     "start": "tsx src/index.ts",
     "gateway": "tsx src/gateway.ts",
     "dev": "tsx src/index.ts",
+    "build": "tsc && node scripts/copy-runtime-assets.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -15,7 +16,10 @@
     "test:e2e": "playwright test",
     "test:all": "npm run typecheck && npm run test:coverage && npm run web:build && npm run test:e2e",
     "web:dev": "cd web && npm run dev",
-    "web:build": "cd web && npm install && npm run build"
+    "web:build": "cd web && npm install && npm run build",
+    "desktop:compile": "tsc -p desktop/tsconfig.json",
+    "desktop:build": "npm run web:build && npm run build && npm run desktop:compile",
+    "desktop:dist": "npm run desktop:build && electron-builder --mac dmg --arm64"
   },
   "author": "lihongxun",
   "license": "ISC",
@@ -23,12 +27,45 @@
     "@playwright/test": "^1.56.1",
     "@types/node": "^25.9.0",
     "@vitest/coverage-v8": "^4.1.8",
-    "tsx": "^4.22.2",
+    "electron": "^37.2.0",
+    "electron-builder": "25.1.8",
     "typescript": "^6.0.3",
     "vite": "^6.4.3",
     "vitest": "^4.1.8"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.65.0"
+    "@larksuiteoapi/node-sdk": "^1.65.0",
+    "tsx": "^4.22.2"
+  },
+  "build": {
+    "appId": "com.lihongxun.tiny-claw",
+    "productName": "tiny-claw",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop-dist/**/*",
+      "dist/**/*",
+      "web/dist/**/*",
+      "node_modules/**/*",
+      "config.simple.example.json",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "tiny-claw ${version}",
+      "artifactName": "tiny-claw-${version}-${arch}.${ext}"
+    }
   }
 }

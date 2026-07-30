@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadConfig, validateConfig } from "../../src/config.js";
+import { createDefaultConfig, ensureConfigFile, loadConfig, validateConfig } from "../../src/config.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
 describe("loadConfig", () => {
@@ -40,6 +40,32 @@ describe("loadConfig", () => {
   it.each(["config.simple.example.json", "config.all.example.json"])("keeps %s valid", (fileName) => {
     const raw = JSON.parse(readFileSync(resolve(process.cwd(), fileName), "utf-8"));
     expect(() => validateConfig(raw)).not.toThrow();
+  });
+
+  it("creates a complete first-run config without user credentials", () => {
+    const workspacePath = createTempWorkspace();
+    workspaces.push(workspacePath);
+    const configPath = resolve(workspacePath, "config.json");
+    rmSync(configPath);
+
+    ensureConfigFile(workspacePath);
+
+    const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+    expect(raw).toMatchObject({
+      apiUrl: "https://api.deepseek.com",
+      apiKey: "",
+      model: "deepseek-chat",
+      searchProvider: "duckduckgo",
+      enabledPlugins: [],
+      plugins: {},
+      security: { mode: "allow" },
+    });
+    expect(() => validateConfig(raw)).not.toThrow();
+  });
+
+  it("allows an empty API key while keeping the field required", () => {
+    expect(() => validateConfig(createDefaultConfig())).not.toThrow();
+    expect(() => validateConfig({ ...createDefaultConfig(), apiKey: undefined })).toThrow("配置字段 apiKey 必须是字符串");
   });
 
   it("loads provider-specific search configuration", () => {

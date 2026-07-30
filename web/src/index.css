@@ -683,6 +683,17 @@ html, body, #root {
   min-height: 0;
 }
 
+.config-intro {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.6;
+  margin-bottom: 22px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
 .config-group {
   margin-bottom: 24px;
 }
@@ -711,8 +722,18 @@ html, body, #root {
   color: var(--text-dim);
 }
 
+.config-field label small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.75;
+}
+
 .config-field input,
-.config-field select {
+.config-field select,
+.config-field textarea {
   flex: 1;
   background: var(--bg-input);
   border: 1px solid var(--border);
@@ -724,13 +745,29 @@ html, body, #root {
 }
 
 .config-field input:focus,
-.config-field select:focus {
+.config-field select:focus,
+.config-field textarea:focus {
   border-color: var(--accent);
   outline: none;
 }
 
-.config-field input:disabled {
-  opacity: 0.6;
+.config-field textarea {
+  resize: vertical;
+  min-height: 76px;
+  line-height: 1.5;
+  font-family: "SF Mono", "Fira Code", monospace;
+}
+
+.config-field-multiline {
+  align-items: flex-start;
+}
+
+.config-field .config-checkbox {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  accent-color: var(--accent);
 }
 
 .config-actions {
@@ -767,6 +804,10 @@ html, body, #root {
 .config-actions button:last-of-type:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.config-message.error {
+  color: #e74c3c;
 }
 
 .config-message {

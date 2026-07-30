@@ -1,4 +1,4 @@
-import { loadConfig } from "./config.js";
+import { ensureConfigFile, loadConfig } from "./config.js";
 import { createModelClient, type ModelClient } from "./model/index.js";
 import { MessageHistory } from "./history.js";
 import { PluginManager } from "./plugin-manager.js";
@@ -105,6 +105,7 @@ export class AgentSession {
     this.id = id;
     this.workspacePath = workspacePath;
     ensureWorkspace(workspacePath);
+    ensureConfigFile(workspacePath);
 
     this.config = { ...loadConfig(workspacePath), ...configOverrides };
     this.client = client ?? createModelClient(this.config);
@@ -119,6 +120,10 @@ export class AgentSession {
 
   /** 执行一轮对话，返回事件流 */
   async *chat(userInput: string, actor?: AgentActor): AsyncGenerator<AgentEvent> {
+    if (!this.config.apiKey.trim()) {
+      yield { type: "error", message: "尚未配置模型 API Key，请先在配置页面填写并保存。" };
+      return;
+    }
     if (this.pendingApprovals.size > 0) {
       yield { type: "error", message: "当前会话有待审批的工具调用。请先批准或拒绝最新审批，再继续发送新任务。" };
       return;

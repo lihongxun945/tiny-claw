@@ -1,0 +1,72 @@
+name: Release macOS DMG
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.10.0"
+          cache: npm
+
+      - name: Check release version
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "${GITHUB_REF_NAME}" != "v${package_version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json version v${package_version}" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix web ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+
+      - name: Run tests
+        run: |
+          npm run typecheck
+          npm test
+          npm run test:e2e
+
+      - name: Build macOS DMG
+        run: npm run desktop:dist
+
+      - name: Verify DMG and generate checksum
+        shell: bash
+        run: |
+          hdiutil verify release/tiny-claw-*.dmg
+          shasum -a 256 release/tiny-claw-*.dmg > release/SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            release/tiny-claw-*.dmg \
+            release/tiny-claw-*.dmg.blockmap \
+            release/SHA256SUMS.txt \
+            --verify-tag \
+            --generate-notes \
+            --title "tiny-claw ${GITHUB_REF_NAME}"

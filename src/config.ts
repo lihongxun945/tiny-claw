@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadIdentity } from "./workspace/workspace.js";
 import type { Config } from "./types.js";
@@ -14,6 +14,73 @@ const DEFAULTS: Partial<Config> = {
   maxAgentIterations: 20,
   searchProvider: "ollama",
 };
+
+export function createDefaultConfig(): Record<string, unknown> {
+  return {
+    apiUrl: "https://api.deepseek.com",
+    apiKey: "",
+    model: "deepseek-chat",
+    modelProvider: "openai-chat",
+    maxTokens: DEFAULTS.maxTokens,
+    maxContextTokens: DEFAULTS.maxContextTokens,
+    contextCompressionThreshold: DEFAULTS.contextCompressionThreshold,
+    contextCompressionMaxChars: DEFAULTS.contextCompressionMaxChars,
+    contextCompressionToolResultMaxChars: DEFAULTS.contextCompressionToolResultMaxChars,
+    toolResultInitialMaxChars: DEFAULTS.toolResultInitialMaxChars,
+    historyWindowSize: DEFAULTS.historyWindowSize,
+    maxAgentIterations: DEFAULTS.maxAgentIterations,
+    sessionSummary: {
+      enabled: true,
+      persistent: true,
+      turnThreshold: 5,
+      recentTurns: 3,
+      maxChars: 4000,
+    },
+    autoMemory: {
+      enabled: true,
+      mode: "hybrid",
+      turnThreshold: 10,
+      maxCandidates: 5,
+      maxBatchChars: 8000,
+      maxMemoryChars: 20000,
+    },
+    debug: {
+      enabled: false,
+      modelIO: false,
+      rawStreamEvents: false,
+    },
+    security: {
+      mode: "allow",
+      tools: {},
+      gateway: {
+        host: "127.0.0.1",
+        token: "",
+      },
+      auditTools: true,
+    },
+    searchProvider: "duckduckgo",
+    ollamaApiKey: "",
+    searxngUrl: "",
+    braveApiKey: "",
+    subAgent: {
+      allowedTools: ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "skill_list", "skill_use"],
+      disabledTools: ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "sub_agent_run"],
+      maxIterations: 3,
+      maxConcurrency: 3,
+    },
+    enabledPlugins: [],
+    externalPlugins: [],
+    plugins: {},
+  };
+}
+
+export function ensureConfigFile(workspacePath: string): string {
+  const configPath = resolve(workspacePath, "config.json");
+  if (!existsSync(configPath)) {
+    writeFileSync(configPath, `${JSON.stringify(createDefaultConfig(), null, 2)}\n`, "utf-8");
+  }
+  return configPath;
+}
 
 function assertString(value: unknown, key: string): asserts value is string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`配置字段 ${key} 必须是非空字符串`);
@@ -51,7 +118,7 @@ function assertOptionalStringArray(value: unknown, key: string): void {
 
 export function validateConfig(raw: Record<string, unknown>): void {
   assertString(raw.apiUrl, "apiUrl");
-  assertString(raw.apiKey, "apiKey");
+  if (typeof raw.apiKey !== "string") throw new Error("配置字段 apiKey 必须是字符串");
   assertString(raw.model, "model");
 
   const modelProvider = raw.modelProvider ?? "anthropic-messages";
@@ -161,7 +228,7 @@ export function loadConfig(workspacePath: string): Config {
   }
 
   if (!raw.apiUrl) throw new Error("配置缺少 apiUrl");
-  if (!raw.apiKey) throw new Error("配置缺少 apiKey");
+  if (raw.apiKey === undefined) throw new Error("配置缺少 apiKey");
   if (!raw.model) throw new Error("配置缺少 model");
   validateConfig(raw);
 

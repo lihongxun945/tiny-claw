@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig, validateConfig } from "./config.js";
+import { ensureConfigFile, loadConfig, validateConfig } from "./config.js";
 import { AgentSession, type AgentEvent } from "./agent.js";
 import { PluginManager } from "./plugin-manager.js";
 import { appendLog } from "./workspace/logger.js";
@@ -12,6 +12,7 @@ import { deleteMemory, getMemoryRecord, listMemoryRecords, setMemoryDisabled, up
 import { approveRequest, listApprovals, rejectRequest } from "./tools/approval.js";
 import { deleteStoredSession, listSessionMetas, readSessionMessages } from "./session-store.js";
 import type { RegisteredRoute, RouteContext } from "./plugins/types.js";
+import { ensureWorkspace } from "./workspace/workspace.js";
 
 const SESSION_TIMEOUT = 30 * 60 * 1000;
 
@@ -363,6 +364,8 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
   const webPort = parseWebPortArg() || port + 1;
 
   // 加载配置 + 初始化 PluginManager
+  ensureWorkspace(workspacePath);
+  ensureConfigFile(workspacePath);
   const config = loadConfig(workspacePath);
   const gatewayHost = parseHostArg() || config.security?.gateway?.host || "127.0.0.1";
   const gatewayToken = config.security?.gateway?.token;
@@ -725,6 +728,11 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         const merged = stripDeprecatedConfigFields({ ...existing, ...updates });
         validateConfig(merged);
         writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n", "utf-8");
+        for (const [sessionId, session] of sessions) {
+          if (session.isBusy()) continue;
+          sessions.delete(sessionId);
+          pm.clearRuntimeDeps(sessionId);
+        }
         sendJSON(res, 200, { config: maskConfigSecrets(merged) });
       } catch (err) {
         sendJSON(res, 400, { error: `更新配置失败: ${err instanceof Error ? err.message : String(err)}` });

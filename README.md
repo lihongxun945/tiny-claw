@@ -14,13 +14,16 @@ npm install
 
 ### 配置模型
 
-复制配置模板并修改：
+首次启动 Gateway 或桌面应用时，如果 workspace 中没有 `config.json`，tiny-claw 会自动生成一份完整的默认配置。可以直接在 WebUI 的“配置”页面填写 API Key、模型、搜索、权限、记忆、Sub-agent 和插件等全部设置。
+
+也可以在启动前手动复制配置模板：
 
 ```bash
 cp config.simple.example.json workspace/config.json
 ```
 
 推荐从 `config.simple.example.json` 开始；`config.all.example.json` 是完整配置参考。
+自动生成的配置会预设 DeepSeek API 地址、`deepseek-chat` 模型和可直接使用的 DuckDuckGo 关键词搜索；API Key、飞书密钥和付费搜索服务密钥等用户凭证保持为空。API Key 未配置时 Gateway 和 WebUI 仍可启动，但聊天会提示先完成模型配置。
 
 `workspace/config.json` 必填字段：
 
@@ -96,6 +99,71 @@ http://localhost:3001
 npm run gateway -- --port 3000
 npm run web:dev
 ```
+
+### 使用 macOS 客户端
+
+#### 下载与安装
+
+从 GitHub Releases 下载 `tiny-claw-<version>-arm64.dmg`，打开 DMG 后将 `tiny-claw.app` 拖入“应用程序”目录。当前客户端仅支持 Apple Silicon Mac。
+
+客户端目前未进行 Apple Developer ID 签名和公证。如果 macOS 阻止首次打开，请进入“系统设置 → 隐私与安全性”，找到 tiny-claw 的拦截提示并选择“仍要打开”。
+
+#### 首次配置
+
+客户端首次启动会自动创建完整的默认配置。打开左下角“配置”页面，至少完成以下设置：
+
+1. 填写模型服务的 API URL。
+2. 填写 API Key。
+3. 填写模型名称。
+4. 选择模型协议：`anthropic-messages` 或 `openai-chat`。
+5. 按需配置 Ollama Web Search、Brave Search 或 SearXNG。
+6. 点击“保存”。
+
+模型配置保存后，新会话会自动使用最新设置。插件启停、Gateway Host 和 Gateway Token 等启动期配置需要退出并重新打开客户端后生效。
+
+#### 日常使用
+
+- 在“聊天”页面输入任务并发送，Agent 会根据任务调用工具并流式输出结果。
+- 点击“新对话”创建新会话；历史会话会显示在左侧列表中。
+- 在“记忆”页面查看、编辑、禁用或删除长期记忆。
+- 在“日志”页面查看运行日志、模型调用错误和工具审计记录。
+- 在“配置”页面修改模型、上下文、搜索、权限、Sub-agent、插件和调试设置。
+- 当工具需要审批时，在聊天消息的工具块中点击“批准”或“拒绝”；批准后原任务会自动继续执行。
+
+#### 数据与升级
+
+macOS 客户端的所有用户数据保存在：
+
+```text
+~/Library/Application Support/tiny-claw/workspace
+```
+
+其中包含配置、会话、长期记忆、Skill、插件和日志。覆盖安装或升级客户端不会清除该目录，建议在迁移电脑前备份整个 workspace。
+
+客户端 workspace 与源码仓库中的 `./workspace` 相互独立，客户端不会自动读取源码开发环境的数据。如需迁移，可以在客户端完全退出后，将需要的配置、会话、记忆、Skill 或插件复制到客户端 workspace。
+
+### 构建 macOS 应用
+
+在 Apple Silicon Mac 上生成未签名的 DMG：
+
+```bash
+npm run desktop:dist
+```
+
+安装包输出到 `release/tiny-claw-<version>-arm64.dmg`。桌面版首次启动会在 `~/Library/Application Support/tiny-claw/workspace` 创建独立工作目录和完整默认配置；打开应用后，可在“配置”页面完成所有设置。
+
+当前 DMG 未进行 Developer ID 签名和 Apple 公证，仅用于本机开发测试。如果 macOS 阻止首次打开，可在“系统设置 → 隐私与安全性”中选择“仍要打开”。
+
+### 通过 Tag 自动发布
+
+推送与 `package.json` 版本一致的 `v*` Tag 后，GitHub Actions 会自动运行测试、构建并校验 arm64 DMG，然后创建 GitHub Release：
+
+```bash
+npm version patch
+git push origin HEAD --follow-tags
+```
+
+例如 `package.json` 版本为 `0.2.0` 时，Tag 必须是 `v0.2.0`。发布产物包含 DMG、blockmap 和 `SHA256SUMS.txt`。当前自动发布的应用仍未进行 Apple 签名和公证。
 
 ## 配置参考
 

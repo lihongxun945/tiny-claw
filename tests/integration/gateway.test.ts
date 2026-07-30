@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 import { startTestGateway, type TestGateway } from "../helpers/start-gateway.js";
@@ -76,6 +76,51 @@ describe("Gateway HTTP API", () => {
         },
       },
     });
+  });
+
+  it("starts with a generated first-run config when config.json is missing", async () => {
+    await gateway.stop();
+    rmSync(resolve(workspacePath, "config.json"));
+    gateway = await startTestGateway(workspacePath);
+
+    const response = await json(`${gateway.apiUrl}/config`);
+    expect(response.status).toBe(200);
+    expect(response.body.config).toMatchObject({
+      apiUrl: "https://api.deepseek.com",
+      apiKey: "",
+      model: "deepseek-chat",
+      searchProvider: "duckduckgo",
+      enabledPlugins: [],
+      plugins: {},
+    });
+  });
+
+  it("reloads an idle session after model configuration changes", async () => {
+    writeFileSync(resolve(workspacePath, "config.json"), JSON.stringify({
+      apiUrl: "https://example.com/api",
+      apiKey: "",
+      model: "test-model",
+    }), "utf-8");
+    await gateway.stop();
+    gateway = await startTestGateway(workspacePath);
+
+    const before = await sse(`${gateway.apiUrl}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "hello", session_id: "config-reload" }),
+    });
+    expect(before).toContainEqual({
+      event: "error",
+      data: { message: "尚未配置模型 API Key，请先在配置页面填写并保存。" },
+    });
+
+    const saved = await json(`${gateway.apiUrl}/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey: "configured-key" }),
+    });
+    expect(saved.status).toBe(200);
+    expect((await json(`${gateway.apiUrl}/sessions`)).body.sessions).toEqual([]);
   });
 
   it("strips deprecated auto-memory config fields from config API", async () => {

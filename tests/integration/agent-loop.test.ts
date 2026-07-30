@@ -128,6 +128,24 @@ describe("AgentSession loop", () => {
     ]);
   });
 
+  it("reports a clear error before model invocation when API key is empty", async () => {
+    const emptyKeyWorkspace = createTempWorkspace({ apiKey: "" });
+    const emptyKeyManager = new PluginManager(emptyKeyWorkspace);
+    await emptyKeyManager.loadCorePlugins();
+    const client = new FakeModelClient([{ text: "should not run", toolCalls: [] }]);
+    const session = new AgentSession("missing-api-key", emptyKeyWorkspace, emptyKeyManager, {}, client);
+
+    try {
+      expect(await collect(session.chat("hello"))).toEqual([
+        { type: "error", message: "尚未配置模型 API Key，请先在配置页面填写并保存。" },
+      ]);
+      expect(client.calls).toHaveLength(0);
+    } finally {
+      await emptyKeyManager.destroy();
+      removeTempWorkspace(emptyKeyWorkspace);
+    }
+  });
+
   it("executes tools and feeds the result into the next model iteration", async () => {
     registerTool(manager, {
       name: "echo",
