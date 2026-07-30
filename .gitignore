@@ -9,6 +9,7 @@ workspace/history/
 workspace/logs/
 workspace/memory/
 workspace/sessions/
+workspace/skills/
 web/dist/
 web/node_modules/
 workspace/gateway.pid

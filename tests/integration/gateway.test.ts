@@ -5,6 +5,7 @@ import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-worksp
 import { startTestGateway, type TestGateway } from "../helpers/start-gateway.js";
 import { loadSessionState, saveSessionState } from "../../src/session-state.js";
 import { appendSessionMessage } from "../../src/session-store.js";
+import { attachmentToImageBlock, readAttachment } from "../../src/attachments.js";
 
 async function json(url: string, init?: RequestInit): Promise<{ status: number; body: any }> {
   const response = await fetch(url, init);
@@ -302,6 +303,61 @@ describe("Gateway HTTP API", () => {
     expect(proxied).toEqual({ status: 200, body: { memories: [] } });
   });
 
+  it("uploads session-scoped images and serves them through the WebUI proxy", async () => {
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
+    const form = new FormData();
+    form.set("session_id", "image-session");
+    form.set("file", new Blob([png], { type: "image/png" }), "screen.png");
+
+    const upload = await json(`${gateway.webUrl}/uploads`, { method: "POST", body: form });
+    expect(upload.status).toBe(201);
+    expect(upload.body.attachment).toMatchObject({
+      name: "screen.png",
+      mediaType: "image/png",
+      size: png.length,
+    });
+
+    const image = await fetch(`${gateway.webUrl}${upload.body.attachment.url}`);
+    expect(image.status).toBe(200);
+    expect(image.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await image.arrayBuffer())).toEqual(png);
+
+    const otherSession = new URL(upload.body.attachment.url, gateway.webUrl);
+    otherSession.searchParams.set("session_id", "other-session");
+    expect((await fetch(otherSession)).status).toBe(404);
+
+    const record = readAttachment(workspacePath, "image-session", upload.body.attachment.id);
+    expect(record).toBeDefined();
+    appendSessionMessage(workspacePath, "image-session", {
+      role: "user",
+      content: [{ type: "text", text: "解释图片" }, attachmentToImageBlock(record!)],
+    });
+    const history = await json(`${gateway.webUrl}/history/sessions/image-session/messages`);
+    expect(history.body.messages).toContainEqual(expect.objectContaining({
+      role: "user",
+      text: "解释图片",
+      attachments: [expect.objectContaining({
+        id: upload.body.attachment.id,
+        name: "screen.png",
+        mediaType: "image/png",
+      })],
+    }));
+  });
+
+  it("rejects image uploads whose declared type does not match their signature", async () => {
+    const form = new FormData();
+    form.set("session_id", "image-session");
+    form.set("file", new Blob([
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]),
+    ], { type: "image/jpeg" }), "fake.jpg");
+
+    const upload = await json(`${gateway.apiUrl}/uploads`, { method: "POST", body: form });
+    expect(upload).toMatchObject({
+      status: 400,
+      body: { error: expect.stringContaining("MIME 类型不一致") },
+    });
+  });
+
   it("handles slash commands before entering the agent loop", async () => {
     const events = await sse(`${gateway.apiUrl}/chat`, {
       method: "POST",
@@ -319,6 +375,26 @@ describe("Gateway HTTP API", () => {
         data: expect.objectContaining({ text: expect.stringContaining("- `/approvals`：列出当前可处理的命令审批") }),
       }),
     ]);
+  });
+
+  it("exposes registered chat commands through the API and WebUI proxy", async () => {
+    const direct = await json(`${gateway.apiUrl}/commands`);
+    const proxied = await json(`${gateway.webUrl}/commands`);
+
+    expect(direct.status).toBe(200);
+    expect(direct.body.commands).toContainEqual({
+      name: "help",
+      aliases: [],
+      description: "列出可用聊天命令",
+      usage: "/help [命令名]",
+    });
+    expect(direct.body.commands).toContainEqual({
+      name: "new",
+      aliases: ["reset"],
+      description: "开启一个新会话",
+      usage: "/new",
+    });
+    expect(proxied).toEqual(direct);
   });
 
   it("creates a fresh session for /new", async () => {

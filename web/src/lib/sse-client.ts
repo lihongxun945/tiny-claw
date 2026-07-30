@@ -3,10 +3,12 @@ import type { SSEEvent } from "../types.js";
 export async function* streamChat(
   message: string,
   sessionId?: string,
+  attachmentIds?: string[],
   signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
-  const body: Record<string, string> = { message };
+  const body: Record<string, unknown> = { message };
   if (sessionId) body.session_id = sessionId;
+  if (attachmentIds?.length) body.attachments = attachmentIds;
 
   yield* streamPost("/chat", body, signal);
 }
@@ -20,7 +22,7 @@ export async function* streamApprovalResume(
 
 async function* streamPost(
   url: string,
-  body: Record<string, string> | undefined,
+  body: Record<string, unknown> | undefined,
   signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
   const response = await fetch(url, {

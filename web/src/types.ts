@@ -4,10 +4,19 @@ export interface ToolCallInfo {
   result?: string;
 }
 
+export interface Attachment {
+  id: string;
+  name: string;
+  mediaType: string;
+  size?: number;
+  url: string;
+}
+
 export interface Message {
   role: "user" | "assistant";
   text: string;
   toolCalls: ToolCallInfo[];
+  attachments?: Attachment[];
   timestamp: number;
 }
 
@@ -21,6 +30,13 @@ export interface Session {
 export interface SSEEvent {
   event: string;
   data: unknown;
+}
+
+export interface ChatCommand {
+  name: string;
+  aliases: string[];
+  description: string;
+  usage: string;
 }
 
 export interface ApprovalRequest {

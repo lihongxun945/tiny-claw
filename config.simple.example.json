@@ -26,6 +26,12 @@
     "maxBatchChars": 8000,
     "maxMemoryChars": 20000
   },
+  "attachments": {
+    "enabled": true,
+    "maxFilesPerMessage": 4,
+    "maxFileSize": 10485760,
+    "allowedImageTypes": ["image/png", "image/jpeg", "image/webp", "image/gif"]
+  },
   "enabledPlugins": [
     "feishu"
   ],

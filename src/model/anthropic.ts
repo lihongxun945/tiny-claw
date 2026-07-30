@@ -7,9 +7,49 @@ import type {
   StreamEvent,
   ContentBlockStartEvent,
   ContentBlockDeltaEvent,
+  ContentBlock,
 } from "../types.js";
 import type { ModelClient } from "./types.js";
 import { appendLog } from "../workspace/logger.js";
+import { readImageBlockData } from "../attachments.js";
+
+type AnthropicContentBlock =
+  | Exclude<ContentBlock, { type: "image" }>
+  | {
+    type: "image";
+    source: {
+      type: "base64";
+      media_type: string;
+      data: string;
+    };
+  };
+
+interface AnthropicMessage {
+  role: Message["role"];
+  content: string | AnthropicContentBlock[];
+}
+
+function toAnthropicMessages(config: Config, messages: Message[]): AnthropicMessage[] {
+  return messages.map((message) => {
+    if (typeof message.content === "string") {
+      return { role: message.role, content: message.content };
+    }
+    return {
+      role: message.role,
+      content: message.content.map((block): AnthropicContentBlock => {
+        if (block.type !== "image") return block;
+        return {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: block.source.mediaType,
+            data: readImageBlockData(config.workspacePath, block).toString("base64"),
+          },
+        };
+      }),
+    };
+  });
+}
 
 function debugEnabled(config: Config): boolean {
   return config.debug === true || (typeof config.debug === "object" && config.debug.enabled === true);
@@ -55,7 +95,7 @@ export class AnthropicMessagesClient implements ModelClient {
     const body: Record<string, unknown> = {
       model: this.config.model,
       max_tokens: 1024,
-      messages,
+      messages: toAnthropicMessages(this.config, messages),
       stream: false,
     };
     if (systemPrompt) {
@@ -119,7 +159,7 @@ export class AnthropicMessagesClient implements ModelClient {
     const body: Record<string, unknown> = {
       model: this.config.model,
       max_tokens: this.config.maxTokens,
-      messages,
+      messages: toAnthropicMessages(this.config, messages),
       stream: true,
     };
     if (systemPrompt) {

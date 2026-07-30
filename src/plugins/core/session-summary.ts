@@ -55,6 +55,7 @@ function blockToText(block: ContentBlock): string {
   if (block.type === "text") return block.text;
   if (block.type === "tool_use") return `[工具调用 ${block.name}]: ${JSON.stringify(block.input)}`;
   if (block.type === "tool_result") return `[工具结果]: ${block.content.slice(0, 1200)}`;
+  if (block.type === "image") return `[图片附件]: ${block.name}`;
   return "";
 }
 

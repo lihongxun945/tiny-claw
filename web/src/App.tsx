@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import type { Message, ToolCallInfo } from "./types.js";
-import { streamChat, streamApprovalResume, fetchHistoryMessages, cancelSession } from "./lib/api.js";
+import type { Attachment, Message, ToolCallInfo } from "./types.js";
+import { streamChat, streamApprovalResume, fetchHistoryMessages, cancelSession, uploadImage } from "./lib/api.js";
 import ChatView from "./components/ChatView.js";
 import ChatInput from "./components/ChatInput.js";
 import SessionSidebar from "./components/SessionSidebar.js";
@@ -101,19 +101,33 @@ export default function App() {
     writeHashSession(activeSessionId);
   }, [activeSessionId]);
 
-  const handleSend = useCallback(async (text: string) => {
+  const handleSend = useCallback(async (text: string, files: File[]) => {
     // 取消之前的流
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    setMessages((prev) => [...prev, { role: "user", text, toolCalls: [], timestamp: Date.now() }]);
     setIsStreaming(true);
     setStreamingText("");
     setStreamingToolCalls([]);
 
     try {
-      await consumeAgentStream(streamChat(text, activeSessionId ?? undefined, controller.signal));
+      const sessionId = activeSessionId ?? crypto.randomUUID();
+      if (!activeSessionId) setActiveSessionId(sessionId);
+      const attachments: Attachment[] = [];
+      for (const file of files) {
+        attachments.push(await uploadImage(sessionId, file));
+      }
+      setMessages((prev) => [
+        ...prev,
+        { role: "user", text, toolCalls: [], attachments, timestamp: Date.now() },
+      ]);
+      await consumeAgentStream(streamChat(
+        text,
+        sessionId,
+        attachments.map((attachment) => attachment.id),
+        controller.signal,
+      ));
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       const msg = err instanceof Error ? err.message : String(err);

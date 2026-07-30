@@ -5,8 +5,8 @@ export const coreHistoryPlugin: Plugin = {
   name: "core-history",
   async init(ctx) {
     ctx.registerHooks({
-      onUserMessage: (hookCtx, input) => {
-        const userMsg: Message = { role: "user", content: input, _timestamp: Date.now() };
+      onUserMessage: (hookCtx, input, content) => {
+        const userMsg: Message = { role: "user", content: content ?? input, _timestamp: Date.now() };
         hookCtx.history.markTurnStart();
         hookCtx.history.push(userMsg);
       },

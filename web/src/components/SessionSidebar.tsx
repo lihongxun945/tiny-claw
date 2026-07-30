@@ -72,12 +72,18 @@ export default function SessionSidebar({ activeSessionId, currentView, onSelectS
   return (
     <div className="sidebar">
       <div className="sidebar-header">
-        <span>tiny-claw</span>
-        <div className="sidebar-actions">
-          <button onClick={loadSessions} disabled={isLoading} title="刷新会话列表">刷新</button>
-          <button onClick={onNewChat}>+ 新对话</button>
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">t</span>
+          <span>tiny-claw</span>
         </div>
+        <button className="refresh-btn" onClick={loadSessions} disabled={isLoading} title="刷新会话列表">
+          {isLoading ? "…" : "↻"}
+        </button>
       </div>
+      <div className="sidebar-primary-action">
+        <button onClick={onNewChat}><span aria-hidden="true">＋</span> 新对话</button>
+      </div>
+      <div className="session-section-label">最近对话</div>
       <div className="session-list">
         {sessions.map((s) => (
           <div
@@ -100,19 +106,20 @@ export default function SessionSidebar({ activeSessionId, currentView, onSelectS
         <button
           className={`nav-btn ${currentView === "chat" ? "active" : ""}`}
           onClick={() => onViewChange("chat")}
-        >对话</button>
+        ><span aria-hidden="true">◫</span>对话</button>
         <button
           className={`nav-btn ${currentView === "memory" ? "active" : ""}`}
           onClick={() => onViewChange("memory")}
-        >记忆</button>
+        ><span aria-hidden="true">◇</span>记忆</button>
         <button
           className={`nav-btn ${currentView === "logs" ? "active" : ""}`}
           onClick={() => onViewChange("logs")}
-        >日志</button>
+        ><span aria-hidden="true">▤</span>日志</button>
         <button
           className={`nav-btn ${currentView === "config" ? "active" : ""}`}
           onClick={() => onViewChange("config")}
-        >配置</button>
+          aria-label="配置"
+        ><span aria-hidden="true">⚙</span>设置</button>
       </div>
     </div>
   );

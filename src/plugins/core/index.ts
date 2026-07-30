@@ -8,9 +8,11 @@ import { coreAutoMemoryPlugin } from "./auto-memory.js";
 import { coreCompressPlugin } from "./compress.js";
 import { coreLoggerPlugin } from "./logger.js";
 import { coreChatCommandsPlugin } from "./chat-commands.js";
+import { coreAttachmentsPlugin } from "./attachments.js";
 
 export const corePlugins: Plugin[] = [
   coreChatCommandsPlugin,
+  coreAttachmentsPlugin,
   coreToolsPlugin,
   coreSubAgentPlugin,
   corePromptsPlugin,

@@ -27,7 +27,8 @@ src/
 │   ├── types.ts      # ModelClient 接口
 │   ├── index.ts      # createModelClient 工厂
 │   ├── anthropic.ts  # Anthropic Messages 兼容协议实现
-│   └── openai.ts     # OpenAI Chat Completions 兼容协议实现
+│   ├── openai.ts     # OpenAI Chat Completions 兼容协议实现
+│   └── request-repair.ts # 模型请求错误修复策略链
 ├── history.ts        # 滑动窗口消息历史
 ├── estimate-tokens.ts # Token 估算（供 compress 插件使用）
 ├── sub-agent.ts      # 并行 sub-agent 执行器（受限工具 + 临时 AgentSession）
@@ -46,6 +47,7 @@ src/
 │   │   ├── history.ts # 会话历史插件（用户消息进入 MessageHistory）
 │   │   ├── session-summary.ts # 会话滚动摘要插件（摘要 + 最近几轮原文）
 │   │   ├── auto-memory.ts # 自动记忆插件（每 10 轮批量整理长期记忆）
+│   │   ├── attachments.ts # 图片上传路由与 session 附件存储
 │   │   ├── compress.ts # 上下文压缩插件（阈值判断+模型摘要）
 │   │   └── logger.ts # 日志插件（通过钩子记录所有事件）
 │   └── feishu/       # 飞书插件（平台适配器）
@@ -100,7 +102,8 @@ workspace/
 │   └── <encoded-session-id>/
 │       ├── messages.jsonl
 │       ├── meta.json
-│       └── state.json
+│       ├── state.json
+│       └── attachments/   # 图片文件及附件元数据
 └── logs/              # 执行日志，[时间] [级别] 消息，每日轮转
     └── 2026-05-19.log
 ```
@@ -124,6 +127,7 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 | maxAgentIterations | Agent Loop 最大迭代次数，显式配置 0 表示不限 | 20 |
 | sessionSummary | 会话滚动摘要配置 | enabled=true, persistent=true, turnThreshold=5, recentTurns=3 |
 | autoMemory | 自动记忆配置 | enabled=true, turnThreshold=10 |
+| attachments | 图片附件配置 | enabled=true, 每条最多 4 张、单张 10 MB |
 | debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
 | security | 基础安全边界：bash 策略、Gateway host/token、工具审计 | 见下文 |
 | searchProvider | 搜索引擎 (ollama/searxng/brave/duckduckgo) | ollama |
@@ -250,6 +254,12 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 
 自动记忆会跳过 `sub:` 开头的 sub-agent 会话，也会跳过模型中间工具调用，只在最终回复时计入一轮。传给整理模型的增量对话只包含用户问题和最终回答，不包含工具调用、工具结果、调试日志或代码 diff 细节；同时会注入未禁用长期记忆全文，帮助模型判断新增、同名重写压缩或删除。整理成功后会清空本次涉及会话的 `pendingTurns` 并记录 `lastAnalyzedAt/lastResult`；整理失败或触发权限审批时保留 pending，后续继续增量整理。即使没有新增对话，`/dream` 也会运行一次 workspace 级整理，让模型检查已有长期记忆是否需要压缩、合并或删除。整理模型不输出自定义 JSON actions，而是直接调用已有 `memory_*` 工具；`memory_save` 执行前会按 `maxMemoryChars` 对正文做硬限制；密钥、token、密码等凭证类内容应被模型忽略。
 
+### 图片附件
+
+`core-attachments` 插件注册 `POST /uploads` 和 `GET /uploads`，上传文件按 session 保存到 `workspace/sessions/<session>/attachments/`。消息历史只持久化附件 ID、相对路径和 MIME 类型，不保存 Base64；模型调用时由协议适配器读取文件，OpenAI Chat 转为 `image_url` data URL，Anthropic Messages 转为 base64 image block。删除 session 时附件目录会随 session 一起删除。
+
+上传端会校验文件签名、声明 MIME、文件大小和允许类型，附件只能在所属 session 中引用。WebUI 支持选择或粘贴 PNG、JPEG、WebP、GIF 图片，发送前可预览和移除。
+
 ## 核心数据流
 
 ```
@@ -335,6 +345,8 @@ Anthropic Messages 兼容实现的注意点：
 
 OpenAI Chat 兼容实现会将内部消息格式转换为 `system/user/assistant/tool` messages，并把内部工具定义转换为 OpenAI `tools: [{ type: "function", function: ... }]` 格式。
 
+模型请求失败后可进入 `request-repair.ts` 的有限修复策略链。每个修复器根据 provider、模型、HTTP 状态、错误响应和原始请求体判断是否可修复，并且在同一次请求中最多执行一次；所有策略执行机会耗尽后返回原始 API 错误，避免无限重试。当前 OpenAI 适配器可在服务端明确拒绝 `max_tokens` 时自动改用 `max_completion_tokens` 重试，并在当前客户端实例中缓存已确认的参数选择，流式聊天和非流式摘要共用该流程。
+
 ### Debug 模式
 
 `config.json` 支持开启 Debug 模式，用于排查模型调用：
@@ -413,6 +425,8 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 聊天命令通过 `PluginContext.registerChatCommand()` 注册，由 `PluginManager` 在用户输入进入 Agent Loop 前统一解析和分发。命令只在用户显式输入 `/command` 时触发，不暴露给模型调用。核心插件 `plugins/core/chat-commands.ts` 注册 `/help`、`/new`、`/context`、`/dream`、`/approvals`、`/approve` 和 `/reject`；workspace 插件也可以注册自己的命令。`/dream` 会复用 `core-auto-memory` 的整理入口，立即触发 workspace 级长期记忆整理。
 
 Web `/chat` 和飞书消息入口都会先调用 `executeChatCommand()`，命中命令时直接返回结果，不写入模型上下文。未以 `/` 开头的普通消息才进入 Agent Loop。
+
+Gateway 的 `GET /commands` 从 `PluginManager.getChatCommands()` 动态返回命令元数据，WebUI 使用该接口实现斜杠命令补全。因此 workspace 插件注册的自定义命令和别名无需修改前端即可显示；补全只填充输入框，不会直接执行命令。
 
 ### 搜索引擎：多 Provider 架构
 

@@ -44,6 +44,12 @@ export function createDefaultConfig(): Record<string, unknown> {
       maxBatchChars: 8000,
       maxMemoryChars: 20000,
     },
+    attachments: {
+      enabled: true,
+      maxFilesPerMessage: 4,
+      maxFileSize: 10 * 1024 * 1024,
+      allowedImageTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+    },
     debug: {
       enabled: false,
       modelIO: false,
@@ -176,6 +182,18 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertOptionalNumber(raw.autoMemory.maxMemoryChars, "autoMemory.maxMemoryChars", { min: 1000, integer: true });
   }
 
+  if (raw.attachments !== undefined) {
+    assertObject(raw.attachments, "attachments");
+    assertOptionalBoolean(raw.attachments.enabled, "attachments.enabled");
+    assertOptionalNumber(raw.attachments.maxFilesPerMessage, "attachments.maxFilesPerMessage", { min: 1, max: 20, integer: true });
+    assertOptionalNumber(raw.attachments.maxFileSize, "attachments.maxFileSize", { min: 1, max: 100 * 1024 * 1024, integer: true });
+    assertOptionalStringArray(raw.attachments.allowedImageTypes, "attachments.allowedImageTypes");
+    const allowedTypes = raw.attachments.allowedImageTypes as unknown[] | undefined;
+    if (allowedTypes?.some((value) => !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(String(value)))) {
+      throw new Error("配置字段 attachments.allowedImageTypes 包含不支持的图片类型");
+    }
+  }
+
   if (raw.debug !== undefined && typeof raw.debug !== "boolean") {
     assertObject(raw.debug, "debug");
     assertOptionalBoolean(raw.debug.enabled, "debug.enabled");
@@ -255,6 +273,7 @@ export function loadConfig(workspacePath: string): Config {
     subAgent: raw.subAgent as Config["subAgent"] | undefined,
     sessionSummary: raw.sessionSummary as Config["sessionSummary"] | undefined,
     autoMemory: normalizeAutoMemoryConfig(raw.autoMemory),
+    attachments: raw.attachments as Config["attachments"] | undefined,
     debug: raw.debug as Config["debug"] | undefined,
     security: raw.security as Config["security"] | undefined,
     workspacePath,

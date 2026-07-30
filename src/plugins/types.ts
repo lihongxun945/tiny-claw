@@ -74,7 +74,7 @@ export interface PluginHooks {
     { input?: string; abort?: string } | Promise<{ input?: string; abort?: string } | void> | void;
   onBuildPrompt?: (ctx: HookContext, prompt: string) =>
     string | Promise<string> | void;
-  onUserMessage?: (ctx: HookContext, input: string) => void | Promise<void>;
+  onUserMessage?: (ctx: HookContext, input: string, content?: Message["content"]) => void | Promise<void>;
   onBeforeModelCall?: (ctx: HookContext, messages: Message[]) =>
     Message[] | Promise<Message[]> | void;
   onChatResponse?: (ctx: HookContext, response: ChatResponse) =>
@@ -121,6 +121,7 @@ export type RouteHandler = (
 ) => Promise<void>;
 
 export interface RouteContext {
+  url: URL;
   readBody(): Promise<string>;
   sendJSON(status: number, data: unknown): void;
 }

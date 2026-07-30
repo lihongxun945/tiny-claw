@@ -1,4 +1,4 @@
-import type { Session, Message, MemoryRecord, ApprovalRequest } from "../types.js";
+import type { Session, Message, MemoryRecord, ApprovalRequest, ChatCommand, Attachment } from "../types.js";
 
 export { streamChat, streamApprovalResume } from "./sse-client.js";
 
@@ -37,6 +37,21 @@ export async function fetchHistoryMessages(id: string): Promise<Message[]> {
   const res = await fetch(`/history/sessions/${encodeURIComponent(id)}/messages`);
   const data = await res.json();
   return data.messages ?? [];
+}
+
+export async function fetchChatCommands(): Promise<ChatCommand[]> {
+  const res = await fetch("/commands");
+  const data = await parseJSON<{ commands: ChatCommand[] }>(res);
+  return data.commands ?? [];
+}
+
+export async function uploadImage(sessionId: string, file: File): Promise<Attachment> {
+  const form = new FormData();
+  form.set("session_id", sessionId);
+  form.set("file", file);
+  const res = await fetch("/uploads", { method: "POST", body: form });
+  const data = await parseJSON<{ attachment: Attachment }>(res);
+  return data.attachment;
 }
 
 export async function fetchLogFiles(): Promise<{ files: Array<{ name: string; size: number }> }> {

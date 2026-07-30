@@ -110,6 +110,15 @@ const FIELD_GROUPS: FieldGroup[] = [
     ],
   },
   {
+    title: "图片附件",
+    fields: [
+      { key: "attachments.enabled", label: "允许上传图片", type: "checkbox", defaultValue: true },
+      { key: "attachments.maxFilesPerMessage", label: "每条消息图片上限", type: "number", defaultValue: 4 },
+      { key: "attachments.maxFileSize", label: "单张图片字节上限", type: "number", defaultValue: 10485760 },
+      { key: "attachments.allowedImageTypes", label: "允许的图片类型", type: "list", defaultValue: ["image/png", "image/jpeg", "image/webp", "image/gif"] },
+    ],
+  },
+  {
     title: "权限与 Gateway",
     fields: [
       { key: "security.mode", label: "全局危险操作模式", type: "select", options: ["deny", "ask", "allow"], defaultValue: "allow" },

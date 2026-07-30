@@ -22,6 +22,21 @@ export default function MessageBubble({ message, isStreaming, onApproveAndResume
   return (
     <div className={`message ${message.role}`}>
       <div className="message-content">
+        {message.attachments && message.attachments.length > 0 && (
+          <div className="message-attachments">
+            {message.attachments.map((attachment) => (
+              <a
+                key={attachment.id}
+                href={attachment.url}
+                target="_blank"
+                rel="noreferrer"
+                title={attachment.name}
+              >
+                <img src={attachment.url} alt={attachment.name} />
+              </a>
+            ))}
+          </div>
+        )}
         {isUser ? (
           <span>{message.text}</span>
         ) : (

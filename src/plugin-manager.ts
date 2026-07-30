@@ -321,12 +321,13 @@ export class PluginManager {
     return result;
   }
 
-  async callOnUserMessage(input: string, sessionId: string): Promise<void> {
+  async callOnUserMessage(input: string, sessionId: string, content?: Message["content"]): Promise<void> {
     for (const hooks of this.hooks) {
       if (hooks.onUserMessage) {
         await hooks.onUserMessage(
           this.buildHookContext(0, sessionId),
           input,
+          content,
         );
       }
     }

@@ -278,7 +278,7 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 
 ### 聊天命令
 
-聊天输入支持斜杠命令。命令由插件注册，内置命令如下：
+聊天输入支持斜杠命令。命令由插件注册；在 WebUI 输入 `/` 时会显示当前已注册命令，支持按名称或别名过滤，并可使用方向键、Tab 或 Enter 补全。内置命令如下：
 
 | 命令 | 说明 |
 |---|---|
@@ -294,6 +294,17 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 | `/reject <审批 ID>` | 拒绝一条命令审批 |
 
 自定义插件可以通过 `ctx.registerChatCommand(...)` 注册命令。命令会在进入 Agent Loop 前执行，适合做会话管理、审批、上下文查询等轻量操作。
+
+### 图片输入
+
+WebUI 支持选择图片或直接粘贴截图，可在发送前预览和移除。图片按 session 保存在 `workspace/sessions/<session>/attachments/`，历史记录只保存附件引用；需要使用支持视觉输入的模型。默认支持 PNG、JPEG、WebP 和 GIF，每条消息最多 4 张、单张不超过 10 MB。
+
+| 配置项 | 默认值 | 示例 | 说明 |
+|---|---:|---|---|
+| `attachments.enabled` | `true` | `true` | 是否允许上传图片 |
+| `attachments.maxFilesPerMessage` | `4` | `4` | 每条消息最多携带的图片数 |
+| `attachments.maxFileSize` | `10485760` | `10485760` | 单张图片最大字节数 |
+| `attachments.allowedImageTypes` | PNG/JPEG/WebP/GIF | `["image/png","image/jpeg"]` | 允许上传的图片 MIME 类型 |
 
 ### Debug 模式
 

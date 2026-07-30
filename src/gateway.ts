@@ -13,6 +13,8 @@ import { approveRequest, listApprovals, rejectRequest } from "./tools/approval.j
 import { deleteStoredSession, listSessionMetas, readSessionMessages } from "./session-store.js";
 import type { RegisteredRoute, RouteContext } from "./plugins/types.js";
 import { ensureWorkspace } from "./workspace/workspace.js";
+import { attachmentLimits, attachmentToImageBlock, readAttachment } from "./attachments.js";
+import type { ImageBlock, Message } from "./types.js";
 
 const SESSION_TIMEOUT = 30 * 60 * 1000;
 
@@ -151,39 +153,58 @@ function daemonStatus(workspacePath: string): void {
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
+  return readBuffer(req).then((buffer) => buffer.toString("utf-8"));
+}
+
+function readBuffer(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
 
 type FormattedToolCall = { id?: string; name: string; input: Record<string, unknown>; result?: string };
-type FormattedMessage = { role: string; text: string; toolCalls: FormattedToolCall[]; timestamp: number };
+type FormattedAttachment = { id: string; name: string; mediaType: string; url: string };
+type FormattedMessage = {
+  role: string;
+  text: string;
+  toolCalls: FormattedToolCall[];
+  attachments: FormattedAttachment[];
+  timestamp: number;
+};
 
 function isSubAgentSessionId(id: string): boolean {
   return id.startsWith("sub:");
 }
 
-function buildMessageListFromMessages(msgs: Array<{ role: string; content: string | Array<{ type: string; id?: string; tool_use_id?: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>): FormattedMessage[] {
+function buildMessageListFromMessages(msgs: Message[], sessionId: string): FormattedMessage[] {
   // 第一步：解析原始消息，将 tool_result 合并到前一条 assistant
   const parsed: FormattedMessage[] = [];
   for (const m of msgs) {
     if (typeof m.content === "string") {
       if (m.role === "assistant" || m.role === "user") {
-        parsed.push({ role: m.role, text: m.content, toolCalls: [], timestamp: (m as any)._timestamp ?? 0 });
+        parsed.push({ role: m.role, text: m.content, toolCalls: [], attachments: [], timestamp: m._timestamp ?? 0 });
       }
       continue;
     }
     const blocks = m.content;
     let text = "";
     const toolCalls: FormattedMessage["toolCalls"] = [];
+    const attachments: FormattedAttachment[] = [];
     for (const b of blocks) {
       if (b.type === "text" && b.text) text += b.text;
       else if (b.type === "tool_use") toolCalls.push({ id: b.id, name: b.name ?? "", input: b.input ?? {} });
       else if (b.type === "tool_result") {
         toolCalls.push({ id: b.tool_use_id, name: "", input: {}, result: b.content ?? "" });
+      } else if (b.type === "image") {
+        attachments.push({
+          id: b.id,
+          name: b.name,
+          mediaType: b.source.mediaType,
+          url: `/uploads?id=${encodeURIComponent(b.id)}&session_id=${encodeURIComponent(sessionId)}`,
+        });
       }
     }
     // user 消息只有 tool_result → 合并到前一条 assistant
@@ -198,8 +219,8 @@ function buildMessageListFromMessages(msgs: Array<{ role: string; content: strin
       }
       continue;
     }
-    if (m.role === "assistant" || (m.role === "user" && text)) {
-      parsed.push({ role: m.role, text, toolCalls, timestamp: (m as any)._timestamp ?? 0 });
+    if (m.role === "assistant" || (m.role === "user" && (text || attachments.length > 0))) {
+      parsed.push({ role: m.role, text, toolCalls, attachments, timestamp: m._timestamp ?? 0 });
     }
   }
 
@@ -209,9 +230,10 @@ function buildMessageListFromMessages(msgs: Array<{ role: string; content: strin
     if (m.role === "assistant" && result.length > 0 && result[result.length - 1].role === "assistant") {
       const prev = result[result.length - 1];
       prev.toolCalls.push(...m.toolCalls);
+      prev.attachments.push(...m.attachments);
       if (m.text) prev.text += (prev.text ? "\n" : "") + m.text;
     } else {
-      result.push({ ...m, toolCalls: [...m.toolCalls] });
+      result.push({ ...m, toolCalls: [...m.toolCalls], attachments: [...m.attachments] });
     }
   }
   return result;
@@ -416,6 +438,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 
     // 构建 RouteContext
     const routeCtx: RouteContext = {
+      url,
       readBody: () => readBody(req),
       sendJSON: (status, data) => sendJSON(res, status, data),
     };
@@ -441,9 +464,14 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         const body = JSON.parse(await readBody(req));
         const message = body.message as string;
         const sessionId = body.session_id as string | undefined;
+        const attachmentIds = Array.isArray(body.attachments) ? body.attachments : [];
 
-        if (!message || typeof message !== "string") {
-          sendJSON(res, 400, { error: "缺少 message 字段" });
+        if (typeof message !== "string" || (!message.trim() && attachmentIds.length === 0)) {
+          sendJSON(res, 400, { error: "消息或附件不能为空" });
+          return;
+        }
+        if (attachmentIds.some((id: unknown) => typeof id !== "string")) {
+          sendJSON(res, 400, { error: "attachments 必须是附件 ID 数组" });
           return;
         }
 
@@ -469,12 +497,34 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         }
 
         const session = commandSession ?? getOrCreateSession(sessionId, workspacePath, pm);
+        const limits = attachmentLimits(config.attachments);
+        if (attachmentIds.length > limits.maxFilesPerMessage) {
+          sendSSE(res, "error", { message: `每条消息最多上传 ${limits.maxFilesPerMessage} 张图片` });
+          res.end();
+          return;
+        }
+        const imageBlocks: ImageBlock[] = [];
+        for (const id of attachmentIds as string[]) {
+          const record = readAttachment(workspacePath, session.id, id);
+          if (!record) {
+            sendSSE(res, "error", { message: `附件不存在或不属于当前会话：${id}` });
+            res.end();
+            return;
+          }
+          imageBlocks.push(attachmentToImageBlock(record));
+        }
+        const userContent = imageBlocks.length > 0
+          ? [
+              ...(message.trim() ? [{ type: "text" as const, text: message }] : []),
+              ...imageBlocks,
+            ]
+          : undefined;
         const cancelOnDisconnect = () => {
           if (!res.writableEnded) session.cancel();
         };
         res.once("close", cancelOnDisconnect);
 
-        for await (const event of session.chat(message)) sendAgentEventSSE(res, event, session.id);
+        for await (const event of session.chat(message, undefined, userContent)) sendAgentEventSSE(res, event, session.id);
 
         res.removeListener("close", cancelOnDisconnect);
         res.end();
@@ -496,6 +546,18 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
           busy: s.isBusy(),
         }));
       sendJSON(res, 200, { sessions: list });
+      return;
+    }
+
+    // GET /commands — 当前插件注册的聊天命令
+    if (req.method === "GET" && url.pathname === "/commands") {
+      const commands = pm.getChatCommands().map(({ name, aliases, description, usage }) => ({
+        name,
+        aliases: aliases ?? [],
+        description,
+        usage: usage ?? `/${name}`,
+      }));
+      sendJSON(res, 200, { commands });
       return;
     }
 
@@ -667,7 +729,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         sendJSON(res, 404, { error: "会话不存在" });
         return;
       }
-      const messages = buildMessageListFromMessages(session.getMessages());
+      const messages = buildMessageListFromMessages(session.getMessages(), id);
       sendJSON(res, 200, { messages });
       return;
     }
@@ -765,7 +827,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     // GET /history/sessions/:id/messages — 读取指定会话的消息
     if (req.method === "GET" && url.pathname.startsWith("/history/sessions/") && url.pathname.endsWith("/messages")) {
       const id = decodeURIComponent(url.pathname.slice("/history/sessions/".length, -"/messages".length));
-      const messages = buildMessageListFromMessages(readSessionMessages(workspacePath, id) as Array<{ role: string; content: string | Array<{ type: string; id?: string; tool_use_id?: string; text?: string; name?: string; input?: Record<string, unknown>; content?: string }> }>);
+      const messages = buildMessageListFromMessages(readSessionMessages(workspacePath, id), id);
       sendJSON(res, 200, { messages });
       return;
     }
@@ -787,23 +849,25 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const url = new URL(req.url ?? "/", `http://localhost:${webPort}`);
 
       // 代理 API 请求到 gateway
-      if (url.pathname === "/chat" || url.pathname === "/sessions" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
+      if (url.pathname === "/chat" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
         try {
           const hasRequestBody = req.method !== "GET" && req.method !== "HEAD"
             && (Number(req.headers["content-length"] ?? 0) > 0 || req.headers["transfer-encoding"] !== undefined);
-          const proxyBody = hasRequestBody ? await readBody(req) : undefined;
+          const proxyBody = hasRequestBody ? await readBuffer(req) : undefined;
           const proxyRes = await fetch(`http://127.0.0.1:${port}${url.pathname}${url.search}`, {
             method: req.method,
             headers: {
               ...(proxyBody !== undefined && req.headers["content-type"] ? { "content-type": req.headers["content-type"] } : {}),
               ...(gatewayToken ? { authorization: `Bearer ${gatewayToken}` } : {}),
             },
-            body: proxyBody,
+            body: proxyBody as unknown as BodyInit | undefined,
           });
           const contentType = proxyRes.headers.get("content-type") ?? "application/json";
           res.writeHead(proxyRes.status, {
             "content-type": contentType,
             "access-control-allow-origin": "*",
+            ...(proxyRes.headers.get("cache-control") ? { "cache-control": proxyRes.headers.get("cache-control")! } : {}),
+            ...(proxyRes.headers.get("x-content-type-options") ? { "x-content-type-options": proxyRes.headers.get("x-content-type-options")! } : {}),
           });
           if (contentType.includes("text/event-stream")) {
             const reader = proxyRes.body!.getReader();
@@ -817,8 +881,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
             };
             pump().catch(() => res.end());
           } else {
-            const body = await proxyRes.text();
-            res.end(body);
+            res.end(Buffer.from(await proxyRes.arrayBuffer()));
           }
         } catch (err) {
           res.writeHead(502, { "content-type": "application/json" });

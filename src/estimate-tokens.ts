@@ -26,6 +26,8 @@ function estimateMessageTokens(msg: Message): number {
       tokens += estimateTextTokens(block.name) + estimateTextTokens(JSON.stringify(block.input)) + 10;
     } else if (block.type === "tool_result") {
       tokens += estimateTextTokens(block.content) + 6;
+    } else if (block.type === "image") {
+      tokens += 1024;
     }
   }
   return tokens;

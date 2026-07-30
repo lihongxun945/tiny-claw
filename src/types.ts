@@ -18,7 +18,20 @@ export interface ToolResultBlock {
   content: string;
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
+export type ImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+
+export interface ImageBlock {
+  type: "image";
+  source: {
+    type: "attachment";
+    path: string;
+    mediaType: ImageMediaType;
+  };
+  id: string;
+  name: string;
+}
+
+export type ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock;
 
 export interface Message {
   role: "user" | "assistant";
@@ -51,6 +64,7 @@ export interface Config {
   subAgent?: SubAgentConfig;
   sessionSummary?: SessionSummaryConfig;
   autoMemory?: AutoMemoryConfig;
+  attachments?: AttachmentsConfig;
   debug?: boolean | DebugConfig;
   security?: SecurityConfig;
   workspacePath: string;
@@ -79,6 +93,13 @@ export interface AutoMemoryConfig {
   maxCandidates?: number;
   maxBatchChars?: number;
   maxMemoryChars?: number;
+}
+
+export interface AttachmentsConfig {
+  enabled?: boolean;
+  maxFilesPerMessage?: number;
+  maxFileSize?: number;
+  allowedImageTypes?: ImageMediaType[];
 }
 
 export interface DebugConfig {

@@ -32,18 +32,25 @@ export default function ChatView({
   return (
     <>
       <div className="chat-toolbar">
-        <span>{activeSessionId ? `会话 ${activeSessionId.slice(0, 8)}` : "新对话"}</span>
+        <div className="chat-title">
+          <span className="chat-title-mark" aria-hidden="true">✎</span>
+          <span>{activeSessionId ? `会话 ${activeSessionId.slice(0, 8)}` : "新对话"}</span>
+        </div>
         <button
           onClick={onRefreshMessages}
           disabled={!activeSessionId || isStreaming || isRefreshing}
           title="刷新消息列表"
         >
-          刷新
+          <span aria-hidden="true">↻</span> 刷新
         </button>
       </div>
       <div className="chat-view">
         {messages.length === 0 && !isStreaming && (
-          <div className="empty-state">发送一条消息开始对话</div>
+          <div className="chat-empty-state">
+            <span className="empty-mark" aria-hidden="true">t</span>
+            <h1>开始一段新对话</h1>
+            <p>描述你想完成的任务，tiny-claw 会调用合适的工具并持续执行。</p>
+          </div>
         )}
         {messages.map((msg, i) => (
           <MessageBubble key={i} message={msg} onApproveAndResume={onApproveAndResume} />

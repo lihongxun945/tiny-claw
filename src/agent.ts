@@ -6,7 +6,7 @@ import { ensureWorkspace } from "./workspace/workspace.js";
 import { appendHistory } from "./workspace/logger.js";
 import { sanitizeToolMessageChains } from "./message-sanitizer.js";
 import { readSessionMessages } from "./session-store.js";
-import type { AgentActor, Config, Message, ToolUseBlock, ToolResultBlock } from "./types.js";
+import type { AgentActor, Config, ContentBlock, Message, ToolUseBlock, ToolResultBlock } from "./types.js";
 
 // === 事件类型 ===
 
@@ -119,7 +119,11 @@ export class AgentSession {
   }
 
   /** 执行一轮对话，返回事件流 */
-  async *chat(userInput: string, actor?: AgentActor): AsyncGenerator<AgentEvent> {
+  async *chat(
+    userInput: string,
+    actor?: AgentActor,
+    userContent?: ContentBlock[],
+  ): AsyncGenerator<AgentEvent> {
     if (!this.config.apiKey.trim()) {
       yield { type: "error", message: "尚未配置模型 API Key，请先在配置页面填写并保存。" };
       return;
@@ -152,7 +156,7 @@ export class AgentSession {
 
       // 3. User Message Hook：由插件决定如何写入当前会话历史
       const input = beforeResult.input;
-      await this.pluginManager.callOnUserMessage(input, this.id);
+      await this.pluginManager.callOnUserMessage(input, this.id, userContent);
 
       yield* this.runModelLoop(controller, actor, 0, "");
     } catch (err) {
