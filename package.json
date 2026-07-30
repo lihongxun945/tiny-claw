@@ -1,6 +1,6 @@
 {
   "name": "tiny-claw",
-  "version": "0.1.0",
+  "version": "0.1.0-beta.2",
   "description": "一个自主规划、执行任务的 Agent",
   "type": "module",
   "main": "desktop-dist/main.js",

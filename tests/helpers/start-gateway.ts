@@ -63,7 +63,10 @@ export async function startTestGateway(workspacePath: string, token?: string): P
 
   const apiUrl = `http://127.0.0.1:${apiPort}`;
   const webUrl = `http://127.0.0.1:${webPort}`;
-  await waitUntilReady(`${apiUrl}/sessions`, child, token);
+  await Promise.all([
+    waitUntilReady(`${apiUrl}/sessions`, child, token),
+    waitUntilReady(`${webUrl}/`, child),
+  ]);
 
   return {
     apiUrl,
