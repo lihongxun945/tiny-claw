@@ -1,6 +1,6 @@
 {
   "name": "tiny-claw",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "description": "一个自主规划、执行任务的 Agent",
   "type": "module",
   "main": "desktop-dist/main.js",
@@ -19,7 +19,7 @@
     "web:build": "cd web && npm install && npm run build",
     "desktop:compile": "tsc -p desktop/tsconfig.json",
     "desktop:build": "npm run web:build && npm run build && npm run desktop:compile",
-    "desktop:dist": "npm run desktop:build && electron-builder --mac dmg --arm64"
+    "desktop:dist": "npm run desktop:build && electron-builder --mac dmg --arm64 --publish never"
   },
   "author": "lihongxun",
   "license": "ISC",
