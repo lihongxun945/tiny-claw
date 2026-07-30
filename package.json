@@ -1,6 +1,6 @@
 {
   "name": "tiny-claw",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "一个自主规划、执行任务的 Agent",
   "type": "module",
   "main": "desktop-dist/main.js",
@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "test:all": "npm run typecheck && npm run test:coverage && npm run web:build && npm run test:e2e",
+    "test:all": "npm run typecheck && npm run web:build && npm run test:coverage && npm run test:e2e",
     "web:dev": "cd web && npm run dev",
     "web:build": "cd web && npm install && npm run build",
     "desktop:compile": "tsc -p desktop/tsconfig.json",
