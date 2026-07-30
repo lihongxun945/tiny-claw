@@ -185,8 +185,14 @@ export const coreSessionSummaryPlugin: Plugin = {
       };
     }
 
-    function isNewer(updatedAt: string | undefined, currentUpdatedAt: string | undefined): boolean {
-      return Date.parse(updatedAt ?? "") > Date.parse(currentUpdatedAt ?? "");
+    function shouldRefresh(loaded: CachedSessionState, current: CachedSessionState): boolean {
+      const loadedTime = Date.parse(loaded.updatedAt ?? "");
+      const currentTime = Date.parse(current.updatedAt ?? "");
+      if (loadedTime > currentTime) return true;
+      if (loadedTime < currentTime) return false;
+      return loaded.summary !== current.summary
+        || loaded.turnsSinceSummary !== current.turnsSinceSummary
+        || JSON.stringify(loaded.pendingMessages) !== JSON.stringify(current.pendingMessages);
     }
 
     function getState(hookCtx: HookContext): CachedSessionState {
@@ -194,8 +200,8 @@ export const coreSessionSummaryPlugin: Plugin = {
       if (existing) {
         if (isPersistent(hookCtx)) {
           const loaded = loadSessionState(ctx.workspacePath, hookCtx.sessionId);
-          if (isNewer(loaded.updatedAt, existing.updatedAt)) {
-            const refreshed = fromPersistedState(loaded);
+          const refreshed = fromPersistedState(loaded);
+          if (shouldRefresh(refreshed, existing)) {
             states.set(hookCtx.sessionId, refreshed);
             return refreshed;
           }

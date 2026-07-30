@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { AgentSession, type AgentEvent } from "../../src/agent.js";
 import type { ModelClient } from "../../src/model/index.js";
 import { PluginManager } from "../../src/plugin-manager.js";
 import { loadSessionState, saveSessionState } from "../../src/session-state.js";
-import { appendSessionMessage, sessionMessagesPath } from "../../src/session-store.js";
+import { appendSessionMessage, sessionMessagesPath, sessionStateFilePath } from "../../src/session-store.js";
 import { getMemoryRecord, saveMemory } from "../../src/tools/memory.js";
 import type { ChatResponse, Message, Tool, ToolDefinition } from "../../src/types.js";
 import { FakeModelClient } from "../helpers/fake-model-client.js";
@@ -843,12 +843,18 @@ describe("AgentSession loop", () => {
         { type: "done", text: "第一轮完成" },
       ]);
 
-      saveSessionState(summaryRefreshWorkspace, {
-        sessionId: "summary-refresh-session",
-        summary: "外部写入的会话摘要",
-        pendingMessages: [],
-        turnsSinceSummary: 0,
-      });
+      const cachedState = loadSessionState(summaryRefreshWorkspace, "summary-refresh-session");
+      writeFileSync(
+        sessionStateFilePath(summaryRefreshWorkspace, "summary-refresh-session"),
+        `${JSON.stringify({
+          ...cachedState,
+          summary: "外部写入的会话摘要",
+          pendingMessages: [],
+          turnsSinceSummary: 0,
+          updatedAt: cachedState.updatedAt,
+        }, null, 2)}\n`,
+        "utf-8",
+      );
 
       expect(await collect(session.chat("继续"))).toEqual([
         { type: "text_delta", text: "第二轮完成" },
