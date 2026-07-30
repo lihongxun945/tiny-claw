@@ -2,6 +2,19 @@
 tiny-claw 是一个插件化、可扩展的个人 AI Agent 框架，用于研究Agent实现原理，实现了一个完整Agent的全部功能，支持工具调用、长期记忆、权限审批、Web UI 和飞书接入。
 这个项目的目的是研究Agent实现原理，并未经过严格测试，因此可能存在一些潜在的问题，不建议部署在生产环境中。
 
+![tiny-claw WebUI](docs/images/tiny-claw-webui.png)
+
+> [!WARNING]
+> **macOS 提示“tiny-claw 已损坏，无法打开”**
+>
+> 当前客户端尚未进行 Apple Developer ID 签名和公证。请先将 DMG 的 SHA256 与 GitHub Release 中的 `SHA256SUMS.txt` 核对一致，确认安装包完整且来源可信，然后执行：
+>
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/tiny-claw.app
+> ```
+>
+> 命令执行完成后重新打开 tiny-claw。该命令会移除应用的 macOS 隔离属性，只应对从本项目 GitHub Releases 下载并验证过校验值的应用执行。
+
 ## 快速开始
 
 ### 安装
@@ -106,8 +119,6 @@ npm run web:dev
 
 从 GitHub Releases 下载 `tiny-claw-<version>-arm64.dmg`，打开 DMG 后将 `tiny-claw.app` 拖入“应用程序”目录。当前客户端仅支持 Apple Silicon Mac。
 
-客户端目前未进行 Apple Developer ID 签名和公证。如果 macOS 阻止首次打开，请进入“系统设置 → 隐私与安全性”，找到 tiny-claw 的拦截提示并选择“仍要打开”。
-
 #### 首次配置
 
 客户端首次启动会自动创建完整的默认配置。打开左下角“配置”页面，至少完成以下设置：
@@ -151,8 +162,6 @@ npm run desktop:dist
 ```
 
 安装包输出到 `release/tiny-claw-<version>-arm64.dmg`。桌面版首次启动会在 `~/Library/Application Support/tiny-claw/workspace` 创建独立工作目录和完整默认配置；打开应用后，可在“配置”页面完成所有设置。
-
-当前 DMG 未进行 Developer ID 签名和 Apple 公证，仅用于本机开发测试。如果 macOS 阻止首次打开，可在“系统设置 → 隐私与安全性”中选择“仍要打开”。
 
 ### 通过 Tag 自动发布
 
