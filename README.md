@@ -4,16 +4,16 @@ tiny-claw 是一个插件化、可扩展的个人 AI Agent 框架，用于研究
 
 ![tiny-claw WebUI](docs/images/tiny-claw-webui.png)
 
-> [!WARNING]
-> **macOS 提示“tiny-claw 已损坏，无法打开”**
+> [!NOTE]
+> **macOS 客户端签名**
 >
-> 当前客户端尚未进行 Apple Developer ID 签名和公证。请先将 DMG 的 SHA256 与 GitHub Release 中的 `SHA256SUMS.txt` 核对一致，确认安装包完整且来源可信，然后执行：
+> 当前发布流程生成的 macOS 客户端会使用 Apple Developer ID 签名并提交 Apple 公证。旧版本如果提示“tiny-claw 已损坏，无法打开”，请先将 DMG 的 SHA256 与 GitHub Release 中的 `SHA256SUMS.txt` 核对一致，确认安装包完整且来源可信，然后执行：
 >
 > ```bash
 > xattr -dr com.apple.quarantine /Applications/tiny-claw.app
 > ```
 >
-> 命令执行完成后重新打开 tiny-claw。该命令会移除应用的 macOS 隔离属性，只应对从本项目 GitHub Releases 下载并验证过校验值的应用执行。
+> 命令执行完成后重新打开 tiny-claw。该命令会移除应用的 macOS 隔离属性，只应对旧版、来源可信且已经验证校验值的应用执行。
 
 ## 快速开始
 
@@ -155,24 +155,24 @@ macOS 客户端的所有用户数据保存在：
 
 ### 构建 macOS 应用
 
-在 Apple Silicon Mac 上生成未签名的 DMG：
+在 Apple Silicon Mac 上构建 DMG：
 
 ```bash
 npm run desktop:dist
 ```
 
-安装包输出到 `release/tiny-claw-<version>-arm64.dmg`。桌面版首次启动会在 `~/Library/Application Support/tiny-claw/workspace` 创建独立工作目录和完整默认配置；打开应用后，可在“配置”页面完成所有设置。
+如果登录钥匙串中存在有效的 `Developer ID Application` 证书及私钥，`electron-builder` 会自动签名应用；否则生成未签名的本地测试包。安装包输出到 `release/tiny-claw-<version>-arm64.dmg`。桌面版首次启动会在 `~/Library/Application Support/tiny-claw/workspace` 创建独立工作目录和完整默认配置；打开应用后，可在“配置”页面完成所有设置。
 
 ### 通过 Tag 自动发布
 
-推送与 `package.json` 版本一致的 `v*` Tag 后，GitHub Actions 会自动运行测试、构建并校验 arm64 DMG，然后创建 GitHub Release：
+推送与 `package.json` 版本一致的 `v*` Tag 后，GitHub Actions 会自动运行测试、使用 Developer ID 签名 arm64 应用、提交 Apple 公证、装订公证票据并创建 GitHub Release：
 
 ```bash
 npm version patch
 git push origin HEAD --follow-tags
 ```
 
-例如 `package.json` 版本为 `0.2.0` 时，Tag 必须是 `v0.2.0`。发布产物包含 DMG、blockmap 和 `SHA256SUMS.txt`。当前自动发布的应用仍未进行 Apple 签名和公证。
+例如 `package.json` 版本为 `0.2.0` 时，Tag 必须是 `v0.2.0`。发布产物包含已签名并公证的 DMG、blockmap 和 `SHA256SUMS.txt`。仓库需要预先配置 `MACOS_CERTIFICATE`、`MACOS_CERTIFICATE_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD` 和 `APPLE_TEAM_ID` 五个 Actions Secrets。
 
 ## 配置参考
 

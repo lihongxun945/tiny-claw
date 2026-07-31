@@ -15,7 +15,7 @@ concurrency:
 jobs:
   release:
     runs-on: macos-14
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -51,12 +51,75 @@ jobs:
           npm test
           npm run test:e2e
 
-      - name: Build macOS DMG
-        run: npm run desktop:dist
-
-      - name: Verify DMG and generate checksum
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         shell: bash
         run: |
+          certificate_path="${RUNNER_TEMP}/developer-id-application.p12"
+          intermediate_path="${RUNNER_TEMP}/DeveloperIDG2CA.cer"
+          keychain_path="${RUNNER_TEMP}/app-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+
+          test -n "${MACOS_CERTIFICATE}"
+          test -n "${MACOS_CERTIFICATE_PASSWORD}"
+          printf '%s' "${MACOS_CERTIFICATE}" | base64 -D > "${certificate_path}"
+          curl -fsSL \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
+            -o "${intermediate_path}"
+
+          security create-keychain -p "${keychain_password}" "${keychain_path}"
+          security set-keychain-settings -lut 21600 "${keychain_path}"
+          security unlock-keychain -p "${keychain_password}" "${keychain_path}"
+          security import "${certificate_path}" \
+            -k "${keychain_path}" \
+            -P "${MACOS_CERTIFICATE_PASSWORD}" \
+            -A \
+            -t cert \
+            -f pkcs12
+          security import "${intermediate_path}" -k "${keychain_path}"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "${keychain_password}" \
+            "${keychain_path}"
+          security list-keychains -d user -s "${keychain_path}"
+          security find-identity -v -p codesigning "${keychain_path}"
+
+          echo "SIGNING_KEYCHAIN=${keychain_path}" >> "${GITHUB_ENV}"
+
+      - name: Build signed macOS DMG
+        env:
+          CSC_NAME: "Developer ID Application: Hongxun Li (344J9V4UX3)"
+        run: npm run desktop:dist
+
+      - name: Notarize and staple DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          test -n "${APPLE_ID}"
+          test -n "${APPLE_APP_SPECIFIC_PASSWORD}"
+          test -n "${APPLE_TEAM_ID}"
+
+          dmg_path="$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "${dmg_path}"
+
+          xcrun notarytool submit "${dmg_path}" \
+            --apple-id "${APPLE_ID}" \
+            --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --wait
+          xcrun stapler staple "${dmg_path}"
+          xcrun stapler validate "${dmg_path}"
+
+      - name: Verify signed release and generate checksum
+        shell: bash
+        run: |
+          codesign --verify --deep --strict --verbose=2 release/mac-arm64/tiny-claw.app
           hdiutil verify release/tiny-claw-*.dmg
           shasum -a 256 release/tiny-claw-*.dmg > release/SHA256SUMS.txt
 
@@ -71,3 +134,11 @@ jobs:
             --verify-tag \
             --generate-notes \
             --title "tiny-claw ${GITHUB_REF_NAME}"
+
+      - name: Remove temporary signing keychain
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${SIGNING_KEYCHAIN:-}" && -f "${SIGNING_KEYCHAIN}" ]]; then
+            security delete-keychain "${SIGNING_KEYCHAIN}"
+          fi

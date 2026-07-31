@@ -86,6 +86,8 @@ macOS 桌面版使用 Electron 承载现有 Web UI，不改变 Agent Loop 和插
 
 桌面版 workspace 默认位于 `~/Library/Application Support/tiny-claw/workspace`。首次启动由统一配置初始化器生成不含真实密钥的完整默认配置，应用升级和重新安装不会覆盖已有配置、会话、记忆、技能及插件。开发模式和 CLI/Gateway 模式仍使用原有 `./workspace` 或显式指定的目录。
 
+macOS 发布由 Tag 触发 GitHub Actions。流水线在临时钥匙串中导入 Developer ID Application 证书，签名 Electron 应用并生成 DMG，然后使用 Apple `notarytool` 公证最终 DMG、装订公证票据并验证签名与磁盘映像完整性。证书、私钥密码和 Apple 公证凭据仅通过 GitHub Actions Secrets 注入，临时钥匙串在任务结束时删除。
+
 ## 工作目录结构
 
 tiny-claw 运行时需要一个工作目录（workspace），所有持久化数据都放在其中。工作目录路径通过 `--workspace` CLI 参数或 `TINY_CLAW_WORKSPACE` 环境变量指定，默认为 `./workspace`。
