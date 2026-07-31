@@ -90,8 +90,6 @@ jobs:
           echo "SIGNING_KEYCHAIN=${keychain_path}" >> "${GITHUB_ENV}"
 
       - name: Build signed macOS DMG
-        env:
-          CSC_NAME: "Developer ID Application: Hongxun Li (344J9V4UX3)"
         run: npm run desktop:dist
 
       - name: Notarize and staple DMG
