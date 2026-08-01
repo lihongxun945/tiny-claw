@@ -103,7 +103,7 @@ describe("loadConfig", () => {
       turnThreshold: 10,
       maxCandidates: 5,
       maxBatchChars: undefined,
-      maxMemoryChars: undefined,
+      lockTimeoutSeconds: undefined,
     });
   });
 
@@ -131,7 +131,9 @@ describe("loadConfig", () => {
     [{ security: { tools: { bash: { mode: "unknown" } } } }, "配置字段 security.tools.bash.mode 不受支持"],
     [{ security: { gateway: { host: "0.0.0.0" } } }, "Gateway 暴露到非回环地址时必须配置 security.gateway.token"],
     [{ subAgent: { maxConcurrency: 9 } }, "配置字段 subAgent.maxConcurrency 超出允许范围"],
-    [{ autoMemory: { maxMemoryChars: 999 } }, "配置字段 autoMemory.maxMemoryChars 超出允许范围"],
+    [{ autoMemory: { lockTimeoutSeconds: 0 } }, "配置字段 autoMemory.lockTimeoutSeconds 超出允许范围"],
+    [{ memory: { maxItemChars: 999 } }, "配置字段 memory.maxItemChars 超出允许范围"],
+    [{ memory: { maxItemChars: 2000, maxTotalChars: 1000 } }, "配置字段 memory.maxItemChars 不能大于 memory.maxTotalChars"],
     [{ sessionSummary: { enabled: "yes" } }, "配置字段 sessionSummary.enabled 必须是布尔值"],
     [{ sessionSummary: { persistent: "yes" } }, "配置字段 sessionSummary.persistent 必须是布尔值"],
     [{ enabledPlugins: "feishu" }, "配置字段 enabledPlugins 必须是字符串数组"],

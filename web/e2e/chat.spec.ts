@@ -93,6 +93,63 @@ test("autocompletes dynamically registered slash commands", async ({ page }) => 
   await expect(listbox).not.toBeVisible();
 });
 
+test("shows structured model request data in the debug log view", async ({ page }) => {
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({ json: { sessions: [] } });
+  });
+  await page.route("**/logs", async (route) => {
+    await route.fulfill({ json: { files: [] } });
+  });
+  await page.route("**/debug/model-calls?id=request-1", async (route) => {
+    await route.fulfill({
+      json: {
+        trace: {
+          requestId: "request-1",
+          sessionId: "session-1",
+          provider: "openai-chat",
+          model: "gpt-test",
+          mode: "chat",
+          startedAt: "2026-07-31T12:00:00.000Z",
+          updatedAt: "2026-07-31T12:00:01.000Z",
+          durationMs: 1000,
+          status: "success",
+          events: [{
+            timestamp: "2026-07-31T12:00:00.000Z",
+            phase: "request",
+            data: { body: { model: "gpt-test", messages: [{ role: "user", content: "原始问题" }] } },
+          }],
+        },
+      },
+    });
+  });
+  await page.route("**/debug/model-calls", async (route) => {
+    await route.fulfill({
+      json: {
+        traces: [{
+          requestId: "request-1",
+          sessionId: "session-1",
+          provider: "openai-chat",
+          model: "gpt-test",
+          mode: "chat",
+          startedAt: "2026-07-31T12:00:00.000Z",
+          updatedAt: "2026-07-31T12:00:01.000Z",
+          durationMs: 1000,
+          status: "success",
+          eventCount: 1,
+        }],
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "日志" }).click();
+  await page.getByRole("button", { name: "模型调用" }).click();
+
+  await expect(page.getByRole("button", { name: /gpt-test openai-chat/ })).toBeVisible();
+  await expect(page.locator(".model-event-json")).toContainText("原始问题");
+  await expect(page.getByRole("button", { name: "复制 JSON" })).toBeVisible();
+});
+
 test("uploads, previews, sends, and renders an image attachment", async ({ page }) => {
   let chatBody: Record<string, unknown> | undefined;
   await page.route("**/history/sessions", async (route) => {
@@ -148,6 +205,68 @@ test("uploads, previews, sends, and renders an image attachment", async ({ page 
     attachments: ["image-1"],
   });
   expect(typeof chatBody?.session_id).toBe("string");
+});
+
+test("previews message images in a lightbox and navigates within the message", async ({ page }) => {
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({
+      json: {
+        sessions: [{ id: "gallery-session", lastActivity: Date.now(), preview: "两张图片" }],
+      },
+    });
+  });
+  await page.route("**/history/sessions/gallery-session/messages", async (route) => {
+    await route.fulfill({
+      json: {
+        messages: [{
+          role: "user",
+          text: "两张图片",
+          toolCalls: [],
+          attachments: [
+            { id: "first", name: "first.png", mediaType: "image/png", url: "/uploads?id=first" },
+            { id: "second", name: "second.png", mediaType: "image/png", url: "/uploads?id=second" },
+          ],
+          timestamp: Date.now(),
+        }],
+      },
+    });
+  });
+  await page.route("**/uploads*", async (route) => {
+    await route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByText("gallery-").click();
+
+  const message = page.locator(".message.user");
+  await expect(message.locator("a")).toHaveCount(0);
+  await message.getByRole("button", { name: "预览 first.png" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "图片预览" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("1 / 2")).toBeVisible();
+
+  await dialog.getByRole("button", { name: "下一张图片" }).click();
+  await expect(dialog.getByText("2 / 2")).toBeVisible();
+
+  await page.keyboard.press("ArrowLeft");
+  await expect(dialog.getByText("1 / 2")).toBeVisible();
+
+  await dialog.locator(".image-lightbox-viewport").dispatchEvent("pointerdown", {
+    pointerId: 1,
+    clientX: 300,
+  });
+  await dialog.locator(".image-lightbox-viewport").dispatchEvent("pointerup", {
+    pointerId: 1,
+    clientX: 200,
+  });
+  await expect(dialog.getByText("2 / 2")).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
 });
 
 test("shows processing state immediately after sending", async ({ page }) => {

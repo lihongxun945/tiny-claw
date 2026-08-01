@@ -134,6 +134,43 @@ describe("OpenAIChatClient", () => {
     expect(requestBodies[2]).toMatchObject({ max_completion_tokens: 1024 });
   });
 
+  it("reports structured debug events and groups repaired attempts by request ID", async () => {
+    const events: Array<{ requestId: string; phase: string; data: unknown }> = [];
+    const fetchMock = vi.fn(async () => fetchMock.mock.calls.length === 1
+      ? maxTokensError()
+      : successResponse("repaired"));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OpenAIChatClient(
+      { ...config(), debug: { enabled: true, modelIO: true, rawStreamEvents: false } },
+      {
+        sessionId: "debug-session",
+        reportDebug: (event) => events.push(event),
+      },
+    );
+
+    await expect(client.complete([{ role: "user", content: "hello" }], "system prompt"))
+      .resolves.toBe("repaired");
+
+    expect(events.map((event) => event.phase)).toEqual([
+      "request",
+      "error",
+      "repair",
+      "request",
+      "response",
+    ]);
+    expect(new Set(events.map((event) => event.requestId)).size).toBe(1);
+    expect(events[0].data).toMatchObject({
+      attempt: 1,
+      body: {
+        model: "test-model",
+        messages: [
+          { role: "system", content: "system prompt" },
+          { role: "user", content: "hello" },
+        ],
+      },
+    });
+  });
+
   it("repairs max_tokens errors for streaming chat requests", async () => {
     const requestBodies: Array<Record<string, unknown>> = [];
     vi.stubGlobal("fetch", vi.fn(async (_url, init?: RequestInit) => {

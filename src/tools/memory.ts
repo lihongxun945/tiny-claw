@@ -7,6 +7,8 @@ import { checkDangerousToolPermission } from "./permission.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9_-]+$/;
 const SUMMARY_LIMIT = 300;
+const DEFAULT_MAX_ITEM_CHARS = 20000;
+const DEFAULT_MAX_TOTAL_CHARS = 80000;
 
 export type MemorySource = "manual" | "tool" | "auto";
 
@@ -38,6 +40,31 @@ export interface MemoryRecord {
   source: MemorySource;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface MemoryLimits {
+  maxItemChars: number;
+  maxTotalChars: number;
+}
+
+export class MemoryCapacityError extends Error {
+  constructor(
+    readonly code: "memory_content_too_large" | "memory_total_too_large",
+    readonly actualChars: number,
+    readonly maxChars: number,
+  ) {
+    super(code === "memory_content_too_large"
+      ? `记忆正文超过单条上限: ${actualChars}/${maxChars}`
+      : `启用的长期记忆总量超过上限: ${actualChars}/${maxChars}`);
+    this.name = "MemoryCapacityError";
+  }
+}
+
+export function getMemoryLimits(config: Config): MemoryLimits {
+  return {
+    maxItemChars: config.memory?.maxItemChars ?? DEFAULT_MAX_ITEM_CHARS,
+    maxTotalChars: config.memory?.maxTotalChars ?? DEFAULT_MAX_TOTAL_CHARS,
+  };
 }
 
 function sanitizeName(name: string): string {
@@ -250,6 +277,7 @@ export function updateMemoryRecord(
     scope?: string;
     source?: MemorySource;
   },
+  limits?: MemoryLimits,
 ): MemoryRecord {
   const existing = readMemoryEntry(workspacePath, name);
   if (!existing) {
@@ -257,6 +285,13 @@ export function updateMemoryRecord(
   }
 
   const content = typeof updates.content === "string" ? updates.content : existing.content;
+  validateMemoryCapacity(
+    workspacePath,
+    name,
+    content,
+    updates.disabled ?? existing.meta.disabled,
+    limits,
+  );
   existing.content = content;
   existing.meta.updatedAt = nowIso();
   if (Array.isArray(updates.tags)) existing.meta.tags = updates.tags.map(String).filter(Boolean);
@@ -269,25 +304,39 @@ export function updateMemoryRecord(
   return toMemoryRecord(existing);
 }
 
-export function setMemoryDisabled(workspacePath: string, name: string, disabled: boolean): MemoryRecord {
-  return updateMemoryRecord(workspacePath, name, { disabled });
+export function setMemoryDisabled(
+  workspacePath: string,
+  name: string,
+  disabled: boolean,
+  limits?: MemoryLimits,
+): MemoryRecord {
+  return updateMemoryRecord(workspacePath, name, { disabled }, limits);
 }
 
 export function saveMemory(
   workspacePath: string,
   name: string,
   content: string,
-  options: { tags?: string[]; disabled?: boolean; scope?: string; summary?: string; source?: MemorySource } = {},
+  options: {
+    tags?: string[];
+    disabled?: boolean;
+    scope?: string;
+    summary?: string;
+    source?: MemorySource;
+    limits?: MemoryLimits;
+  } = {},
 ): string {
   const filePath = memoryPath(workspacePath, name);
   const existing = readMemoryEntry(workspacePath, name);
   const timestamp = nowIso();
+  const disabled = options.disabled ?? existing?.meta.disabled ?? false;
+  validateMemoryCapacity(workspacePath, name, content, disabled, options.limits);
   const meta: MemoryMeta = {
     name,
     tags: options.tags ?? existing?.meta.tags ?? [],
     createdAt: existing?.meta.createdAt ?? timestamp,
     updatedAt: timestamp,
-    disabled: options.disabled ?? existing?.meta.disabled ?? false,
+    disabled,
     scope: options.scope ?? existing?.meta.scope ?? "global",
     source: options.source ?? existing?.meta.source ?? "tool",
     summary: buildSummary(content, options.summary),
@@ -297,13 +346,14 @@ export function saveMemory(
   return `已保存记忆: ${name}`;
 }
 
-export function appendMemory(workspacePath: string, name: string, content: string): string {
+export function appendMemory(workspacePath: string, name: string, content: string, limits?: MemoryLimits): string {
   const existing = readMemoryEntry(workspacePath, name);
   if (!existing) {
-    return saveMemory(workspacePath, name, content);
+    return saveMemory(workspacePath, name, content, { limits });
   }
 
   existing.content = `${existing.content.trim()}\n${content.trim()}`.trim();
+  validateMemoryCapacity(workspacePath, name, existing.content, existing.meta.disabled, limits);
   existing.meta.updatedAt = nowIso();
   existing.meta.summary = buildSummary(existing.content, existing.meta.summary);
   writeMemoryEntry(existing);
@@ -365,6 +415,38 @@ export function loadAllMemories(workspacePath: string): string {
   ].join("\n");
 }
 
+function validateMemoryCapacity(
+  workspacePath: string,
+  name: string,
+  content: string,
+  disabled: boolean,
+  limits?: MemoryLimits,
+): void {
+  if (!limits) return;
+  const normalizedContent = content.trim();
+  if (normalizedContent.length > limits.maxItemChars) {
+    throw new MemoryCapacityError("memory_content_too_large", normalizedContent.length, limits.maxItemChars);
+  }
+  if (disabled) return;
+
+  const totalChars = listMemoryEntries(workspacePath)
+    .filter((entry) => !entry.meta.disabled && entry.name !== name)
+    .reduce((total, entry) => total + entry.content.trim().length, normalizedContent.length);
+  if (totalChars > limits.maxTotalChars) {
+    throw new MemoryCapacityError("memory_total_too_large", totalChars, limits.maxTotalChars);
+  }
+}
+
+function memoryErrorResult(error: MemoryCapacityError): string {
+  return JSON.stringify({
+    error: error.code,
+    message: error.message,
+    actualChars: error.actualChars,
+    maxChars: error.maxChars,
+    retryable: true,
+  });
+}
+
 // === 工具定义 ===
 
 export function createMemorySaveTool(workspacePath: string, getConfig: () => Config): Tool {
@@ -412,12 +494,18 @@ export function createMemorySaveTool(workspacePath: string, getConfig: () => Con
 
       const name = String(args.name ?? "");
       const content = String(args.content ?? "");
-      return saveMemory(workspacePath, name, content, {
-        tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
-        scope: typeof args.scope === "string" ? args.scope : undefined,
-        summary: typeof args.summary === "string" ? args.summary : undefined,
-        source: args.source === "auto" ? "auto" : undefined,
-      });
+      try {
+        return saveMemory(workspacePath, name, content, {
+          tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
+          scope: typeof args.scope === "string" ? args.scope : undefined,
+          summary: typeof args.summary === "string" ? args.summary : undefined,
+          source: args.source === "auto" ? "auto" : undefined,
+          limits: getMemoryLimits(getConfig()),
+        });
+      } catch (error) {
+        if (error instanceof MemoryCapacityError) return memoryErrorResult(error);
+        throw error;
+      }
     },
   };
 }
@@ -454,7 +542,12 @@ export function createMemoryAppendTool(workspacePath: string, getConfig: () => C
 
       const name = String(args.name ?? "");
       const content = String(args.content ?? "");
-      return appendMemory(workspacePath, name, content);
+      try {
+        return appendMemory(workspacePath, name, content, getMemoryLimits(getConfig()));
+      } catch (error) {
+        if (error instanceof MemoryCapacityError) return memoryErrorResult(error);
+        throw error;
+      }
     },
   };
 }

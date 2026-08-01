@@ -64,6 +64,7 @@ export interface Config {
   subAgent?: SubAgentConfig;
   sessionSummary?: SessionSummaryConfig;
   autoMemory?: AutoMemoryConfig;
+  memory?: MemoryConfig;
   attachments?: AttachmentsConfig;
   debug?: boolean | DebugConfig;
   security?: SecurityConfig;
@@ -92,7 +93,12 @@ export interface AutoMemoryConfig {
   turnThreshold?: number;
   maxCandidates?: number;
   maxBatchChars?: number;
-  maxMemoryChars?: number;
+  lockTimeoutSeconds?: number;
+}
+
+export interface MemoryConfig {
+  maxItemChars?: number;
+  maxTotalChars?: number;
 }
 
 export interface AttachmentsConfig {

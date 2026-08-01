@@ -9,10 +9,12 @@ import { coreCompressPlugin } from "./compress.js";
 import { coreLoggerPlugin } from "./logger.js";
 import { coreChatCommandsPlugin } from "./chat-commands.js";
 import { coreAttachmentsPlugin } from "./attachments.js";
+import { coreDebugPlugin } from "./debug.js";
 
 export const corePlugins: Plugin[] = [
   coreChatCommandsPlugin,
   coreAttachmentsPlugin,
+  coreDebugPlugin,
   coreToolsPlugin,
   coreSubAgentPlugin,
   corePromptsPlugin,

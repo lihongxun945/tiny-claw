@@ -8,7 +8,16 @@ import { ensureConfigFile, loadConfig, validateConfig } from "./config.js";
 import { AgentSession, type AgentEvent } from "./agent.js";
 import { PluginManager } from "./plugin-manager.js";
 import { appendLog } from "./workspace/logger.js";
-import { deleteMemory, getMemoryRecord, listMemoryRecords, setMemoryDisabled, updateMemoryRecord, type MemorySource } from "./tools/memory.js";
+import {
+  deleteMemory,
+  getMemoryLimits,
+  getMemoryRecord,
+  listMemoryRecords,
+  MemoryCapacityError,
+  setMemoryDisabled,
+  updateMemoryRecord,
+  type MemorySource,
+} from "./tools/memory.js";
 import { approveRequest, listApprovals, rejectRequest } from "./tools/approval.js";
 import { deleteStoredSession, listSessionMetas, readSessionMessages } from "./session-store.js";
 import type { RegisteredRoute, RouteContext } from "./plugins/types.js";
@@ -654,10 +663,12 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
           disabled: typeof body.disabled === "boolean" ? body.disabled : undefined,
           scope: typeof body.scope === "string" ? body.scope : undefined,
           source: isMemorySource(body.source) ? body.source : undefined,
-        });
+        }, getMemoryLimits(loadConfig(workspacePath)));
         sendJSON(res, 200, { memory });
       } catch (err) {
-        sendJSON(res, 500, { error: err instanceof Error ? err.message : String(err) });
+        sendJSON(res, err instanceof MemoryCapacityError ? 400 : 500, {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       return;
     }
@@ -668,10 +679,12 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         const disabled = url.pathname.endsWith("/disable");
         const suffix = disabled ? "/disable" : "/enable";
         const name = decodeURIComponent(url.pathname.slice("/memory/".length, -suffix.length));
-        const memory = setMemoryDisabled(workspacePath, name, disabled);
+        const memory = setMemoryDisabled(workspacePath, name, disabled, getMemoryLimits(loadConfig(workspacePath)));
         sendJSON(res, 200, { memory });
       } catch (err) {
-        sendJSON(res, 500, { error: err instanceof Error ? err.message : String(err) });
+        sendJSON(res, err instanceof MemoryCapacityError ? 400 : 500, {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       return;
     }
@@ -849,7 +862,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const url = new URL(req.url ?? "/", `http://localhost:${webPort}`);
 
       // 代理 API 请求到 gateway
-      if (url.pathname === "/chat" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
+      if (url.pathname === "/chat" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
         try {
           const hasRequestBody = req.method !== "GET" && req.method !== "HEAD"
             && (Number(req.headers["content-length"] ?? 0) > 0 || req.headers["transfer-encoding"] !== undefined);

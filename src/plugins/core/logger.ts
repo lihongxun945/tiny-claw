@@ -1,5 +1,5 @@
 import type { Plugin, HookContext } from "../types.js";
-import { appendLog, appendHistory } from "../../workspace/logger.js";
+import { appendLog } from "../../workspace/logger.js";
 
 export const coreLoggerPlugin: Plugin = {
   name: "core-logger",
@@ -7,10 +7,8 @@ export const coreLoggerPlugin: Plugin = {
     const workspacePath = ctx.workspacePath;
 
     ctx.registerHooks({
-      // 用户消息：写历史文件 + 日志
+      // 用户消息日志；完整会话消息由 core-history 持久化。
       onBeforeChat: (_ctx: HookContext, input: string) => {
-        const msg = { role: "user" as const, content: input, _timestamp: Date.now() };
-        appendHistory(workspacePath, msg, _ctx.sessionId);
         appendLog(workspacePath, "INFO", `用户输入: ${input}`, _ctx.sessionId);
       },
 

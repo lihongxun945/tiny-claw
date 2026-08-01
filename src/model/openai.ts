@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   ChatResponse,
   Config,
@@ -7,8 +8,7 @@ import type {
   ToolUseBlock,
   ImageBlock,
 } from "../types.js";
-import type { ModelClient } from "./types.js";
-import { appendLog } from "../workspace/logger.js";
+import type { ModelClient, ModelClientOptions, ModelDebugEvent, ModelDebugPhase } from "./types.js";
 import { sanitizeToolMessageChains } from "../message-sanitizer.js";
 import { repairModelRequest } from "./request-repair.js";
 import { readImageBlockData } from "../attachments.js";
@@ -149,7 +149,7 @@ function toOpenAIMessages(config: Config, messages: Message[], systemPrompt?: st
 export class OpenAIChatClient implements ModelClient {
   private completionTokenParameter: "max_tokens" | "max_completion_tokens" = "max_tokens";
 
-  constructor(private config: Config) {}
+  constructor(private config: Config, private options: ModelClientOptions = {}) {}
 
   private endpoint(): string {
     const base = this.config.apiUrl.replace(/\/+$/, "");
@@ -158,10 +158,25 @@ export class OpenAIChatClient implements ModelClient {
     return `${base}/v1/chat/completions`;
   }
 
-  private debugLog(event: string, data: unknown): void {
+  private debugLog(
+    requestId: string,
+    mode: "complete" | "chat",
+    phase: ModelDebugPhase,
+    data: unknown,
+  ): void {
     if (!modelIODebugEnabled(this.config)) return;
     try {
-      appendLog(this.config.workspacePath, "DEBUG", `${event}: ${JSON.stringify(data)}`);
+      const event: ModelDebugEvent = {
+        requestId,
+        sessionId: this.options.sessionId,
+        timestamp: new Date().toISOString(),
+        provider: "openai-chat",
+        model: this.config.model,
+        mode,
+        phase,
+        data,
+      };
+      this.options.reportDebug?.(event);
     } catch {
       // Debug logging must never affect model calls.
     }
@@ -182,14 +197,16 @@ export class OpenAIChatClient implements ModelClient {
     initialBody: Record<string, unknown>,
     mode: "complete" | "chat",
     signal?: AbortSignal,
-  ): Promise<Response> {
+  ): Promise<{ response: Response; requestId: string }> {
     let body = initialBody;
     const appliedRepairs = new Set<string>();
+    const requestId = randomUUID();
+    let attempt = 0;
 
     while (true) {
-      this.debugLog("model_request", {
-        provider: "openai-chat",
-        mode,
+      attempt += 1;
+      this.debugLog(requestId, mode, "request", {
+        attempt,
         url,
         body,
       });
@@ -203,12 +220,11 @@ export class OpenAIChatClient implements ModelClient {
         body: JSON.stringify(body),
         signal,
       });
-      if (response.ok) return response;
+      if (response.ok) return { response, requestId };
 
       const errorText = await response.text();
-      this.debugLog("model_error", {
-        provider: "openai-chat",
-        mode,
+      this.debugLog(requestId, mode, "error", {
+        attempt,
         status: response.status,
         body: errorText,
       });
@@ -230,9 +246,8 @@ export class OpenAIChatClient implements ModelClient {
       if ("max_completion_tokens" in body) {
         this.completionTokenParameter = "max_completion_tokens";
       }
-      this.debugLog("model_request_repair", {
-        provider: "openai-chat",
-        mode,
+      this.debugLog(requestId, mode, "repair", {
+        attempt,
         repair: repaired.name,
       });
     }
@@ -246,14 +261,12 @@ export class OpenAIChatClient implements ModelClient {
       stream: false,
     }, 1024);
 
-    const response = await this.sendRequest(url, body, "complete", signal);
+    const { response, requestId } = await this.sendRequest(url, body, "complete", signal);
 
     const data = await response.json() as {
       choices?: Array<{ message?: { content?: string | null } }>;
     };
-    this.debugLog("model_response", {
-      provider: "openai-chat",
-      mode: "complete",
+    this.debugLog(requestId, "complete", "response", {
       status: response.status,
       data,
     });
@@ -279,14 +292,15 @@ export class OpenAIChatClient implements ModelClient {
       body.tools = openAITools;
     }
 
-    const response = await this.sendRequest(url, body, "chat", signal);
+    const { response, requestId } = await this.sendRequest(url, body, "chat", signal);
 
-    return this.parseSSE(response, onDelta);
+    return this.parseSSE(response, onDelta, requestId);
   }
 
   private async parseSSE(
     response: Response,
     onDelta: (text: string) => void,
+    requestId: string,
   ): Promise<ChatResponse> {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -328,7 +342,7 @@ export class OpenAIChatClient implements ModelClient {
               }>;
             };
             if (rawStreamDebugEnabled(this.config)) {
-              this.debugLog("model_stream_event", event);
+              this.debugLog(requestId, "chat", "stream_event", event);
             }
 
             const delta = event.choices?.[0]?.delta;
@@ -368,7 +382,7 @@ export class OpenAIChatClient implements ModelClient {
       });
 
     const parsed = { text: fullText, toolCalls };
-    this.debugLog("model_parsed_response", parsed);
+    this.debugLog(requestId, "chat", "parsed_response", parsed);
     return parsed;
   }
 }

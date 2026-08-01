@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   Config,
   Message,
@@ -9,8 +10,7 @@ import type {
   ContentBlockDeltaEvent,
   ContentBlock,
 } from "../types.js";
-import type { ModelClient } from "./types.js";
-import { appendLog } from "../workspace/logger.js";
+import type { ModelClient, ModelClientOptions, ModelDebugEvent, ModelDebugPhase } from "./types.js";
 import { readImageBlockData } from "../attachments.js";
 
 type AnthropicContentBlock =
@@ -70,7 +70,7 @@ function rawStreamDebugEnabled(config: Config): boolean {
 }
 
 export class AnthropicMessagesClient implements ModelClient {
-  constructor(private config: Config) {}
+  constructor(private config: Config, private options: ModelClientOptions = {}) {}
 
   private endpoint(): string {
     const base = this.config.apiUrl.replace(/\/+$/, "");
@@ -79,10 +79,25 @@ export class AnthropicMessagesClient implements ModelClient {
     return `${base}/v1/messages`;
   }
 
-  private debugLog(event: string, data: unknown): void {
+  private debugLog(
+    requestId: string,
+    mode: "complete" | "chat",
+    phase: ModelDebugPhase,
+    data: unknown,
+  ): void {
     if (!modelIODebugEnabled(this.config)) return;
     try {
-      appendLog(this.config.workspacePath, "DEBUG", `${event}: ${JSON.stringify(data)}`);
+      const event: ModelDebugEvent = {
+        requestId,
+        sessionId: this.options.sessionId,
+        timestamp: new Date().toISOString(),
+        provider: "anthropic-messages",
+        model: this.config.model,
+        mode,
+        phase,
+        data,
+      };
+      this.options.reportDebug?.(event);
     } catch {
       // Debug logging must never affect model calls.
     }
@@ -91,6 +106,7 @@ export class AnthropicMessagesClient implements ModelClient {
   /** 非流式调用，用于上下文压缩等内部用途 */
   async complete(messages: Message[], systemPrompt?: string, signal?: AbortSignal): Promise<string> {
     const url = this.endpoint();
+    const requestId = randomUUID();
 
     const body: Record<string, unknown> = {
       model: this.config.model,
@@ -102,9 +118,8 @@ export class AnthropicMessagesClient implements ModelClient {
       body.system = systemPrompt;
     }
 
-    this.debugLog("model_request", {
-      provider: "anthropic-messages",
-      mode: "complete",
+    this.debugLog(requestId, "complete", "request", {
+      attempt: 1,
       url,
       body,
     });
@@ -122,9 +137,8 @@ export class AnthropicMessagesClient implements ModelClient {
 
     if (!response.ok) {
       const errorText = await response.text();
-      this.debugLog("model_error", {
-        provider: "anthropic-messages",
-        mode: "complete",
+      this.debugLog(requestId, "complete", "error", {
+        attempt: 1,
         status: response.status,
         body: errorText,
       });
@@ -134,9 +148,7 @@ export class AnthropicMessagesClient implements ModelClient {
     const data = await response.json() as {
       content: Array<{ type: string; text?: string }>;
     };
-    this.debugLog("model_response", {
-      provider: "anthropic-messages",
-      mode: "complete",
+    this.debugLog(requestId, "complete", "response", {
       status: response.status,
       data,
     });
@@ -155,6 +167,7 @@ export class AnthropicMessagesClient implements ModelClient {
     signal?: AbortSignal,
   ): Promise<ChatResponse> {
     const url = this.endpoint();
+    const requestId = randomUUID();
 
     const body: Record<string, unknown> = {
       model: this.config.model,
@@ -169,9 +182,8 @@ export class AnthropicMessagesClient implements ModelClient {
       body.tools = tools;
     }
 
-    this.debugLog("model_request", {
-      provider: "anthropic-messages",
-      mode: "chat",
+    this.debugLog(requestId, "chat", "request", {
+      attempt: 1,
       url,
       body,
     });
@@ -189,21 +201,21 @@ export class AnthropicMessagesClient implements ModelClient {
 
     if (!response.ok) {
       const errorText = await response.text();
-      this.debugLog("model_error", {
-        provider: "anthropic-messages",
-        mode: "chat",
+      this.debugLog(requestId, "chat", "error", {
+        attempt: 1,
         status: response.status,
         body: errorText,
       });
       throw new Error(`API 请求失败 (${response.status}): ${errorText}`);
     }
 
-    return this.parseSSE(response, onDelta);
+    return this.parseSSE(response, onDelta, requestId);
   }
 
   private async parseSSE(
     response: Response,
     onDelta: (text: string) => void,
+    requestId: string,
   ): Promise<ChatResponse> {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -231,7 +243,7 @@ export class AnthropicMessagesClient implements ModelClient {
         try {
           const event: StreamEvent = JSON.parse(jsonStr);
           if (rawStreamDebugEnabled(this.config)) {
-            this.debugLog("model_stream_event", event);
+            this.debugLog(requestId, "chat", "stream_event", event);
           }
 
           if (event.type === "content_block_start") {
@@ -283,7 +295,7 @@ export class AnthropicMessagesClient implements ModelClient {
     }
 
     const parsed = { text: fullText, toolCalls };
-    this.debugLog("model_parsed_response", parsed);
+    this.debugLog(requestId, "chat", "parsed_response", parsed);
     return parsed;
   }
 }

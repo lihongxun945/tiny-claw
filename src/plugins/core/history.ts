@@ -1,5 +1,6 @@
 import type { Plugin } from "../types.js";
 import type { Message } from "../../types.js";
+import { appendHistory } from "../../workspace/logger.js";
 
 export const coreHistoryPlugin: Plugin = {
   name: "core-history",
@@ -9,6 +10,7 @@ export const coreHistoryPlugin: Plugin = {
         const userMsg: Message = { role: "user", content: content ?? input, _timestamp: Date.now() };
         hookCtx.history.markTurnStart();
         hookCtx.history.push(userMsg);
+        appendHistory(ctx.workspacePath, userMsg, hookCtx.sessionId);
       },
     });
   },

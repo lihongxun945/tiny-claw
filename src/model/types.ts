@@ -12,3 +12,21 @@ export interface ModelClient {
 }
 
 export type ModelProvider = "anthropic-messages" | "openai-chat" | "chatgpt";
+
+export type ModelDebugPhase = "request" | "response" | "parsed_response" | "error" | "repair" | "stream_event";
+
+export interface ModelDebugEvent {
+  requestId: string;
+  sessionId?: string;
+  timestamp: string;
+  provider: ModelProvider;
+  model: string;
+  mode: "chat" | "complete";
+  phase: ModelDebugPhase;
+  data: unknown;
+}
+
+export interface ModelClientOptions {
+  sessionId?: string;
+  reportDebug?: (event: ModelDebugEvent) => void;
+}

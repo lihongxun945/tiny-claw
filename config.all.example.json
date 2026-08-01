@@ -25,7 +25,11 @@
     "turnThreshold": 10,
     "maxCandidates": 5,
     "maxBatchChars": 8000,
-    "maxMemoryChars": 20000
+    "lockTimeoutSeconds": 300
+  },
+  "memory": {
+    "maxItemChars": 20000,
+    "maxTotalChars": 80000
   },
   "attachments": {
     "enabled": true,

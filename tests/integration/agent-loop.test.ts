@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { AgentSession, type AgentEvent } from "../../src/agent.js";
+import { attachmentToImageBlock, saveAttachment } from "../../src/attachments.js";
+import { loadConfig } from "../../src/config.js";
 import type { ModelClient } from "../../src/model/index.js";
 import { PluginManager } from "../../src/plugin-manager.js";
-import { loadSessionState, saveSessionState } from "../../src/session-state.js";
+import { loadSessionState, saveSessionState, updateSessionState } from "../../src/session-state.js";
 import { appendSessionMessage, sessionMessagesPath, sessionStateFilePath } from "../../src/session-store.js";
 import { getMemoryRecord, saveMemory } from "../../src/tools/memory.js";
 import type { ChatResponse, Message, Tool, ToolDefinition } from "../../src/types.js";
+import { runWorkspaceAutoMemoryAnalysis } from "../../src/plugins/core/auto-memory.js";
 import { FakeModelClient } from "../helpers/fake-model-client.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
@@ -128,6 +131,50 @@ describe("AgentSession loop", () => {
     ]);
   });
 
+  it("persists image blocks from user messages and restores them after session reload", async () => {
+    const png = Buffer.from([
+      137, 80, 78, 71, 13, 10, 26, 10,
+      0, 0, 0, 13, 73, 72, 68, 82,
+    ]);
+    const attachment = saveAttachment(workspacePath, "image-history", "screen.png", "image/png", png);
+    const imageBlock = attachmentToImageBlock(attachment);
+    const client = new FakeModelClient([{ text: "图片已识别", toolCalls: [] }]);
+    const session = new AgentSession("image-history", workspacePath, manager, {}, client);
+
+    await collect(session.chat("识别图片", undefined, [
+      { type: "text", text: "识别图片" },
+      imageBlock,
+    ]));
+
+    const records = readFileSync(sessionMessagesPath(workspacePath, "image-history"), "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.role === "user")).toEqual([
+      expect.objectContaining({
+        content: [
+          { type: "text", text: "识别图片" },
+          imageBlock,
+        ],
+      }),
+    ]);
+
+    const restored = new AgentSession(
+      "image-history",
+      workspacePath,
+      manager,
+      {},
+      new FakeModelClient([]),
+    );
+    expect(restored.getMessages()).toContainEqual(expect.objectContaining({
+      role: "user",
+      content: [
+        { type: "text", text: "识别图片" },
+        imageBlock,
+      ],
+    }));
+  });
+
   it("reports a clear error before model invocation when API key is empty", async () => {
     const emptyKeyWorkspace = createTempWorkspace({ apiKey: "" });
     const emptyKeyManager = new PluginManager(emptyKeyWorkspace);
@@ -188,7 +235,8 @@ describe("AgentSession loop", () => {
 
   it("auto-memory analyzes only user questions and final answers", async () => {
     const autoWorkspace = createTempWorkspace({
-      autoMemory: { enabled: true, mode: "auto", turnThreshold: 1, maxMemoryChars: 1000 },
+      autoMemory: { enabled: true, mode: "auto", turnThreshold: 1 },
+      memory: { maxItemChars: 1000, maxTotalChars: 5000 },
       sessionSummary: { enabled: false },
     });
     const autoManager = new PluginManager(autoWorkspace);
@@ -378,9 +426,109 @@ describe("AgentSession loop", () => {
     }
   });
 
-  it("auto-memory clamps saved memory content to configured length before tool execution", async () => {
+  it("keeps turns added during analysis and skips a concurrent workspace analysis", async () => {
     const autoWorkspace = createTempWorkspace({
-      autoMemory: { enabled: true, mode: "hybrid", turnThreshold: 1, maxMemoryChars: 1000 },
+      autoMemory: { enabled: true, mode: "suggest", turnThreshold: 1, lockTimeoutSeconds: 60 },
+      sessionSummary: { enabled: false },
+    });
+    let releaseModel!: () => void;
+    let modelStarted!: () => void;
+    const started = new Promise<void>((resolveStarted) => {
+      modelStarted = resolveStarted;
+    });
+    const release = new Promise<void>((resolveRelease) => {
+      releaseModel = resolveRelease;
+    });
+    const client: ModelClient = {
+      complete: async () => "",
+      chat: async () => {
+        modelStarted();
+        await release;
+        return { text: "无需更新", toolCalls: [] };
+      },
+    };
+    const memoryListTool: Tool = {
+      name: "memory_list",
+      description: "list",
+      inputSchema: { type: "object", properties: {} },
+      execute: async () => "暂无记忆",
+    };
+    const definitions = [{
+      name: "memory_list",
+      description: "list",
+      input_schema: { type: "object" as const, properties: {} },
+    }];
+
+    try {
+      saveSessionState(autoWorkspace, {
+        sessionId: "session-a",
+        summary: "",
+        pendingMessages: [],
+        turnsSinceSummary: 0,
+        autoMemory: {
+          pendingTurns: [{
+            id: "turn-before-analysis",
+            user: "旧问题",
+            assistant: "旧回答",
+            at: "2026-07-31T00:00:00.000Z",
+          }],
+          turnsSinceAnalysis: 1,
+        },
+      });
+
+      const first = runWorkspaceAutoMemoryAnalysis({
+        workspacePath: autoWorkspace,
+        config: loadConfig(autoWorkspace),
+        client,
+        triggerSessionId: "session-a",
+        getToolDefinitions: () => definitions,
+        getTool: (name) => name === "memory_list" ? memoryListTool : undefined,
+      });
+      await started;
+
+      updateSessionState(autoWorkspace, "session-a", (latest) => ({
+        sessionId: latest.sessionId,
+        summary: latest.summary,
+        pendingMessages: latest.pendingMessages,
+        turnsSinceSummary: latest.turnsSinceSummary,
+        autoMemory: {
+          ...latest.autoMemory,
+          pendingTurns: [...latest.autoMemory.pendingTurns, {
+            id: "turn-during-analysis",
+            user: "新问题",
+            assistant: "新回答",
+            at: "2026-07-31T00:01:00.000Z",
+          }],
+          turnsSinceAnalysis: latest.autoMemory.pendingTurns.length + 1,
+        },
+      }));
+
+      const concurrent = await runWorkspaceAutoMemoryAnalysis({
+        workspacePath: autoWorkspace,
+        config: loadConfig(autoWorkspace),
+        client,
+        triggerSessionId: "session-a",
+        getToolDefinitions: () => definitions,
+        getTool: (name) => name === "memory_list" ? memoryListTool : undefined,
+      });
+      expect(concurrent.finalText).toContain("已有记忆整理任务正在运行");
+
+      releaseModel();
+      await first;
+
+      expect(loadSessionState(autoWorkspace, "session-a").autoMemory.pendingTurns).toEqual([
+        expect.objectContaining({ id: "turn-during-analysis", user: "新问题" }),
+      ]);
+    } finally {
+      releaseModel?.();
+      removeTempWorkspace(autoWorkspace);
+    }
+  });
+
+  it("auto-memory rejects oversized memory content instead of truncating it", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "hybrid", turnThreshold: 1 },
+      memory: { maxItemChars: 1000, maxTotalChars: 5000 },
       sessionSummary: { enabled: false },
     });
     const autoManager = new PluginManager(autoWorkspace);
@@ -410,7 +558,8 @@ describe("AgentSession loop", () => {
 
       await collect(session.chat("请整理长记忆"));
 
-      expect(getMemoryRecord(autoWorkspace, "long-saved")?.content).toHaveLength(1000);
+      expect(getMemoryRecord(autoWorkspace, "long-saved")).toBeNull();
+      expect(JSON.stringify(client.calls[2].at(-1)?.content)).toContain("memory_content_too_large");
     } finally {
       await autoManager.destroy();
       removeTempWorkspace(autoWorkspace);
@@ -419,7 +568,8 @@ describe("AgentSession loop", () => {
 
   it("auto-memory includes existing memories and can rewrite them with compressed content", async () => {
     const autoWorkspace = createTempWorkspace({
-      autoMemory: { enabled: true, mode: "auto", turnThreshold: 1, maxMemoryChars: 1000, maxBatchChars: 8000 },
+      autoMemory: { enabled: true, mode: "auto", turnThreshold: 1, maxBatchChars: 8000 },
+      memory: { maxItemChars: 1000, maxTotalChars: 5000 },
       sessionSummary: { enabled: false },
     });
     const autoManager = new PluginManager(autoWorkspace);

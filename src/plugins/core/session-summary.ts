@@ -1,7 +1,7 @@
 import type { Plugin, HookContext } from "../types.js";
 import type { ChatResponse, ContentBlock, Message, ToolUseBlock } from "../../types.js";
 import { stripToolMessagesForNewTurn } from "../../message-sanitizer.js";
-import { loadSessionState, saveSessionState, type SessionStateInput } from "../../session-state.js";
+import { loadSessionState, updateSessionState, type SessionStateInput } from "../../session-state.js";
 
 const SUMMARY_MARKER = "[当前会话摘要]";
 const DEFAULT_RECENT_TURNS = 3;
@@ -219,7 +219,13 @@ export const coreSessionSummaryPlugin: Plugin = {
     function putState(hookCtx: HookContext, state: CachedSessionState): void {
       const next = { ...state };
       if (isPersistent(hookCtx)) {
-        next.updatedAt = saveSessionState(ctx.workspacePath, state).updatedAt;
+        next.updatedAt = updateSessionState(ctx.workspacePath, state.sessionId, (latest) => ({
+          sessionId: state.sessionId,
+          summary: state.summary,
+          pendingMessages: state.pendingMessages,
+          turnsSinceSummary: state.turnsSinceSummary,
+          autoMemory: latest.autoMemory,
+        })).updatedAt;
       }
       states.set(hookCtx.sessionId, next);
     }

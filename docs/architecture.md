@@ -129,6 +129,7 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 | maxAgentIterations | Agent Loop 最大迭代次数，显式配置 0 表示不限 | 20 |
 | sessionSummary | 会话滚动摘要配置 | enabled=true, persistent=true, turnThreshold=5, recentTurns=3 |
 | autoMemory | 自动记忆配置 | enabled=true, turnThreshold=10 |
+| memory | 长期记忆容量限制 | maxItemChars=20000, maxTotalChars=80000 |
 | attachments | 图片附件配置 | enabled=true, 每条最多 4 张、单张 10 MB |
 | debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
 | security | 基础安全边界：bash 策略、Gateway host/token、工具审计 | 见下文 |
@@ -242,7 +243,11 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
     "turnThreshold": 10,
     "maxCandidates": 5,
     "maxBatchChars": 8000,
-    "maxMemoryChars": 20000
+    "lockTimeoutSeconds": 300
+  },
+  "memory": {
+    "maxItemChars": 20000,
+    "maxTotalChars": 80000
   }
 }
 ```
@@ -251,10 +256,12 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 - `mode`：`auto` 向整理模型开放 `memory_save/memory_delete/memory_list/memory_read`；`hybrid` 只开放保存、读取和列表，删除只能在最终文本中建议；`suggest` 只开放读取和列表，不允许写入
 - `turnThreshold`：workspace 内触发模型整理的主会话完整对话轮数，默认 10
 - `maxCandidates`：单次最多允许的 memory 工具调用次数，默认 5
-- `maxBatchChars`：传给记忆整理模型的总输入字符上限，默认 8000，会分配给已有记忆和增量对话
-- `maxMemoryChars`：单条记忆整理后的正文最大字符数，默认 20000
+- `maxBatchChars`：传给记忆整理模型的增量对话字符上限，默认 8000；已有启用记忆始终全文输入
+- `lockTimeoutSeconds`：workspace 记忆整理锁的过期时间，默认 300 秒
+- `memory.maxItemChars`：单条记忆正文最大字符数，默认 20000
+- `memory.maxTotalChars`：所有启用记忆正文的总字符上限，默认 80000
 
-自动记忆会跳过 `sub:` 开头的 sub-agent 会话，也会跳过模型中间工具调用，只在最终回复时计入一轮。传给整理模型的增量对话只包含用户问题和最终回答，不包含工具调用、工具结果、调试日志或代码 diff 细节；同时会注入未禁用长期记忆全文，帮助模型判断新增、同名重写压缩或删除。整理成功后会清空本次涉及会话的 `pendingTurns` 并记录 `lastAnalyzedAt/lastResult`；整理失败或触发权限审批时保留 pending，后续继续增量整理。即使没有新增对话，`/dream` 也会运行一次 workspace 级整理，让模型检查已有长期记忆是否需要压缩、合并或删除。整理模型不输出自定义 JSON actions，而是直接调用已有 `memory_*` 工具；`memory_save` 执行前会按 `maxMemoryChars` 对正文做硬限制；密钥、token、密码等凭证类内容应被模型忽略。
+自动记忆会跳过 `sub:` 开头的 sub-agent 会话，也会跳过模型中间工具调用，只在最终回复时计入一轮。每条 pending turn 持有稳定 ID；整理开始时冻结待处理 ID 快照，成功后通过 Session 状态原子更新只删除本次处理的 ID，整理期间新增的轮次不会丢失。workspace 级文件锁避免多进程并发整理，Session 状态锁避免会话摘要和自动记忆整文件覆盖。整理失败或触发权限审批时保留 pending。即使没有新增对话，`/dream` 也会运行一次 workspace 级整理。记忆写入统一校验 `memory.maxItemChars` 和 `memory.maxTotalChars`，超限时返回可重试错误，不会静默截断后落盘。
 
 ### 图片附件
 
@@ -363,15 +370,15 @@ OpenAI Chat 兼容实现会将内部消息格式转换为 `system/user/assistant
 }
 ```
 
-开启后模型适配器会写入 `workspace/logs/YYYY-MM-DD.log`：
+模型适配器不直接写文件，而是通过 `onModelDebug` 生命周期事件把结构化数据交给 `core-debug` 插件。插件按 Request ID 写入 `workspace/debug/model-calls/YYYY-MM-DD/<requestId>.json`，并通过 `GET /debug/model-calls` 提供列表与详情查询，Web UI 的“日志 → 模型调用”负责展示。
 
-- `model_request`：发送给模型的原始请求体
-- `model_stream_event`：流式接口返回的原始 SSE JSON 事件
-- `model_response`：非流式接口返回的原始 JSON
-- `model_parsed_response`：解析后的文本与工具调用
-- `model_error`：模型接口错误响应
+- `request`：发送给模型的原始请求体
+- `stream_event`：流式接口返回的原始 SSE JSON 事件
+- `response`：非流式接口返回的原始 JSON
+- `parsed_response`：解析后的文本与工具调用
+- `error` / `repair`：错误响应与请求修复过程
 
-Debug 日志可能包含用户输入、工具结果、system prompt 和记忆摘要，仅建议本地排查时开启。
+同一逻辑请求的重试共用一个 Request ID。插件不会持久化认证请求头，并会移除图片 Base64 数据；请求体仍可能包含用户输入、工具结果、system prompt 和记忆内容，仅建议本地排查时开启。
 
 ### 消息历史：滑动窗口
 
@@ -689,6 +696,7 @@ interface Plugin {
    - `core-session-summary`：维护普通会话滚动摘要，减少旧消息原文进入上下文
    - `core-compress`：上下文压缩（阈值判断 + 模型摘要）
    - `core-logger`：执行日志与对话历史写入
+   - `core-debug`：模型调用调试事件的结构化持久化与查询 API
 
 2. **用户插件**（内置/外部）：通过配置启用
    - 内置插件：放在 `src/plugins/<name>/`，通过 `enabledPlugins` 启用
@@ -708,6 +716,7 @@ interface Plugin {
 | `onAfterTool` | 工具执行后 | 日志、结果修改 |
 | `onAfterIteration` | 每次 Agent 迭代完成 | 状态更新 |
 | `onError` | 发生错误 | 错误日志 |
+| `onModelDebug` | 模型适配器产生调试事件 | 持久化请求、响应、错误与修复过程 |
 
 钩子采用串行管道模式：按注册顺序执行，前一个钩子的返回值作为下一个的输入。
 

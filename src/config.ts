@@ -42,7 +42,11 @@ export function createDefaultConfig(): Record<string, unknown> {
       turnThreshold: 10,
       maxCandidates: 5,
       maxBatchChars: 8000,
-      maxMemoryChars: 20000,
+      lockTimeoutSeconds: 300,
+    },
+    memory: {
+      maxItemChars: 20000,
+      maxTotalChars: 80000,
     },
     attachments: {
       enabled: true,
@@ -179,7 +183,20 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertOptionalNumber(raw.autoMemory.turnThreshold, "autoMemory.turnThreshold", { min: 1, integer: true });
     assertOptionalNumber(raw.autoMemory.maxCandidates, "autoMemory.maxCandidates", { min: 1, integer: true });
     assertOptionalNumber(raw.autoMemory.maxBatchChars, "autoMemory.maxBatchChars", { min: 1, integer: true });
-    assertOptionalNumber(raw.autoMemory.maxMemoryChars, "autoMemory.maxMemoryChars", { min: 1000, integer: true });
+    assertOptionalNumber(raw.autoMemory.lockTimeoutSeconds, "autoMemory.lockTimeoutSeconds", { min: 1, integer: true });
+  }
+
+  if (raw.memory !== undefined) {
+    assertObject(raw.memory, "memory");
+    assertOptionalNumber(raw.memory.maxItemChars, "memory.maxItemChars", { min: 1000, integer: true });
+    assertOptionalNumber(raw.memory.maxTotalChars, "memory.maxTotalChars", { min: 1000, integer: true });
+    if (
+      typeof raw.memory.maxItemChars === "number"
+      && typeof raw.memory.maxTotalChars === "number"
+      && raw.memory.maxItemChars > raw.memory.maxTotalChars
+    ) {
+      throw new Error("配置字段 memory.maxItemChars 不能大于 memory.maxTotalChars");
+    }
   }
 
   if (raw.attachments !== undefined) {
@@ -273,6 +290,7 @@ export function loadConfig(workspacePath: string): Config {
     subAgent: raw.subAgent as Config["subAgent"] | undefined,
     sessionSummary: raw.sessionSummary as Config["sessionSummary"] | undefined,
     autoMemory: normalizeAutoMemoryConfig(raw.autoMemory),
+    memory: raw.memory as Config["memory"] | undefined,
     attachments: raw.attachments as Config["attachments"] | undefined,
     debug: raw.debug as Config["debug"] | undefined,
     security: raw.security as Config["security"] | undefined,
@@ -290,6 +308,6 @@ function normalizeAutoMemoryConfig(value: unknown): Config["autoMemory"] | undef
     turnThreshold: typeof raw.turnThreshold === "number" ? raw.turnThreshold : undefined,
     maxCandidates: typeof raw.maxCandidates === "number" ? raw.maxCandidates : undefined,
     maxBatchChars: typeof raw.maxBatchChars === "number" ? raw.maxBatchChars : undefined,
-    maxMemoryChars: typeof raw.maxMemoryChars === "number" ? raw.maxMemoryChars : undefined,
+    lockTimeoutSeconds: typeof raw.lockTimeoutSeconds === "number" ? raw.lockTimeoutSeconds : undefined,
   };
 }

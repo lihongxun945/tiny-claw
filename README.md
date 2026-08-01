@@ -202,6 +202,7 @@ git push origin HEAD --follow-tags
 | `subAgent` | 见下文 | `{ "maxConcurrency": 3 }` | Sub-agent 工具权限与并发配置 |
 | `sessionSummary` | 见下文 | `{ "enabled": true }` | 会话滚动摘要与持久化配置 |
 | `autoMemory` | 见下文 | `{ "mode": "hybrid" }` | 自动长期记忆配置 |
+| `memory` | 见下文 | `{ "maxTotalChars": 80000 }` | 长期记忆单条与总容量限制 |
 | `debug` | `false` | `{ "enabled": true, "modelIO": true }` | 模型输入输出调试日志 |
 | `security` | 见下文 | `{ "bash": { "mode": "allow" } }` | bash、Gateway、工具审计安全配置 |
 
@@ -269,7 +270,11 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
     "turnThreshold": 10,
     "maxCandidates": 5,
     "maxBatchChars": 8000,
-    "maxMemoryChars": 20000
+    "lockTimeoutSeconds": 300
+  },
+  "memory": {
+    "maxItemChars": 20000,
+    "maxTotalChars": 80000
   }
 }
 ```
@@ -280,10 +285,12 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 | `autoMemory.mode` | `"hybrid"` | `"hybrid"` | `auto` 开放保存/更新/删除；`hybrid` 只开放保存/更新，删除只建议；`suggest` 只读并输出建议 |
 | `autoMemory.turnThreshold` | `10` | `10` | workspace 内累计多少轮主会话最终问答后触发一次分析 |
 | `autoMemory.maxCandidates` | `5` | `5` | 单次最多允许的 memory 工具调用次数 |
-| `autoMemory.maxBatchChars` | `8000` | `8000` | 单次分析输入的最大字符数 |
-| `autoMemory.maxMemoryChars` | `20000` | `20000` | 单条记忆整理后的正文最大字符数 |
+| `autoMemory.maxBatchChars` | `8000` | `8000` | 单次分析中增量对话的最大字符数；已有启用记忆始终全文输入 |
+| `autoMemory.lockTimeoutSeconds` | `300` | `300` | workspace 记忆整理锁的过期时间 |
+| `memory.maxItemChars` | `20000` | `20000` | 单条记忆正文最大字符数 |
+| `memory.maxTotalChars` | `80000` | `80000` | 所有启用记忆正文的总字符上限 |
 
-自动记忆整理会把“已保存长期记忆全文 + workspace 内上次成功整理后累计的用户问题和最终回答 + 配置的长度限制”一起交给整理模型，不包含中间工具调用、工具结果或调试日志。待整理增量保存在各自的 `workspace/sessions/<session>/state.json`，gateway 重启或切换会话后仍会继续累计；整理成功后清空本次涉及会话的 pending，失败或等待权限审批时保留。整理模型不输出自定义 JSON actions，而是直接调用已有 `memory_*` 工具；默认 `hybrid` 模式不会暴露 `memory_delete`。`memory_save` 执行前会按 `maxMemoryChars` 对正文做硬限制；已有记忆过长、重复或过期时，模型可以用同名 `memory_save` 写回压缩整理后的完整正文。
+自动记忆整理会把“已保存长期记忆全文 + workspace 内上次成功整理后累计的用户问题和最终回答 + 配置的长度限制”一起交给整理模型，不包含中间工具调用、工具结果或调试日志。每条待整理对话有唯一 ID；整理成功后只清除本次快照包含的 ID，因此整理期间新增的对话会保留到下一次。workspace 整理锁避免多个 Gateway 或桌面实例同时修改记忆。整理模型直接调用已有 `memory_*` 工具；写入超过单条或总容量限制时工具会要求模型压缩重试，不会截断内容后保存。
 
 ### 聊天命令
 
@@ -329,15 +336,16 @@ WebUI 支持选择图片或直接粘贴截图，可在发送前预览和移除�
 }
 ```
 
-开启后会写入 `workspace/logs/YYYY-MM-DD.log`，Web UI 的日志页也能看到：
+开启后，每次模型调用会按 Request ID 写入
+`workspace/debug/model-calls/YYYY-MM-DD/<requestId>.json`。在 Web UI 的“日志 → 模型调用”中可以按调用查看：
 
-- `model_request`：发送给模型的请求体，包括 system prompt、messages、tools
-- `model_stream_event`：流式接口返回的原始 SSE JSON 事件
-- `model_response`：非流式接口返回的原始 JSON
-- `model_parsed_response`：tiny-claw 解析后的文本和工具调用
-- `model_error`：模型接口错误响应
+- 请求原文：发送给模型的 URL 和请求体，包括 system prompt、messages、tools
+- 响应原文：非流式接口返回的原始 JSON
+- 解析结果：tiny-claw 解析后的文本和工具调用
+- 错误与修复：失败响应、自动修复策略和重试请求，归入同一个 Request ID
+- 流事件：流式接口返回的原始 SSE JSON 事件（仅在 `rawStreamEvents` 开启时记录）
 
-Debug 日志可能包含用户输入、工具结果和提示词内容，建议只在本地排查时开启。
+认证请求头不会写入调试记录，图片 Base64 数据也会被替换为占位说明。请求体仍可能包含用户输入、工具结果、system prompt 和记忆内容，建议只在本地排查时开启。
 
 | 配置项 | 默认值 | 示例 | 说明 |
 |---|---:|---|---|

@@ -1,6 +1,8 @@
+import { useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../types.js";
+import ImageLightbox from "./ImageLightbox.js";
 import ToolCallBlock from "./ToolCallBlock.js";
 
 interface Props {
@@ -18,55 +20,68 @@ function formatTime(ts: number): string {
 
 export default function MessageBubble({ message, isStreaming, onApproveAndResume }: Props) {
   const isUser = message.role === "user";
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const attachments = message.attachments ?? [];
 
   return (
-    <div className={`message ${message.role}`}>
-      <div className="message-content">
-        {message.attachments && message.attachments.length > 0 && (
-          <div className="message-attachments">
-            {message.attachments.map((attachment) => (
-              <a
-                key={attachment.id}
-                href={attachment.url}
-                target="_blank"
-                rel="noreferrer"
-                title={attachment.name}
-              >
-                <img src={attachment.url} alt={attachment.name} />
-              </a>
-            ))}
-          </div>
-        )}
-        {isUser ? (
-          <span>{message.text}</span>
-        ) : (
-          <>
-            {message.toolCalls.map((tc, i) => (
-              <ToolCallBlock key={i} toolCall={tc} onApproveAndResume={onApproveAndResume} />
-            ))}
-            {message.text && (
-              <div className={`markdown-content ${isStreaming ? "streaming-cursor" : ""}`}>
-                <Markdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    table: ({ children }) => (
-                      <div className="markdown-table-wrap">
-                        <table>{children}</table>
-                      </div>
-                    ),
-                  }}
+    <>
+      <div className={`message ${message.role}`}>
+        <div className="message-content">
+          {attachments.length > 0 && (
+            <div className="message-attachments">
+              {attachments.map((attachment, index) => (
+                <button
+                  type="button"
+                  key={attachment.id}
+                  title={`预览 ${attachment.name}`}
+                  aria-label={`预览 ${attachment.name}`}
+                  onClick={() => setPreviewIndex(index)}
                 >
-                  {message.text}
-                </Markdown>
-              </div>
-            )}
-            {isStreaming && !message.text && message.toolCalls.length > 0 && (
-              <span className="streaming-cursor" />
-            )}
-          </>
-        )}
+                  <img src={attachment.url} alt={attachment.name} />
+                </button>
+              ))}
+            </div>
+          )}
+          {isUser ? (
+            <span>{message.text}</span>
+          ) : (
+            <>
+              {message.toolCalls.map((tc, i) => (
+                <ToolCallBlock key={i} toolCall={tc} onApproveAndResume={onApproveAndResume} />
+              ))}
+              {message.text && (
+                <div className={`markdown-content ${isStreaming ? "streaming-cursor" : ""}`}>
+                  <Markdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      table: ({ children }) => (
+                        <div className="markdown-table-wrap">
+                          <table>{children}</table>
+                        </div>
+                      ),
+                    }}
+                  >
+                    {message.text}
+                  </Markdown>
+                </div>
+              )}
+              {isStreaming && !message.text && message.toolCalls.length > 0 && (
+                <span className="streaming-cursor" />
+              )}
+            </>
+          )}
+        </div>
+        <div className="message-time">{formatTime(message.timestamp)}</div>
       </div>
-      <div className="message-time">{formatTime(message.timestamp)}</div>
-    </div>
+
+      {previewIndex !== null && attachments[previewIndex] && (
+        <ImageLightbox
+          attachments={attachments}
+          index={previewIndex}
+          onIndexChange={setPreviewIndex}
+          onClose={() => setPreviewIndex(null)}
+        />
+      )}
+    </>
   );
 }

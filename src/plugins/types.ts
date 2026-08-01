@@ -3,6 +3,7 @@ import type { AgentSession } from "../agent.js";
 import type { MessageHistory } from "../history.js";
 import type { Tool, ToolDefinition, Config, Message, ChatResponse, AgentActor } from "../types.js";
 import type { ModelClient } from "../model/index.js";
+import type { ModelDebugEvent } from "../model/types.js";
 
 // === 插件接口 ===
 
@@ -70,6 +71,7 @@ export interface ChatCommandResult {
 // === 插件钩子 ===
 
 export interface PluginHooks {
+  onModelDebug?: (event: ModelDebugEvent) => void;
   onBeforeChat?: (ctx: HookContext, input: string) =>
     { input?: string; abort?: string } | Promise<{ input?: string; abort?: string } | void> | void;
   onBuildPrompt?: (ctx: HookContext, prompt: string) =>

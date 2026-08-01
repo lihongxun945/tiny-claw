@@ -1,9 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { sessionStateFilePath } from "./session-store.js";
 import type { Message } from "./types.js";
 
 const STATE_VERSION = 1;
+const SESSION_STATE_LOCK_WAIT_MS = 5000;
+const SESSION_STATE_LOCK_STALE_MS = 30000;
+const SESSION_STATE_LOCK_RETRY_MS = 10;
 
 export interface PersistedSessionState {
   version: number;
@@ -24,6 +28,7 @@ export interface SessionStateInput {
 }
 
 export interface PersistedAutoMemoryTurn {
+  id: string;
   user: string;
   assistant: string;
   at: string;
@@ -109,6 +114,26 @@ export function saveSessionState(workspacePath: string, state: SessionStateInput
   return persisted;
 }
 
+export function updateSessionState(
+  workspacePath: string,
+  sessionId: string,
+  updater: (state: PersistedSessionState) => SessionStateInput,
+): PersistedSessionState {
+  const path = sessionStatePath(workspacePath, sessionId);
+  const lockPath = `${path}.lock`;
+  mkdirSync(dirname(path), { recursive: true });
+  acquireStateLock(lockPath);
+  try {
+    return saveSessionState(workspacePath, updater(loadSessionState(workspacePath, sessionId)));
+  } finally {
+    rmSync(lockPath, { recursive: true, force: true });
+  }
+}
+
+export function createAutoMemoryTurnId(): string {
+  return randomUUID();
+}
+
 export function emptyAutoMemoryState(): PersistedAutoMemoryState {
   return {
     pendingTurns: [],
@@ -164,17 +189,60 @@ function sanitizeAutoMemoryState(value: unknown): PersistedAutoMemoryState {
 
 function sanitizeAutoMemoryTurns(value: unknown[]): PersistedAutoMemoryTurn[] {
   const turns: PersistedAutoMemoryTurn[] = [];
-  for (const item of value) {
+  for (const [index, item] of value.entries()) {
     if (!item || typeof item !== "object") continue;
     const record = item as Partial<PersistedAutoMemoryTurn>;
     if (typeof record.user !== "string" || typeof record.assistant !== "string") continue;
+    const at = typeof record.at === "string" ? record.at : new Date(0).toISOString();
     turns.push({
+      id: typeof record.id === "string" && record.id ? record.id : legacyTurnId(record.user, record.assistant, at, index),
       user: record.user,
       assistant: record.assistant,
-      at: typeof record.at === "string" ? record.at : new Date(0).toISOString(),
+      at,
     });
   }
   return turns;
+}
+
+function legacyTurnId(user: string, assistant: string, at: string, index: number): string {
+  return `legacy-${createHash("sha256").update(`${at}\0${user}\0${assistant}\0${index}`).digest("hex").slice(0, 24)}`;
+}
+
+function acquireStateLock(lockPath: string): void {
+  const timeoutAt = Date.now() + SESSION_STATE_LOCK_WAIT_MS;
+  while (true) {
+    try {
+      mkdirSync(lockPath);
+      return;
+    } catch (error) {
+      if (!isAlreadyExistsError(error)) throw error;
+      if (isStaleLock(lockPath, SESSION_STATE_LOCK_STALE_MS)) {
+        rmSync(lockPath, { recursive: true, force: true });
+        continue;
+      }
+      if (Date.now() >= timeoutAt) {
+        throw new Error(`等待 Session 状态锁超时: ${lockPath}`);
+      }
+      sleepSync(SESSION_STATE_LOCK_RETRY_MS);
+    }
+  }
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "EEXIST";
+}
+
+function isStaleLock(lockPath: string, maxAgeMs: number): boolean {
+  try {
+    return Date.now() - statSync(lockPath).mtimeMs > maxAgeMs;
+  } catch {
+    return false;
+  }
+}
+
+function sleepSync(milliseconds: number): void {
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(signal, 0, 0, milliseconds);
 }
 
 function sanitizeAutoMemoryResult(value: unknown): PersistedAutoMemoryResult | undefined {

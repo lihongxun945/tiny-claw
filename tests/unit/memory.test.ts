@@ -143,6 +143,38 @@ describe("memory storage", () => {
     expect(() => readMemory(workspacePath, "folder/name")).toThrow("记忆名称只能包含");
   });
 
+  it("rejects item and total capacity overflow without writing truncated content", async () => {
+    const limitedWorkspace = createTempWorkspace({
+      memory: { maxItemChars: 1000, maxTotalChars: 1500 },
+    });
+    const getConfig = () => loadConfig(limitedWorkspace);
+    try {
+      const saveTool = createMemorySaveTool(limitedWorkspace, getConfig);
+      const oversized = await saveTool.execute({
+        name: "oversized",
+        content: "A".repeat(1001),
+      });
+      expect(JSON.parse(oversized)).toMatchObject({
+        error: "memory_content_too_large",
+        actualChars: 1001,
+        maxChars: 1000,
+        retryable: true,
+      });
+      expect(getMemoryRecord(limitedWorkspace, "oversized")).toBeNull();
+
+      expect(await saveTool.execute({ name: "first", content: "A".repeat(900) })).toBe("已保存记忆: first");
+      const totalOverflow = await saveTool.execute({ name: "second", content: "B".repeat(700) });
+      expect(JSON.parse(totalOverflow)).toMatchObject({
+        error: "memory_total_too_large",
+        actualChars: 1600,
+        maxChars: 1500,
+      });
+      expect(getMemoryRecord(limitedWorkspace, "second")).toBeNull();
+    } finally {
+      removeTempWorkspace(limitedWorkspace);
+    }
+  });
+
   it("exposes memory storage through tool wrappers", async () => {
     const getConfig = () => loadConfig(workspacePath);
     expect(await createMemorySaveTool(workspacePath, getConfig).execute({

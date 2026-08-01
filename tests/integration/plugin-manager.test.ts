@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "../../src/config.js";
@@ -307,6 +308,47 @@ describe("PluginManager hook lifecycle", () => {
 
     expect(filteredManager.getToolDefinitions().map((tool) => tool.name)).toEqual(["web_search"]);
     await filteredManager.destroy();
+  });
+
+  it("persists model debug events, sanitizes image data, and exposes trace routes", async () => {
+    await manager.loadCorePlugins();
+    const requestId = "11111111-1111-4111-8111-111111111111";
+    const timestamp = "2026-07-31T12:00:00.000Z";
+
+    manager.callOnModelDebug({
+      requestId,
+      sessionId: "debug-session",
+      timestamp,
+      provider: "openai-chat",
+      model: "test-model",
+      mode: "chat",
+      phase: "request",
+      data: {
+        body: {
+          messages: [{
+            role: "user",
+            content: [{ type: "image_url", image_url: { url: "data:image/png;base64,SECRET" } }],
+          }],
+        },
+      },
+    });
+
+    const path = resolve(workspacePath, "debug", "model-calls", "2026-07-31", `${requestId}.json`);
+    const persisted = readFileSync(path, "utf-8");
+    expect(persisted).not.toContain("SECRET");
+    expect(persisted).toContain("image data URL omitted");
+
+    const route = manager.getRoutes().find((item) => item.path === "/debug/model-calls");
+    expect(route).toBeDefined();
+    const sendJSON = vi.fn();
+    await route!.handler({} as never, {} as never, {
+      url: new URL(`http://localhost/debug/model-calls?id=${requestId}`),
+      readBody: async () => "",
+      sendJSON,
+    });
+    expect(sendJSON).toHaveBeenCalledWith(200, expect.objectContaining({
+      trace: expect.objectContaining({ requestId, sessionId: "debug-session" }),
+    }));
   });
 
   it("provides routes, prompt sections, session factory and plugin config through context", () => {

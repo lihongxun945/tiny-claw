@@ -1,14 +1,22 @@
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Plugin, HookContext } from "../types.js";
 import type { ChatResponse, Config, Message, Tool, ToolDefinition, ToolResultBlock, ToolUseBlock, AgentActor } from "../../types.js";
 import type { ModelClient } from "../../model/index.js";
-import { loadSessionState, saveSessionState, type PersistedSessionState } from "../../session-state.js";
+import {
+  createAutoMemoryTurnId,
+  loadSessionState,
+  updateSessionState,
+  type PersistedSessionState,
+} from "../../session-state.js";
 import { listSessionMetas } from "../../session-store.js";
 import { loadAllMemories } from "../../tools/memory.js";
 
 const DEFAULT_TURN_THRESHOLD = 10;
 const DEFAULT_MAX_CANDIDATES = 5;
 const DEFAULT_MAX_BATCH_CHARS = 8000;
-const DEFAULT_MAX_MEMORY_CHARS = 20000;
+const DEFAULT_LOCK_TIMEOUT_SECONDS = 300;
 
 const AUTO_MEMORY_PROMPT = `你是 tiny-claw 的长期记忆整理器。你的任务不是总结对话，而是维护长期有效的 memory 文件。
 
@@ -52,6 +60,7 @@ const AUTO_MEMORY_PROMPT = `你是 tiny-claw 的长期记忆整理器。你的�
 - 最终文本用一句话概括本次整理结果。`;
 
 export interface AutoMemoryTurn {
+  id: string;
   user: string;
   assistant: string;
   at: string;
@@ -99,8 +108,12 @@ function getMaxBatchChars(config: Config): number {
 }
 
 function getMaxMemoryChars(config: Config): number {
-  const value = config.autoMemory?.maxMemoryChars;
-  if (!Number.isFinite(value) || !value || value < 1000) return DEFAULT_MAX_MEMORY_CHARS;
+  return config.memory?.maxItemChars ?? 20000;
+}
+
+function getLockTimeoutSeconds(config: Config): number {
+  const value = config.autoMemory?.lockTimeoutSeconds;
+  if (!Number.isFinite(value) || !value || value < 1) return DEFAULT_LOCK_TIMEOUT_SECONDS;
   return Math.floor(value);
 }
 
@@ -122,11 +135,6 @@ function truncateText(text: string, maxChars: number): string {
   return text.length > maxChars ? `${text.slice(0, maxChars)}\n...[已截断]` : text;
 }
 
-function clampMemoryContent(content: string, maxChars: number): string {
-  const trimmed = content.trim();
-  return trimmed.length > maxChars ? trimmed.slice(0, maxChars).trimEnd() : trimmed;
-}
-
 function findCurrentUserInput(ctx: HookContext): string {
   const currentTurn = ctx.history.getCurrentTurnMessages();
   const originalUser = currentTurn.find((message) => message.role === "user" && typeof message.content === "string");
@@ -135,16 +143,6 @@ function findCurrentUserInput(ctx: HookContext): string {
   const recent = ctx.history.getRecentMessages(1);
   const recentUser = [...recent].reverse().find((message) => message.role === "user" && typeof message.content === "string");
   return recentUser ? messageToText(recentUser) : "";
-}
-
-function saveAutoMemoryState(workspacePath: string, state: PersistedSessionState): PersistedSessionState {
-  return saveSessionState(workspacePath, {
-    sessionId: state.sessionId,
-    summary: state.summary,
-    pendingMessages: state.pendingMessages,
-    turnsSinceSummary: state.turnsSinceSummary,
-    autoMemory: state.autoMemory,
-  });
 }
 
 function appendPendingTurn(state: PersistedSessionState, turn: AutoMemoryTurn, maxPendingTurns: number): PersistedSessionState {
@@ -161,16 +159,20 @@ function appendPendingTurn(state: PersistedSessionState, turn: AutoMemoryTurn, m
 
 function markAutoMemoryAnalyzed(
   state: PersistedSessionState,
+  processedTurnIds: Set<string>,
   result: AutoMemoryAnalysisResult,
 ): PersistedSessionState {
   const now = new Date().toISOString();
+  const pendingTurns = state.autoMemory.pendingTurns.filter((turn) => !processedTurnIds.has(turn.id));
   return {
     ...state,
     autoMemory: {
-      pendingTurns: [],
-      turnsSinceAnalysis: 0,
+      pendingTurns,
+      turnsSinceAnalysis: pendingTurns.length,
       lastAnalyzedAt: now,
-      lastAnalyzedTurnAt: state.autoMemory.pendingTurns.at(-1)?.at,
+      lastAnalyzedTurnAt: state.autoMemory.pendingTurns
+        .filter((turn) => processedTurnIds.has(turn.id))
+        .at(-1)?.at,
       lastResult: {
         analyzedTurns: result.analyzedTurns,
         toolCalls: result.toolCalls,
@@ -184,27 +186,30 @@ function markAutoMemoryAnalyzed(
 
 function collectWorkspaceAutoMemoryTurns(workspacePath: string, includeSessionIds: string[] = []): {
   turns: AutoMemoryTurn[];
-  states: PersistedSessionState[];
+  snapshots: Array<{ sessionId: string; turnIds: string[] }>;
 } {
   const sessionIds = new Set<string>(includeSessionIds);
   for (const meta of listSessionMetas(workspacePath)) {
     if (!isSubAgentSession(meta.id)) sessionIds.add(meta.id);
   }
 
-  const states: PersistedSessionState[] = [];
+  const snapshots: Array<{ sessionId: string; turnIds: string[] }> = [];
   const turns: AutoMemoryTurn[] = [];
   for (const sessionId of sessionIds) {
     if (isSubAgentSession(sessionId)) continue;
     const state = loadSessionState(workspacePath, sessionId);
     if (state.autoMemory.pendingTurns.length === 0) continue;
-    states.push(state);
+    snapshots.push({
+      sessionId,
+      turnIds: state.autoMemory.pendingTurns.map((turn) => turn.id),
+    });
     for (const turn of state.autoMemory.pendingTurns) {
       turns.push({ ...turn, sessionId });
     }
   }
 
   turns.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-  return { turns, states };
+  return { turns, snapshots };
 }
 
 function countWorkspacePendingTurns(workspacePath: string, includeSessionIds: string[] = []): number {
@@ -213,11 +218,21 @@ function countWorkspacePendingTurns(workspacePath: string, includeSessionIds: st
 
 function markWorkspaceAutoMemoryAnalyzed(
   workspacePath: string,
-  states: PersistedSessionState[],
+  snapshots: Array<{ sessionId: string; turnIds: string[] }>,
   result: AutoMemoryAnalysisResult,
 ): void {
-  for (const state of states) {
-    saveAutoMemoryState(workspacePath, markAutoMemoryAnalyzed(state, result));
+  for (const snapshot of snapshots) {
+    const processedTurnIds = new Set(snapshot.turnIds);
+    updateSessionState(workspacePath, snapshot.sessionId, (latest) => {
+      const next = markAutoMemoryAnalyzed(latest, processedTurnIds, result);
+      return {
+        sessionId: next.sessionId,
+        summary: next.summary,
+        pendingMessages: next.pendingMessages,
+        turnsSinceSummary: next.turnsSinceSummary,
+        autoMemory: next.autoMemory,
+      };
+    });
   }
 }
 
@@ -266,21 +281,20 @@ function buildUserPrompt(workspacePath: string, config: Config, turns: AutoMemor
       : "suggest：只能读取记忆并在最终文本中提出建议，不要保存、更新或删除。";
 
   const maxBatchChars = getMaxBatchChars(config);
-  const memoryBudget = Math.max(1000, Math.floor(maxBatchChars / 2));
-  const turnBudget = Math.max(1000, maxBatchChars - memoryBudget);
   const memories = loadAllMemories(workspacePath).trim() || "暂无已保存长期记忆。";
 
   return [
     `当前模式：${modeRule}`,
     `最多 memory 工具调用次数：${getMaxCandidates(config)}`,
     `单条记忆正文最大字符数：${getMaxMemoryChars(config)}`,
-    `整理输入字符预算：已有记忆最多 ${memoryBudget} 字，增量对话最多 ${turnBudget} 字`,
+    `所有启用记忆正文总字符上限：${config.memory?.maxTotalChars ?? 80000}`,
+    `增量对话输入字符预算：最多 ${maxBatchChars} 字`,
     "",
     "当前已保存的长期记忆全文：",
-    truncateText(memories, memoryBudget),
+    memories,
     "",
     "本次需要整理的增量对话：",
-    truncateText(formatTurns(turns), turnBudget),
+    truncateText(formatTurns(turns), maxBatchChars),
   ].join("\n");
 }
 
@@ -306,9 +320,6 @@ function normalizeToolInput(toolCall: ToolUseBlock, config: Config): Record<stri
   if (toolCall.name !== "memory_save") return toolCall.input;
   const input = { ...toolCall.input };
   input.source = "auto";
-  if (typeof input.content === "string") {
-    input.content = clampMemoryContent(input.content, getMaxMemoryChars(config));
-  }
   return input;
 }
 
@@ -316,6 +327,15 @@ function isConfirmationResult(raw: string): boolean {
   try {
     const parsed = JSON.parse(raw) as { requiresConfirmation?: boolean };
     return parsed.requiresConfirmation === true;
+  } catch {
+    return false;
+  }
+}
+
+function isToolErrorResult(raw: string): boolean {
+  try {
+    const parsed = JSON.parse(raw) as { error?: unknown };
+    return typeof parsed.error === "string" && parsed.error.length > 0;
   } catch {
     return false;
   }
@@ -420,8 +440,8 @@ export async function runAutoMemoryAnalysis(options: {
           requiresConfirmation: true,
         };
       }
-      if (executed && toolCall.name === "memory_save") saved += 1;
-      if (executed && toolCall.name === "memory_delete") deleted += 1;
+      if (executed && !isToolErrorResult(result) && toolCall.name === "memory_save") saved += 1;
+      if (executed && !isToolErrorResult(result) && toolCall.name === "memory_delete") deleted += 1;
     }
 
     messages.push(toolResultsToUserMessage(results));
@@ -448,26 +468,112 @@ export async function runWorkspaceAutoMemoryAnalysis(options: {
   getTool: (name: string) => Tool | undefined;
   actor?: AgentActor;
 }): Promise<AutoMemoryAnalysisResult> {
-  const { turns, states } = collectWorkspaceAutoMemoryTurns(options.workspacePath, [options.triggerSessionId]);
-  const result = await runAutoMemoryAnalysis({
-    workspacePath: options.workspacePath,
-    config: options.config,
-    client: options.client,
-    sessionId: options.triggerSessionId,
-    turns,
-    getToolDefinitions: options.getToolDefinitions,
-    getTool: options.getTool,
-    actor: options.actor,
-  });
-
-  if (!result.requiresConfirmation) {
-    markWorkspaceAutoMemoryAnalyzed(options.workspacePath, states, result);
+  const lock = acquireAutoMemoryLock(options.workspacePath, getLockTimeoutSeconds(options.config));
+  if (!lock) {
+    return {
+      saved: 0,
+      updated: 0,
+      deleted: 0,
+      pending: countWorkspacePendingTurns(options.workspacePath, [options.triggerSessionId]),
+      toolCalls: 0,
+      analyzedTurns: 0,
+      finalText: "已有记忆整理任务正在运行，本次已跳过。",
+      requiresConfirmation: false,
+      affectedSessions: [],
+    };
   }
 
+  try {
+    const { turns, snapshots } = collectWorkspaceAutoMemoryTurns(options.workspacePath, [options.triggerSessionId]);
+    const result = await runAutoMemoryAnalysis({
+      workspacePath: options.workspacePath,
+      config: options.config,
+      client: options.client,
+      sessionId: options.triggerSessionId,
+      turns,
+      getToolDefinitions: options.getToolDefinitions,
+      getTool: options.getTool,
+      actor: options.actor,
+    });
+
+    if (!result.requiresConfirmation) {
+      markWorkspaceAutoMemoryAnalyzed(options.workspacePath, snapshots, result);
+    }
+
+    return {
+      ...result,
+      pending: countWorkspacePendingTurns(options.workspacePath, [options.triggerSessionId]),
+      affectedSessions: snapshots.map((snapshot) => snapshot.sessionId),
+    };
+  } finally {
+    lock.release();
+  }
+}
+
+function acquireAutoMemoryLock(
+  workspacePath: string,
+  timeoutSeconds: number,
+): { release: () => void } | null {
+  const locksDir = resolve(workspacePath, ".locks");
+  const lockPath = resolve(locksDir, "auto-memory.lock");
+  mkdirSync(locksDir, { recursive: true });
+
+  try {
+    mkdirSync(lockPath);
+  } catch (error) {
+    if (!isAlreadyExistsError(error)) throw error;
+    if (!isLockExpired(lockPath, timeoutSeconds)) return null;
+    rmSync(lockPath, { recursive: true, force: true });
+    try {
+      mkdirSync(lockPath);
+    } catch (retryError) {
+      if (isAlreadyExistsError(retryError)) return null;
+      throw retryError;
+    }
+  }
+
+  const runId = randomUUID();
+  const ownerPath = resolve(lockPath, "owner.json");
+  writeFileSync(ownerPath, `${JSON.stringify({
+    runId,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+  }, null, 2)}\n`, "utf-8");
+  const heartbeat = setInterval(() => {
+    try {
+      const now = new Date();
+      utimesSync(lockPath, now, now);
+    } catch {
+      // A removed lock no longer needs a heartbeat.
+    }
+  }, timeoutSeconds * 1000 / 3);
+  heartbeat.unref();
+
   return {
-    ...result,
-    affectedSessions: states.map((state) => state.sessionId),
+    release: () => {
+      clearInterval(heartbeat);
+      try {
+        const owner = JSON.parse(readFileSync(ownerPath, "utf-8")) as { runId?: string };
+        if (owner.runId === runId) {
+          rmSync(lockPath, { recursive: true, force: true });
+        }
+      } catch {
+        // The lock was already reclaimed or removed.
+      }
+    },
   };
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "EEXIST";
+}
+
+function isLockExpired(lockPath: string, timeoutSeconds: number): boolean {
+  try {
+    return Date.now() - statSync(lockPath).mtimeMs > timeoutSeconds * 1000;
+  } catch {
+    return false;
+  }
 }
 
 export const coreAutoMemoryPlugin: Plugin = {
@@ -482,13 +588,21 @@ export const coreAutoMemoryPlugin: Plugin = {
         const assistant = response.text.trim();
         if (!assistant) return response;
 
-        const sessionState = appendPendingTurn(loadSessionState(hookCtx.config.workspacePath, hookCtx.sessionId), {
-          user: findCurrentUserInput(hookCtx),
-          assistant,
-          at: new Date().toISOString(),
-        }, getTurnThreshold(hookCtx) * 2);
-
-        saveAutoMemoryState(hookCtx.config.workspacePath, sessionState);
+        updateSessionState(hookCtx.config.workspacePath, hookCtx.sessionId, (latest) => {
+          const sessionState = appendPendingTurn(latest, {
+            id: createAutoMemoryTurnId(),
+            user: findCurrentUserInput(hookCtx),
+            assistant,
+            at: new Date().toISOString(),
+          }, getTurnThreshold(hookCtx) * 2);
+          return {
+            sessionId: sessionState.sessionId,
+            summary: sessionState.summary,
+            pendingMessages: sessionState.pendingMessages,
+            turnsSinceSummary: sessionState.turnsSinceSummary,
+            autoMemory: sessionState.autoMemory,
+          };
+        });
 
         const workspacePendingTurns = countWorkspacePendingTurns(hookCtx.config.workspacePath, [hookCtx.sessionId]);
         if (analyzing || workspacePendingTurns < getTurnThreshold(hookCtx)) {

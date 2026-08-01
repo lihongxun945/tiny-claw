@@ -108,11 +108,14 @@ export class AgentSession {
     ensureConfigFile(workspacePath);
 
     this.config = { ...loadConfig(workspacePath), ...configOverrides };
-    this.client = client ?? createModelClient(this.config);
+    this.pluginManager = pluginManager;
+    this.client = client ?? createModelClient(this.config, {
+      sessionId: id,
+      reportDebug: (event) => this.pluginManager.callOnModelDebug(event),
+    });
     this.history = new MessageHistory(loadPersistedSessionMessages(workspacePath, id));
     this.lastActivity = Date.now();
 
-    this.pluginManager = pluginManager;
     this.pluginManager.setRuntimeDeps(this.config, this.client, this.history, this.id);
 
     this.systemPrompt = "";

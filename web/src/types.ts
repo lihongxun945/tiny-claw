@@ -56,6 +56,29 @@ export interface ApprovalRequest {
   sessionId?: string;
 }
 
+export type ModelDebugPhase = "request" | "response" | "parsed_response" | "error" | "repair" | "stream_event";
+
+export interface ModelCallSummary {
+  requestId: string;
+  sessionId?: string;
+  provider: string;
+  model: string;
+  mode: "chat" | "complete";
+  startedAt: string;
+  updatedAt: string;
+  durationMs?: number;
+  status: "running" | "success" | "error";
+  eventCount: number;
+}
+
+export interface ModelCallTrace extends Omit<ModelCallSummary, "eventCount"> {
+  events: Array<{
+    timestamp: string;
+    phase: ModelDebugPhase;
+    data: unknown;
+  }>;
+}
+
 export type MemorySource = "manual" | "tool" | "auto";
 
 export interface MemoryRecord {

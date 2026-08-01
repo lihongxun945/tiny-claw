@@ -97,7 +97,9 @@ const FIELD_GROUPS: FieldGroup[] = [
       { key: "autoMemory.turnThreshold", label: "整理轮数阈值", type: "number", defaultValue: 10 },
       { key: "autoMemory.maxCandidates", label: "最大工具调用次数", type: "number", defaultValue: 5 },
       { key: "autoMemory.maxBatchChars", label: "整理输入字符上限", type: "number", defaultValue: 8000 },
-      { key: "autoMemory.maxMemoryChars", label: "单条记忆字符上限", type: "number", defaultValue: 20000 },
+      { key: "autoMemory.lockTimeoutSeconds", label: "整理锁超时（秒）", type: "number", defaultValue: 300 },
+      { key: "memory.maxItemChars", label: "单条记忆字符上限", type: "number", defaultValue: 20000 },
+      { key: "memory.maxTotalChars", label: "全部记忆字符上限", type: "number", defaultValue: 80000 },
     ],
   },
   {

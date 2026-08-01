@@ -1,4 +1,4 @@
-import type { Session, Message, MemoryRecord, ApprovalRequest, ChatCommand, Attachment } from "../types.js";
+import type { Session, Message, MemoryRecord, ApprovalRequest, ChatCommand, Attachment, ModelCallSummary, ModelCallTrace } from "../types.js";
 
 export { streamChat, streamApprovalResume } from "./sse-client.js";
 
@@ -62,6 +62,19 @@ export async function fetchLogFiles(): Promise<{ files: Array<{ name: string; si
 export async function fetchLog(date: string, tail = 200): Promise<{ date: string; lines: string[] }> {
   const res = await fetch(`/logs/${date}?tail=${tail}`);
   return res.json();
+}
+
+export async function fetchModelCalls(sessionId?: string): Promise<ModelCallSummary[]> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  const res = await fetch(`/debug/model-calls${query}`);
+  const data = await parseJSON<{ traces: ModelCallSummary[] }>(res);
+  return data.traces ?? [];
+}
+
+export async function fetchModelCall(requestId: string): Promise<ModelCallTrace> {
+  const res = await fetch(`/debug/model-calls?id=${encodeURIComponent(requestId)}`);
+  const data = await parseJSON<{ trace: ModelCallTrace }>(res);
+  return data.trace;
 }
 
 export async function fetchConfig(): Promise<Record<string, unknown>> {

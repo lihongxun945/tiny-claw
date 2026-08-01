@@ -18,6 +18,7 @@ import type {
 } from "./plugins/types.js";
 import type { Config, Tool, ToolDefinition, Message, ChatResponse } from "./types.js";
 import type { ModelClient } from "./model/index.js";
+import type { ModelDebugEvent } from "./model/types.js";
 import type { AgentSession } from "./agent.js";
 import type { MessageHistory } from "./history.js";
 
@@ -269,6 +270,16 @@ export class PluginManager {
   }
 
   // ========== Hook Dispatch ==========
+
+  callOnModelDebug(event: ModelDebugEvent): void {
+    for (const hooks of this.hooks) {
+      try {
+        hooks.onModelDebug?.(event);
+      } catch {
+        // Debug hooks must never affect model calls.
+      }
+    }
+  }
 
   private buildHookContext(iteration: number, sessionId: string, turnStartIndex = 0): HookContext {
     const deps = this.runtimeDepsBySession.get(sessionId);
