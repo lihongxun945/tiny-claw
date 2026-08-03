@@ -539,10 +539,6 @@ tiny-claw 采用插件化架构，所有业务逻辑由插件实现。框架通�
 13. [ ] **进程沙箱** — 通过容器或受限进程执行脚本
 
 
-## 难点记录
-1. 搜索问题：默认使用 Ollama Web Search API，支持常规查询和网页摘要，需配置 `ollamaApiKey`。DuckDuckGo 保留为免配置兜底，但 Instant Answer API 本质不是完整搜索引擎，只适合简短英文实体关键词。Brave Search 需要 API key，SearXNG 需要自建服务器。
-2. 插件系统：官方 `@larksuite/openclaw-lark` 依赖 openclaw/plugin-sdk 的 18 个子模块，无法直接使用。当前实现了简化版插件系统和飞书插件（WebSocket 长连接），后续逐步兼容 openclaw 插件生态。
-
 ## 与 Open-Claw 的对比
 
 | 功能模块 | tiny-claw | open-claw |
