@@ -16,6 +16,9 @@ jobs:
   release:
     runs-on: macos-14
     timeout-minutes: 60
+    env:
+      NOTARY_POLL_INTERVAL_SECONDS: "30"
+      NOTARY_MAX_ATTEMPTS: "100"
 
     steps:
       - name: Checkout
@@ -106,11 +109,64 @@ jobs:
           dmg_path="$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
           test -n "${dmg_path}"
 
-          xcrun notarytool submit "${dmg_path}" \
+          auth_args=(
             --apple-id "${APPLE_ID}" \
             --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
-            --team-id "${APPLE_TEAM_ID}" \
-            --wait
+            --team-id "${APPLE_TEAM_ID}"
+          )
+
+          submission_json="$(xcrun notarytool submit "${dmg_path}" \
+            "${auth_args[@]}" \
+            --output-format json)"
+          submission_id="$(printf '%s' "${submission_json}" | node -e '
+            let input = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", (chunk) => { input += chunk; });
+            process.stdin.on("end", () => {
+              const id = JSON.parse(input).id;
+              if (!id) process.exit(1);
+              process.stdout.write(id);
+            });
+          ')"
+          echo "Apple notarization submission: ${submission_id}"
+
+          accepted=false
+          for ((attempt = 1; attempt <= NOTARY_MAX_ATTEMPTS; attempt++)); do
+            error_path="${RUNNER_TEMP}/notary-info-error.txt"
+            if info_json="$(xcrun notarytool info "${submission_id}" \
+              "${auth_args[@]}" \
+              --output-format json 2>"${error_path}")"; then
+              status="$(printf '%s' "${info_json}" | node -e '
+                let input = "";
+                process.stdin.setEncoding("utf8");
+                process.stdin.on("data", (chunk) => { input += chunk; });
+                process.stdin.on("end", () => process.stdout.write(JSON.parse(input).status ?? ""));
+              ')"
+              echo "Notarization status (${attempt}/${NOTARY_MAX_ATTEMPTS}): ${status}"
+              if [[ "${status}" == "Accepted" ]]; then
+                accepted=true
+                break
+              fi
+              if [[ "${status}" == "Invalid" ]]; then
+                xcrun notarytool log "${submission_id}" "${auth_args[@]}" || true
+                exit 1
+              fi
+            else
+              echo "::warning::Unable to query Apple notarization status; retrying."
+              cat "${error_path}"
+            fi
+
+            if (( attempt < NOTARY_MAX_ATTEMPTS )); then
+              sleep "${NOTARY_POLL_INTERVAL_SECONDS}"
+            fi
+          done
+
+          if [[ "${accepted}" != "true" ]]; then
+            echo "Apple notarization did not complete after ${NOTARY_MAX_ATTEMPTS} attempts." >&2
+            xcrun notarytool log "${submission_id}" "${auth_args[@]}" || true
+            exit 1
+          fi
+
           xcrun stapler staple "${dmg_path}"
           xcrun stapler validate "${dmg_path}"
 
