@@ -1,10 +1,17 @@
-import { app, BrowserWindow, dialog, shell } from "electron";
+import { app, BrowserWindow, dialog, Menu, nativeImage, shell, Tray } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
+import {
+  handleDesktopWindowClose,
+  shouldQuitWhenAllWindowsClosed,
+  showDesktopWindow,
+} from "./window-lifecycle.js";
+import { createLoadingPageUrl } from "./loading-page.js";
 import { initializeDesktopWorkspace } from "./workspace.js";
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let gatewayProcess: ChildProcess | null = null;
 let quitting = false;
 
@@ -59,12 +66,73 @@ async function stopGateway(): Promise<void> {
   });
 }
 
+async function createTray(): Promise<void> {
+  const iconPath = app.isPackaged
+    ? resolve(process.resourcesPath, "trayTemplate.png")
+    : resolve(app.getAppPath(), "build/trayTemplate.png");
+  const trayIcon = nativeImage.createFromPath(iconPath);
+  trayIcon.setTemplateImage(true);
+  tray = new Tray(trayIcon);
+  tray.setToolTip("tiny-claw");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    {
+      label: "打开 tiny-claw",
+      click: () => showDesktopWindow(mainWindow),
+    },
+    { type: "separator" },
+    {
+      label: "退出 tiny-claw",
+      click: () => app.quit(),
+    },
+  ]));
+  tray.on("click", () => showDesktopWindow(mainWindow));
+}
+
 async function launchDesktop(): Promise<void> {
   const workspacePath = initializeDesktopWorkspace(app.getPath("userData"));
   const [apiPort, webPort] = await Promise.all([reservePort(), reservePort()]);
   const appRoot = app.getAppPath();
   const tsxCli = resolve(appRoot, "node_modules/tsx/dist/cli.mjs");
   const gatewayEntry = resolve(appRoot, "dist/gateway.js");
+  const webUrl = `http://127.0.0.1:${webPort}/`;
+
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 960,
+    minWidth: 960,
+    minHeight: 640,
+    title: "tiny-claw",
+    backgroundColor: "#f7f7f5",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  const window = mainWindow;
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("http://") || url.startsWith("https://")) void shell.openExternal(url);
+    return { action: "deny" };
+  });
+  window.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith(webUrl) && !url.startsWith("data:text/html")) event.preventDefault();
+  });
+  window.on("close", (event) => {
+    handleDesktopWindowClose(event, window, quitting);
+  });
+  window.on("closed", () => {
+    if (mainWindow === window) mainWindow = null;
+  });
+
+  const logoPath = app.isPackaged
+    ? resolve(process.resourcesPath, "loading-logo.png")
+    : resolve(appRoot, "build/icon.png");
+  const logoDataUrl = nativeImage.createFromPath(logoPath).toDataURL();
+  await Promise.all([
+    window.loadURL(createLoadingPageUrl(logoDataUrl)),
+    createTray(),
+  ]);
 
   gatewayProcess = spawn(
     process.execPath,
@@ -99,35 +167,8 @@ async function launchDesktop(): Promise<void> {
     }
   });
 
-  const webUrl = `http://127.0.0.1:${webPort}/`;
   await waitForGateway(webUrl, gatewayProcess);
-
-  mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 960,
-    minWidth: 960,
-    minHeight: 640,
-    title: "tiny-claw",
-    backgroundColor: "#111426",
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("http://") || url.startsWith("https://")) void shell.openExternal(url);
-    return { action: "deny" };
-  });
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (!url.startsWith(webUrl)) event.preventDefault();
-  });
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-  });
-
-  await mainWindow.loadURL(webUrl);
+  await window.loadURL(webUrl);
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -135,9 +176,7 @@ if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+    showDesktopWindow(mainWindow);
   });
 
   app.whenReady()
@@ -148,17 +187,18 @@ if (!hasSingleInstanceLock) {
     });
 
   app.on("activate", () => {
-    if (mainWindow) mainWindow.show();
+    showDesktopWindow(mainWindow);
   });
 
   app.on("window-all-closed", () => {
-    app.quit();
+    if (shouldQuitWhenAllWindowsClosed(process.platform)) app.quit();
   });
 
   app.on("before-quit", (event) => {
-    if (quitting || !gatewayProcess) return;
-    event.preventDefault();
+    if (quitting) return;
     quitting = true;
+    if (!gatewayProcess) return;
+    event.preventDefault();
     void stopGateway().finally(() => app.quit());
   });
 }

@@ -7,6 +7,7 @@ config.json
 workspace/config.json
 workspace/history/
 workspace/logs/
+workspace/debug/
 workspace/memory/
 workspace/sessions/
 workspace/skills/

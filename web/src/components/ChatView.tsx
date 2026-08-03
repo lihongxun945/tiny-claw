@@ -11,6 +11,7 @@ interface Props {
   isRefreshing?: boolean;
   onRefreshMessages: () => void;
   onApproveAndResume: (approvalId: string) => Promise<void>;
+  onApproveTurnAndResume: (approvalId: string) => Promise<void>;
 }
 
 export default function ChatView({
@@ -22,6 +23,7 @@ export default function ChatView({
   isRefreshing,
   onRefreshMessages,
   onApproveAndResume,
+  onApproveTurnAndResume,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -47,13 +49,18 @@ export default function ChatView({
       <div className="chat-view">
         {messages.length === 0 && !isStreaming && (
           <div className="chat-empty-state">
-            <span className="empty-mark" aria-hidden="true">t</span>
+            <img className="empty-mark" src="/icon.png" alt="" aria-hidden="true" />
             <h1>开始一段新对话</h1>
             <p>描述你想完成的任务，tiny-claw 会调用合适的工具并持续执行。</p>
           </div>
         )}
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} onApproveAndResume={onApproveAndResume} />
+          <MessageBubble
+            key={i}
+            message={msg}
+            onApproveAndResume={onApproveAndResume}
+            onApproveTurnAndResume={onApproveTurnAndResume}
+          />
         ))}
         {isStreaming && (
           streamingText || streamingToolCalls.length > 0 ? (
@@ -66,6 +73,7 @@ export default function ChatView({
               }}
               isStreaming
               onApproveAndResume={onApproveAndResume}
+              onApproveTurnAndResume={onApproveTurnAndResume}
             />
           ) : (
             <div className="message assistant">

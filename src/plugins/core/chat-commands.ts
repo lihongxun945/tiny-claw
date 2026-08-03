@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { estimateTokens } from "../../estimate-tokens.js";
-import { approveRequest, listApprovals, rejectRequest } from "../../tools/approval.js";
+import {
+  approveRequest,
+  approveTurnRequest,
+  clearTurnApproval,
+  listApprovals,
+  rejectRequest,
+} from "../../tools/approval.js";
 import { deleteStoredSession } from "../../session-store.js";
 import type { ChatCommand, ChatCommandContext, Plugin } from "../types.js";
 import { runWorkspaceAutoMemoryAnalysis } from "./auto-memory.js";
@@ -47,6 +53,12 @@ export const coreChatCommandsPlugin: Plugin = {
         description: "批准一条命令审批",
         usage: "/approve <审批 ID>",
         execute: (commandCtx) => approveCommand(ctx, commandCtx),
+      },
+      {
+        name: "approve-all",
+        description: "允许当前对话轮次的全部权限申请",
+        usage: "/approve-all <审批 ID>",
+        execute: (commandCtx) => approveAllCommand(ctx, commandCtx),
       },
       {
         name: "reject",
@@ -169,6 +181,7 @@ function listApprovalText(ctx: ChatCommandContext): string {
     approval.command ? `命令：${approval.command}` : `参数：${JSON.stringify(approval.args)}`,
     `有效期至：${approval.expiresAt}`,
     `批准：/approve ${approval.id}`,
+    `允许本轮：/approve-all ${approval.id}`,
     `拒绝：/reject ${approval.id}`,
   ].join("\n")).join("\n\n");
 }
@@ -185,6 +198,22 @@ async function approveCommand(pluginCtx: Parameters<Plugin["init"]>[0], ctx: Cha
   }
 
   return { text: "已批准该工具调用执行一次。原会话不可恢复时，请重新发送原任务，下一次相同工具调用会执行一次。" };
+}
+
+async function approveAllCommand(pluginCtx: Parameters<Plugin["init"]>[0], ctx: ChatCommandContext): Promise<{ text: string }> {
+  const id = ctx.args[0];
+  if (!id) return { text: "用法：/approve-all <审批 ID>" };
+
+  const approval = approveTurnRequest(ctx.workspacePath, id, ctx.actor);
+  if (!approval) return { text: "审批记录不存在、已过期、缺少可恢复会话，或你无权处理该审批。" };
+
+  try {
+    const resumed = await resumeApprovedSession(pluginCtx, approval.sessionId!, approval.id, ctx.actor);
+    if (resumed) return { text: `已允许本轮全部权限申请。\n\n${resumed}` };
+    return { text: "已批准当前工具调用，但原会话无法恢复；本轮临时授权已失效。" };
+  } finally {
+    clearTurnApproval(ctx.workspacePath, approval.sessionId!, approval.actor);
+  }
 }
 
 async function resumeApprovedSession(

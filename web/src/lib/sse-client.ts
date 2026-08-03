@@ -15,9 +15,11 @@ export async function* streamChat(
 
 export async function* streamApprovalResume(
   approvalId: string,
+  allowTurn = false,
   signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
-  yield* streamPost(`/approvals/${encodeURIComponent(approvalId)}/approve-and-resume`, undefined, signal);
+  const action = allowTurn ? "approve-turn-and-resume" : "approve-and-resume";
+  yield* streamPost(`/approvals/${encodeURIComponent(approvalId)}/${action}`, undefined, signal);
 }
 
 async function* streamPost(
@@ -40,6 +42,7 @@ async function* streamPost(
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let terminalEventReceived = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -53,13 +56,23 @@ async function* streamPost(
       if (!part.trim()) continue;
       if (signal?.aborted) return;
       const event = parseSSEFrame(part);
-      if (event) yield event;
+      if (event) {
+        if (event.event === "done" || event.event === "error") terminalEventReceived = true;
+        yield event;
+      }
     }
   }
 
   if (buffer.trim()) {
     const event = parseSSEFrame(buffer);
-    if (event) yield event;
+    if (event) {
+      if (event.event === "done" || event.event === "error") terminalEventReceived = true;
+      yield event;
+    }
+  }
+
+  if (!terminalEventReceived && !signal?.aborted) {
+    throw new Error("SSE 流在任务完成前意外中断");
   }
 }
 

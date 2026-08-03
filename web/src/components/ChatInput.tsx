@@ -17,6 +17,7 @@ export default function ChatInput({ onSend, onStop, disabled }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imagesRef = useRef(images);
+  const isComposingRef = useRef(false);
 
   useEffect(() => {
     fetchChatCommands().then(setCommands).catch(() => setCommands([]));
@@ -77,7 +78,10 @@ export default function ChatInput({ onSend, onStop, disabled }: Props) {
     });
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const nativeEvent = e.nativeEvent as KeyboardEvent;
+    if (isComposingRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229) return;
+
     if (showAutocomplete) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -126,6 +130,12 @@ export default function ChatInput({ onSend, onStop, disabled }: Props) {
             setAutocompleteDismissed(false);
           }}
           onKeyDown={handleKeyDown}
+          onCompositionStart={() => {
+            isComposingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            isComposingRef.current = false;
+          }}
           onInput={handleInput}
           onPaste={(event) => {
             const pastedImages = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));

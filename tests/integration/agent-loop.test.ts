@@ -9,6 +9,8 @@ import { PluginManager } from "../../src/plugin-manager.js";
 import { loadSessionState, saveSessionState, updateSessionState } from "../../src/session-state.js";
 import { appendSessionMessage, sessionMessagesPath, sessionStateFilePath } from "../../src/session-store.js";
 import { getMemoryRecord, saveMemory } from "../../src/tools/memory.js";
+import { approveTurnRequest, hasTurnApproval, listApprovals } from "../../src/tools/approval.js";
+import { checkDangerousToolPermission } from "../../src/tools/permission.js";
 import type { ChatResponse, Message, Tool, ToolDefinition } from "../../src/types.js";
 import { runWorkspaceAutoMemoryAnalysis } from "../../src/plugins/core/auto-memory.js";
 import { FakeModelClient } from "../helpers/fake-model-client.js";
@@ -888,6 +890,52 @@ describe("AgentSession loop", () => {
     expect(client.calls).toHaveLength(2);
     expect(gatedTool).toHaveBeenCalledTimes(2);
     expect(laterTool).not.toHaveBeenCalled();
+  });
+
+  it("allows all ask-mode tools for the resumed turn and clears the grant afterwards", async () => {
+    const config = loadConfig(workspacePath);
+    config.security = { ...config.security, mode: "ask" };
+    writeFileSync(resolve(workspacePath, "config.json"), JSON.stringify(config), "utf-8");
+    const dangerousTool = vi.fn(async (args: Record<string, unknown>, context?: Parameters<Tool["execute"]>[1]) => {
+      const permission = checkDangerousToolPermission({
+        workspacePath,
+        config: loadConfig(workspacePath),
+        toolName: "dangerous",
+        args,
+        context,
+      });
+      return permission.allowed ? `ran-${String(args.command)}` : permission.result;
+    });
+    registerTool(manager, {
+      name: "dangerous",
+      description: "dangerous",
+      inputSchema: { type: "object", properties: {} },
+      execute: dangerousTool,
+    });
+    const client = new FakeModelClient([
+      {
+        text: "申请第一项权限",
+        toolCalls: [{ type: "tool_use", id: "call-1", name: "dangerous", input: { command: "first" } }],
+      },
+      {
+        text: "继续执行第二项",
+        toolCalls: [{ type: "tool_use", id: "call-2", name: "dangerous", input: { command: "second" } }],
+      },
+      { text: "本轮完成", toolCalls: [] },
+    ]);
+    const session = new AgentSession("approval-turn", workspacePath, manager, {}, client);
+
+    await collect(session.chat("run"));
+    const approval = listApprovals(workspacePath)[0];
+    expect(approveTurnRequest(workspacePath, approval.id)?.status).toBe("approved");
+    expect(hasTurnApproval(workspacePath, session.id)).toBe(true);
+
+    const resumed = await collect(session.resumeApproval(approval.id));
+
+    expect(resumed).toContainEqual({ type: "tool_result", name: "dangerous", result: "ran-first" });
+    expect(resumed).toContainEqual({ type: "tool_result", name: "dangerous", result: "ran-second" });
+    expect(dangerousTool).toHaveBeenCalledTimes(3);
+    expect(hasTurnApproval(workspacePath, session.id)).toBe(false);
   });
 
   it("strips persisted tool chains from previous turns when restoring a session", async () => {

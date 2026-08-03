@@ -105,6 +105,7 @@ function formatToolResultForFeishu(result: string): string {
       requiresConfirmation?: boolean;
       approvalId?: string;
       approvalCommand?: string;
+      approvalTurnCommand?: string;
       command?: string;
       cwd?: string;
       error?: string;
@@ -114,6 +115,7 @@ function formatToolResultForFeishu(result: string): string {
         "[需要授权]",
         "请回复下面这条完整命令进行批准：",
         parsed.approvalCommand,
+        parsed.approvalTurnCommand ? `允许本轮全部权限：${parsed.approvalTurnCommand}` : "",
         "",
         "只回复“批准”不会生效。",
         "批准后系统会立即继续原任务；授权只对本次列出的工具调用生效。",

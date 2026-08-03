@@ -68,8 +68,74 @@ test("approves a pending command from the chat tool block", async ({ page }) => 
   await page.locator(".session-id", { hasText: "approval" }).click();
 
   await expect(page.getByText("此工具调用需要批准")).toBeVisible();
-  await page.getByRole("button", { name: "批准" }).click();
+  const approvalBody = page.locator(".tool-body-approval");
+  await expect(approvalBody).toBeVisible();
+  expect((await approvalBody.boundingBox())?.height).toBeLessThan(360);
+  await page.getByRole("button", { name: "批准本次" }).click();
   await expect(page.getByText("已批准，并已继续执行原任务。")).toBeVisible();
   await expect(page.getByText("approved output", { exact: true })).toBeVisible();
   await expect(page.getByText("继续完成")).toBeVisible();
+});
+
+test("allows every approval in the current turn from the chat tool block", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 560 });
+  const longCommand = Array.from({ length: 12 }, (_, index) => `echo approval-${index}`).join(" && ");
+  const result = JSON.stringify({
+    error: "bash 执行需要用户确认。",
+    requiresConfirmation: true,
+    approvalId: "approval-turn-1",
+    command: longCommand,
+    cwd: "/tmp/workspace",
+  });
+
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({ json: { sessions: [{ id: "approval-turn", lastActivity: Date.now(), preview: "approval turn" }] } });
+  });
+  await page.route("**/history/sessions/approval-turn/messages", async (route) => {
+    await route.fulfill({
+      json: {
+        messages: [{
+          role: "assistant",
+          text: "",
+          toolCalls: [{ name: "bash", input: { command: longCommand }, result }],
+          timestamp: Date.now(),
+        }],
+      },
+    });
+  });
+  await page.route("**/approvals/approval-turn-1/approve-turn-and-resume", async (route) => {
+    await route.fulfill({
+      headers: { "content-type": "text/event-stream" },
+      body: [
+        "event: tool_call",
+        "data: {\"name\":\"bash\",\"input\":{\"command\":\"npm test\"}}",
+        "",
+        "event: tool_result",
+        "data: {\"name\":\"bash\",\"result\":\"{\\\"stdout\\\":\\\"turn output\\\",\\\"exitCode\\\":0}\"}",
+        "",
+        "event: done",
+        "data: {\"text\":\"本轮完成\",\"session_id\":\"approval-turn\"}",
+        "",
+        "",
+      ].join("\n"),
+    });
+  });
+
+  await page.goto("/");
+  await page.locator(".session-id", { hasText: "approval" }).click();
+
+  await expect(page.getByText(/仅对当前用户消息/)).toBeVisible();
+  const approveOnce = page.getByRole("button", { name: "批准本次" });
+  const approveTurn = page.getByRole("button", { name: "允许本轮" });
+  const reject = page.getByRole("button", { name: "拒绝" });
+  const approvalContent = page.locator(".tool-approval-content");
+  const contentOverflow = await approvalContent.evaluate((element) => element.scrollHeight > element.clientHeight);
+  expect(contentOverflow).toBe(true);
+  await expect(approveOnce).toBeInViewport();
+  await expect(approveTurn).toBeInViewport();
+  await expect(reject).toBeInViewport();
+  await approveTurn.click();
+  await expect(page.getByText("本轮后续权限申请已自动允许，任务已继续执行。")).toBeVisible();
+  await expect(page.getByText("turn output", { exact: true })).toBeVisible();
+  await expect(page.getByText("本轮完成")).toBeVisible();
 });

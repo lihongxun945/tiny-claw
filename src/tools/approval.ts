@@ -19,6 +19,7 @@ export interface ApprovalRequest {
 interface ApprovalScope {
   byId: Map<string, ApprovalRequest>;
   byKey: Map<string, string>;
+  turnGrants: Map<string, string>;
 }
 
 const scopes = new Map<string, ApprovalScope>();
@@ -26,7 +27,7 @@ const scopes = new Map<string, ApprovalScope>();
 function getScope(workspacePath: string): ApprovalScope {
   let scope = scopes.get(workspacePath);
   if (!scope) {
-    scope = { byId: new Map(), byKey: new Map() };
+    scope = { byId: new Map(), byKey: new Map(), turnGrants: new Map() };
     scopes.set(workspacePath, scope);
   }
   return scope;
@@ -57,6 +58,13 @@ function cleanup(scope: ApprovalScope): void {
   for (const approval of scope.byId.values()) {
     if (Date.parse(approval.expiresAt) <= now) remove(scope, approval);
   }
+  for (const [key, expiresAt] of scope.turnGrants) {
+    if (Date.parse(expiresAt) <= now) scope.turnGrants.delete(key);
+  }
+}
+
+function turnGrantKey(sessionId: string, actor?: AgentActor): string {
+  return `${sessionId}\0${actor?.channel ?? ""}\0${actor?.requesterId ?? ""}\0${actor?.chatId ?? ""}`;
 }
 
 export function requestApproval(
@@ -67,7 +75,7 @@ export function requestApproval(
   actor?: AgentActor,
   sessionId?: string,
   display: { command?: string; cwd?: string } = {},
-): { approved: boolean; approval?: ApprovalRequest } {
+): { approved: boolean; approval?: ApprovalRequest; source?: "single" | "turn" } {
   const scope = getScope(workspacePath);
   cleanup(scope);
   const key = keyOf(toolName, args, actor);
@@ -76,9 +84,12 @@ export function requestApproval(
 
   if (existing?.status === "approved") {
     remove(scope, existing);
-    return { approved: true };
+    return { approved: true, source: "single" };
   }
   if (existing) return { approved: false, approval: existing };
+  if (sessionId && scope.turnGrants.has(turnGrantKey(sessionId, actor))) {
+    return { approved: true, source: "turn" };
+  }
 
   const createdAt = new Date();
   const approval: ApprovalRequest = {
@@ -120,6 +131,27 @@ export function approveRequest(workspacePath: string, id: string, actor?: AgentA
   if (!approval || (actor && !canManageApproval(approval, actor))) return undefined;
   approval.status = "approved";
   return approval;
+}
+
+export function approveTurnRequest(workspacePath: string, id: string, actor?: AgentActor): ApprovalRequest | undefined {
+  const scope = getScope(workspacePath);
+  cleanup(scope);
+  const approval = scope.byId.get(id);
+  if (!approval?.sessionId || (actor && !canManageApproval(approval, actor))) return undefined;
+  approval.status = "approved";
+  scope.turnGrants.set(turnGrantKey(approval.sessionId, approval.actor), approval.expiresAt);
+  return approval;
+}
+
+export function clearTurnApproval(workspacePath: string, sessionId: string, actor?: AgentActor): void {
+  const scope = getScope(workspacePath);
+  scope.turnGrants.delete(turnGrantKey(sessionId, actor));
+}
+
+export function hasTurnApproval(workspacePath: string, sessionId: string, actor?: AgentActor): boolean {
+  const scope = getScope(workspacePath);
+  cleanup(scope);
+  return scope.turnGrants.has(turnGrantKey(sessionId, actor));
 }
 
 export function rejectRequest(workspacePath: string, id: string, actor?: AgentActor): boolean {

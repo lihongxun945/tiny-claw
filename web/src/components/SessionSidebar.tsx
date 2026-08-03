@@ -73,7 +73,7 @@ export default function SessionSidebar({ activeSessionId, currentView, onSelectS
     <div className="sidebar">
       <div className="sidebar-header">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">t</span>
+          <img className="brand-mark" src="/icon.png" alt="" aria-hidden="true" />
           <span>tiny-claw</span>
         </div>
         <button className="refresh-btn" onClick={loadSessions} disabled={isLoading} title="刷新会话列表">

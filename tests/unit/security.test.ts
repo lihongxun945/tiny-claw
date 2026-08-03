@@ -9,7 +9,16 @@ import { createFileWriteTool } from "../../src/tools/file_write.js";
 import { createSkillListTool, createSkillUseTool } from "../../src/tools/skill.js";
 import { loadConfig } from "../../src/config.js";
 import { PluginManager } from "../../src/plugin-manager.js";
-import { approveRequest, listApprovals, rejectRequest, requestApproval } from "../../src/tools/approval.js";
+import {
+  approveRequest,
+  approveTurnRequest,
+  clearTurnApproval,
+  hasTurnApproval,
+  listApprovals,
+  rejectRequest,
+  requestApproval,
+} from "../../src/tools/approval.js";
+import { checkDangerousToolPermission } from "../../src/tools/permission.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
 describe("security boundary", () => {
@@ -165,7 +174,7 @@ describe("security boundary", () => {
     expect(listApprovals(workspacePath)).toHaveLength(1);
 
     expect(approveRequest(workspacePath, first.approval!.id)?.status).toBe("approved");
-    expect(requestApproval(workspacePath, "bash", { command: "pwd", cwd: workspacePath })).toEqual({ approved: true });
+    expect(requestApproval(workspacePath, "bash", { command: "pwd", cwd: workspacePath })).toEqual({ approved: true, source: "single" });
     expect(listApprovals(workspacePath)).toEqual([]);
 
     const rejected = requestApproval(workspacePath, "bash", { command: "ls", cwd: workspacePath }, undefined, undefined, undefined, { command: "ls", cwd: workspacePath });
@@ -174,5 +183,45 @@ describe("security boundary", () => {
 
     requestApproval(workspacePath, "bash", { command: "expired", cwd: workspacePath }, -1);
     expect(listApprovals(workspacePath)).toEqual([]);
+  });
+
+  it("scopes turn approvals to the current session and actor until cleared", () => {
+    const workspacePath = createTempWorkspace();
+    paths.push(workspacePath);
+    const actor = { channel: "web" as const, requesterId: "user-a" };
+    const otherActor = { channel: "web" as const, requesterId: "user-b" };
+    const pending = requestApproval(
+      workspacePath,
+      "bash",
+      { command: "first" },
+      undefined,
+      actor,
+      "session-a",
+    );
+
+    expect(approveTurnRequest(workspacePath, pending.approval!.id, actor)?.status).toBe("approved");
+    expect(hasTurnApproval(workspacePath, "session-a", actor)).toBe(true);
+    expect(requestApproval(workspacePath, "bash", { command: "first" }, undefined, actor, "session-a"))
+      .toEqual({ approved: true, source: "single" });
+    expect(requestApproval(workspacePath, "file_write", { path: "a" }, undefined, actor, "session-a"))
+      .toEqual({ approved: true, source: "turn" });
+    const denied = checkDangerousToolPermission({
+      workspacePath,
+      config: { ...loadConfig(workspacePath), security: { mode: "deny" } },
+      toolName: "bash",
+      args: { command: "blocked" },
+      context: { sessionId: "session-a", actor },
+    });
+    expect(denied.allowed).toBe(false);
+    if (!denied.allowed) expect(denied.result).toContain("执行已禁用");
+    expect(requestApproval(workspacePath, "bash", { command: "other-user" }, undefined, otherActor, "session-a").approved)
+      .toBe(false);
+    expect(requestApproval(workspacePath, "bash", { command: "other-session" }, undefined, actor, "session-b").approved)
+      .toBe(false);
+
+    clearTurnApproval(workspacePath, "session-a", actor);
+    expect(hasTurnApproval(workspacePath, "session-a", actor)).toBe(false);
+    expect(requestApproval(workspacePath, "file_edit", { path: "a" }, undefined, actor, "session-a").approved)
+      .toBe(false);
   });
 });

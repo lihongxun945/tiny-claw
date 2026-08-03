@@ -334,9 +334,40 @@ describe("PluginManager hook lifecycle", () => {
     });
 
     const path = resolve(workspacePath, "debug", "model-calls", "2026-07-31", `${requestId}.json`);
-    const persisted = readFileSync(path, "utf-8");
+    let persisted = readFileSync(path, "utf-8");
     expect(persisted).not.toContain("SECRET");
     expect(persisted).toContain("image data URL omitted");
+
+    manager.callOnModelDebug({
+      requestId,
+      sessionId: "debug-session",
+      timestamp: "2026-07-31T12:00:01.000Z",
+      provider: "openai-chat",
+      model: "test-model",
+      mode: "chat",
+      phase: "stream_event",
+      data: { choices: [{ delta: { content: "buffered-token" } }] },
+    });
+    persisted = readFileSync(path, "utf-8");
+    expect(persisted).not.toContain("buffered-token");
+
+    manager.callOnModelDebug({
+      requestId,
+      sessionId: "debug-session",
+      timestamp: "2026-07-31T12:00:02.000Z",
+      provider: "openai-chat",
+      model: "test-model",
+      mode: "chat",
+      phase: "parsed_response",
+      data: { text: "complete", toolCalls: [] },
+    });
+    persisted = readFileSync(path, "utf-8");
+    expect(persisted).toContain("buffered-token");
+    expect(JSON.parse(persisted).events.map((event: { phase: string }) => event.phase)).toEqual([
+      "request",
+      "stream_event",
+      "parsed_response",
+    ]);
 
     const route = manager.getRoutes().find((item) => item.path === "/debug/model-calls");
     expect(route).toBeDefined();

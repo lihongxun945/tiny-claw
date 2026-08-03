@@ -65,6 +65,7 @@ export function createDefaultConfig(): Record<string, unknown> {
       gateway: {
         host: "127.0.0.1",
         token: "",
+        sseHeartbeatIntervalMs: 15000,
       },
       auditTools: true,
     },
@@ -246,6 +247,11 @@ export function validateConfig(raw: Record<string, unknown>): void {
   if (gatewayToken !== undefined && typeof gatewayToken !== "string") {
     throw new Error("配置字段 security.gateway.token 必须是字符串");
   }
+  assertOptionalNumber(security?.gateway?.sseHeartbeatIntervalMs, "security.gateway.sseHeartbeatIntervalMs", {
+    min: 1000,
+    max: 60000,
+    integer: true,
+  });
   if (gatewayHost && gatewayHost !== "127.0.0.1" && gatewayHost !== "localhost" && gatewayHost !== "::1" && !gatewayToken) {
     throw new Error("Gateway 暴露到非回环地址时必须配置 security.gateway.token");
   }

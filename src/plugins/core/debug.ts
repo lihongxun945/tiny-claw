@@ -61,26 +61,40 @@ function readTrace(path: string): ModelCallTrace | undefined {
   }
 }
 
-function persistEvent(workspacePath: string, event: ModelDebugEvent): void {
-  const date = event.timestamp.slice(0, 10);
-  const path = tracePath(workspacePath, event.requestId, date);
+function persistEvents(workspacePath: string, events: ModelDebugEvent[]): void {
+  if (events.length === 0) return;
+  const firstEvent = events[0];
+  const existingPath = findTracePath(workspacePath, firstEvent.requestId);
+  const path = existingPath ?? tracePath(workspacePath, firstEvent.requestId, firstEvent.timestamp.slice(0, 10));
   const existing = existsSync(path) ? readTrace(path) : undefined;
-  const startedAt = existing?.startedAt ?? event.timestamp;
-  const terminal = event.phase === "parsed_response" || event.phase === "response" || event.phase === "error";
-  const status = event.phase === "error" ? "error" : terminal ? "success" : existing?.status ?? "running";
+  const startedAt = existing?.startedAt ?? firstEvent.timestamp;
+  const lastEvent = events[events.length - 1];
+  let status = existing?.status ?? "running";
+  let durationMs = existing?.durationMs;
+  for (const event of events) {
+    const terminal = event.phase === "parsed_response" || event.phase === "response" || event.phase === "error";
+    if (terminal) {
+      status = event.phase === "error" ? "error" : "success";
+      durationMs = Math.max(0, Date.parse(event.timestamp) - Date.parse(startedAt));
+    }
+  }
   const trace: ModelCallTrace = {
-    requestId: event.requestId,
-    sessionId: event.sessionId,
-    provider: event.provider,
-    model: event.model,
-    mode: event.mode,
+    requestId: firstEvent.requestId,
+    sessionId: lastEvent.sessionId ?? existing?.sessionId,
+    provider: lastEvent.provider,
+    model: lastEvent.model,
+    mode: lastEvent.mode,
     startedAt,
-    updatedAt: event.timestamp,
-    durationMs: terminal ? Math.max(0, Date.parse(event.timestamp) - Date.parse(startedAt)) : existing?.durationMs,
+    updatedAt: lastEvent.timestamp,
+    durationMs,
     status,
     events: [
       ...(existing?.events ?? []),
-      { timestamp: event.timestamp, phase: event.phase, data: sanitizeDebugData(event.data) },
+      ...events.map((event) => ({
+        timestamp: event.timestamp,
+        phase: event.phase,
+        data: sanitizeDebugData(event.data),
+      })),
     ],
   };
 
@@ -107,9 +121,19 @@ function listTraces(workspacePath: string, sessionId?: string): ModelCallTrace[]
 export const coreDebugPlugin: Plugin = {
   name: "core-debug",
   async init(ctx) {
+    const bufferedStreamEvents = new Map<string, ModelDebugEvent[]>();
     ctx.registerHooks({
       onModelDebug(event) {
-        persistEvent(ctx.workspacePath, event);
+        if (event.phase === "stream_event") {
+          const buffered = bufferedStreamEvents.get(event.requestId) ?? [];
+          buffered.push(event);
+          bufferedStreamEvents.set(event.requestId, buffered);
+          return;
+        }
+
+        const buffered = bufferedStreamEvents.get(event.requestId) ?? [];
+        bufferedStreamEvents.delete(event.requestId);
+        persistEvents(ctx.workspacePath, [...buffered, event]);
       },
     });
 

@@ -42,8 +42,10 @@ describe("feishu approval commands", () => {
 
     await expect(runFeishuCommand(manager, "/approvals", actor)).resolves.toContain(pending.approval!.id);
     await expect(runFeishuCommand(manager, "/approvals", actor)).resolves.toContain(`/approve ${pending.approval!.id}`);
+    await expect(runFeishuCommand(manager, "/approvals", actor)).resolves.toContain(`/approve-all ${pending.approval!.id}`);
     await expect(runFeishuCommand(manager, "/approvals", otherActor)).resolves.toBe("暂无你可以处理的命令审批。");
     await expect(runFeishuCommand(manager, `/approve ${pending.approval!.id}`, otherActor)).resolves.toContain("无权处理");
+    await expect(runFeishuCommand(manager, `/approve-all ${pending.approval!.id}`, otherActor)).resolves.toContain("无权处理");
     expect(listApprovals(workspacePath, actor)[0].status).toBe("pending");
 
     await expect(runFeishuCommand(manager, `/approve ${pending.approval!.id}`, actor)).resolves.toContain("已批准该工具调用执行一次");

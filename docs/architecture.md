@@ -19,6 +19,7 @@
 src/
 ├── index.ts          # CLI 入口（使用 PluginManager + AgentSession）
 ├── gateway.ts        # HTTP Gateway（SSE 流式 API + 插件路由）
+├── gateway-sse.ts    # SSE 心跳生命周期管理
 ├── agent.ts          # AgentSession 类（核心 Agent Loop，仅编排流程+调用钩子）
 ├── plugin-manager.ts # 插件管理器（生命周期、工具注册、钩子调度）
 ├── config.ts         # 配置加载（从 workspace 读取）
@@ -82,7 +83,7 @@ desktop/                # Electron macOS 桌面壳
 
 ## 桌面应用
 
-macOS 桌面版使用 Electron 承载现有 Web UI，不改变 Agent Loop 和插件边界。Electron 主进程启动独立 Gateway 子进程，通过本机随机端口加载 Web UI；窗口不直接开放 Node.js 能力。关闭应用时，主进程向 Gateway 发送 `SIGTERM`，等待其销毁插件并关闭 HTTP 服务。
+macOS 桌面版使用 Electron 承载现有 Web UI，不改变 Agent Loop 和插件边界。Electron 主进程创建窗口后先加载内置浅色启动页，展示应用 Logo 和服务启动状态；同时启动独立 Gateway 子进程，Gateway 就绪后在同一窗口切换到本机随机端口上的 Web UI。窗口不直接开放 Node.js 能力。桌面主进程创建系统菜单栏图标，关闭主窗口时只隐藏窗口并保持 Gateway 常驻；点击菜单栏图标、Dock 图标或再次启动应用会恢复并聚焦现有窗口。只有通过菜单栏“退出 tiny-claw”、`Command+Q` 等显式退出应用时，主进程才向 Gateway 发送 `SIGTERM`，等待其销毁插件并关闭 HTTP 服务。
 
 桌面版 workspace 默认位于 `~/Library/Application Support/tiny-claw/workspace`。首次启动由统一配置初始化器生成不含真实密钥的完整默认配置，应用升级和重新安装不会覆盖已有配置、会话、记忆、技能及插件。开发模式和 CLI/Gateway 模式仍使用原有 `./workspace` 或显式指定的目录。
 
@@ -227,7 +228,7 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 - `gateway.token`：可选 Bearer token。配置后 API 请求需要携带 `Authorization: Bearer <token>`。
 - `auditTools`：是否把工具调用和完成状态写入日志，默认开启。审计日志不会记录文件内容或记忆内容。
 
-`ask` 模式使用进程内审批队列。审批记录按 workspace、工具名、参数和调用者身份去重，默认 10 分钟过期。批准后的许可只消费一次；拒绝、过期或消费后立即失效。Gateway 暴露 `/approvals` 系列接口，Web UI 在聊天工具块内提供批准和拒绝操作，批准后会自动调用 `AgentSession.resumeApproval()` 继续原任务。飞书消息会携带用户 `open_id` 和 `chat_id`，用户可以发送 `/approvals`、`/approve <id>` 或 `/reject <id>` 处理自己在当前会话发起的审批。
+`ask` 模式使用进程内审批队列。审批记录按 workspace、工具名、参数和调用者身份去重，默认 10 分钟过期。单次批准后的许可只消费一次；拒绝、过期或消费后立即失效。“允许本轮”会以 session 和调用者身份建立临时授权，当前审批先按单次许可消费，后续 `ask` 工具在同一个 Agent Loop 中自动通过；`deny` 不受影响。临时授权在恢复执行结束、失败或取消后由 `AgentSession` 的 `finally` 清理，服务重启也会自然失效。Gateway 暴露 `/approvals` 系列接口，Web UI 在聊天工具块内提供“批准本次”“允许本轮”和拒绝操作，批准后会自动调用 `AgentSession.resumeApproval()` 继续原任务。飞书消息会携带用户 `open_id` 和 `chat_id`，用户可以发送 `/approvals`、`/approve <id>`、`/approve-all <id>` 或 `/reject <id>` 处理自己在当前会话发起的审批。
 
 当工具结果包含 `requiresConfirmation: true` 时，Agent Loop 会立即暂停当前轮：审批提示会发给用户并写入历史用于 UI 恢复，但不会再把该结果回灌给模型继续总结。这样用户批准前不会产生基于“未执行命令”的最终回答；批准后由审批命令消费一次性许可并执行记录的命令。
 
@@ -380,6 +381,12 @@ OpenAI Chat 兼容实现会将内部消息格式转换为 `system/user/assistant
 
 同一逻辑请求的重试共用一个 Request ID。插件不会持久化认证请求头，并会移除图片 Base64 数据；请求体仍可能包含用户输入、工具结果、system prompt 和记忆内容，仅建议本地排查时开启。
 
+原始流事件在模型调用期间先由 `core-debug` 插件按 Request ID 聚合，收到最终响应或错误后再批量写入 trace。请求事件仍立即落盘，因此可以看到正在运行的调用，同时避免每个流事件同步重写整份 JSON 阻塞 Agent Loop。
+
+### SSE 连接稳定性
+
+Gateway 在聊天和审批续跑的 SSE 响应空闲期间发送注释心跳，间隔由 `security.gateway.sseHeartbeatIntervalMs` 配置，默认 15000 毫秒。心跳只维持连接，不进入 Agent 事件流。Web UI 以 `done.text` 作为最终回答的权威内容；如果流在 `done` / `error` 前意外关闭，会重新读取当前 session 的持久化历史，仅在确认当前用户消息之后已有 assistant 结果时恢复界面。
+
 ### 消息历史：滑动窗口
 
 `historyWindowSize` 按"轮"计算（1轮 = 1 user + 1 assistant），截取时保证第一条是 user 消息，满足 API 交替约束。默认 5 轮。
@@ -431,7 +438,7 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 
 ### 聊天命令注册：插件化
 
-聊天命令通过 `PluginContext.registerChatCommand()` 注册，由 `PluginManager` 在用户输入进入 Agent Loop 前统一解析和分发。命令只在用户显式输入 `/command` 时触发，不暴露给模型调用。核心插件 `plugins/core/chat-commands.ts` 注册 `/help`、`/new`、`/context`、`/dream`、`/approvals`、`/approve` 和 `/reject`；workspace 插件也可以注册自己的命令。`/dream` 会复用 `core-auto-memory` 的整理入口，立即触发 workspace 级长期记忆整理。
+聊天命令通过 `PluginContext.registerChatCommand()` 注册，由 `PluginManager` 在用户输入进入 Agent Loop 前统一解析和分发。命令只在用户显式输入 `/command` 时触发，不暴露给模型调用。核心插件 `plugins/core/chat-commands.ts` 注册 `/help`、`/new`、`/context`、`/dream`、`/approvals`、`/approve`、`/approve-all` 和 `/reject`；workspace 插件也可以注册自己的命令。`/dream` 会复用 `core-auto-memory` 的整理入口，立即触发 workspace 级长期记忆整理。
 
 Web `/chat` 和飞书消息入口都会先调用 `executeChatCommand()`，命中命令时直接返回结果，不写入模型上下文。未以 `/` 开头的普通消息才进入 Agent Loop。
 

@@ -50,6 +50,57 @@ test("shows a stop button while streaming and cancels the request", async ({ pag
   await expect(page.getByRole("button", { name: "停止" })).not.toBeVisible();
 });
 
+test("uses the authoritative text from the done event when deltas are missing", async ({ page }) => {
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({ json: { sessions: [] } });
+  });
+  await page.route("**/chat", async (route) => {
+    await route.fulfill({
+      contentType: "text/event-stream",
+      body: 'event: done\ndata: {"text":"完整最终回答","session_id":"done-text-session"}\n\n',
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("textbox").fill("测试完整结果");
+  await page.getByRole("button", { name: "↑" }).click();
+
+  await expect(page.getByText("完整最终回答")).toBeVisible();
+});
+
+test("recovers a persisted final answer when the SSE stream closes early", async ({ page }) => {
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({ json: { sessions: [] } });
+  });
+  await page.route("**/history/sessions/*/messages", async (route) => {
+    await route.fulfill({
+      json: {
+        messages: [
+          { role: "user", text: "需要搜索的问题", toolCalls: [], timestamp: Date.now() - 1 },
+          { role: "assistant", text: "从持久化历史恢复的回答", toolCalls: [], timestamp: Date.now() },
+        ],
+      },
+    });
+  });
+  await page.route("**/chat", async (route) => {
+    await route.fulfill({
+      contentType: "text/event-stream",
+      body: [
+        'event: tool_call\ndata: {"name":"web_search","input":{"query":"test"}}',
+        'event: tool_result\ndata: {"name":"web_search","result":"ok"}',
+        "",
+      ].join("\n\n"),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("textbox").fill("需要搜索的问题");
+  await page.getByRole("button", { name: "↑" }).click();
+
+  await expect(page.getByText("从持久化历史恢复的回答")).toBeVisible();
+  await expect(page.getByText(/连接失败/)).toHaveCount(0);
+});
+
 test("autocompletes dynamically registered slash commands", async ({ page }) => {
   await page.route("**/history/sessions", async (route) => {
     await route.fulfill({ json: { sessions: [] } });
@@ -73,6 +124,12 @@ test("autocompletes dynamically registered slash commands", async ({ page }) => 
   const listbox = page.getByRole("listbox", { name: "聊天命令" });
   await expect(listbox).toBeVisible();
   await expect(listbox.getByRole("option")).toHaveCount(3);
+
+  await input.dispatchEvent("compositionstart", { data: "" });
+  await input.dispatchEvent("keydown", { key: "Enter", code: "Enter", isComposing: true });
+  await expect(input).toHaveValue("/");
+  await expect(listbox).toBeVisible();
+  await input.dispatchEvent("compositionend", { data: "" });
 
   await input.press("ArrowDown");
   await input.press("Enter");

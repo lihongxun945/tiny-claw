@@ -1,6 +1,7 @@
 import type { Config, PermissionMode } from "../types.js";
 import { requestApproval } from "./approval.js";
 import type { ToolExecutionContext } from "../types.js";
+import { appendLog } from "../workspace/logger.js";
 
 const DEFAULT_PERMISSION_MODE: PermissionMode = "allow";
 
@@ -42,7 +43,16 @@ export function checkDangerousToolPermission(options: {
       cwd: options.cwd,
     },
   );
-  if (approval.approved) return { allowed: true };
+  if (approval.approved) {
+    if (approval.source === "turn") {
+      appendLog(
+        options.workspacePath,
+        "AUDIT",
+        `工具权限由本轮临时授权自动通过 ${options.toolName} ${JSON.stringify({ sessionId: options.context?.sessionId })}`,
+      );
+    }
+    return { allowed: true };
+  }
 
   const approvalCommand = options.context?.actor?.channel === "feishu"
     ? `/approve ${approval.approval!.id}`
@@ -56,6 +66,9 @@ export function checkDangerousToolPermission(options: {
       requiresConfirmation: true,
       approvalId: approval.approval!.id,
       approvalCommand,
+      approvalTurnCommand: options.context?.actor?.channel === "feishu"
+        ? `/approve-all ${approval.approval!.id}`
+        : undefined,
       toolName: options.toolName,
       args: options.args,
       command: options.command,

@@ -120,6 +120,7 @@ export interface SecurityConfig {
   gateway?: {
     host?: string;
     token?: string;
+    sseHeartbeatIntervalMs?: number;
   };
   auditTools?: boolean;
 }

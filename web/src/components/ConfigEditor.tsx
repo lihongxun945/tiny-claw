@@ -127,6 +127,7 @@ const FIELD_GROUPS: FieldGroup[] = [
       { key: "security.tools", label: "工具权限覆盖", type: "json", defaultValue: {}, description: "按工具名设置 mode，可覆盖全局模式。" },
       { key: "security.gateway.host", label: "Gateway Host", type: "text", defaultValue: "127.0.0.1" },
       { key: "security.gateway.token", label: "Gateway Token", type: "password" },
+      { key: "security.gateway.sseHeartbeatIntervalMs", label: "SSE 心跳间隔（毫秒）", type: "number", defaultValue: 15000 },
       { key: "security.auditTools", label: "记录工具审计日志", type: "checkbox", defaultValue: true },
     ],
   },

@@ -375,6 +375,7 @@ describe("Gateway HTTP API", () => {
         data: expect.objectContaining({ text: expect.stringContaining("- `/approvals`：列出当前可处理的命令审批") }),
       }),
     ]);
+    expect(events.at(-1)?.data.text).toContain("- `/approve-all <审批 ID>`：允许当前对话轮次的全部权限申请");
   });
 
   it("exposes registered chat commands through the API and WebUI proxy", async () => {
@@ -436,6 +437,7 @@ describe("Gateway HTTP API", () => {
     expect(await json(`${gateway.apiUrl}/approvals`)).toEqual({ status: 200, body: { approvals: [] } });
     expect(await json(`${gateway.webUrl}/approvals`)).toEqual({ status: 200, body: { approvals: [] } });
     expect((await json(`${gateway.apiUrl}/approvals/missing/approve`, { method: "POST" })).status).toBe(404);
+    expect((await json(`${gateway.apiUrl}/approvals/missing/approve-turn-and-resume`, { method: "POST" })).status).toBe(404);
     expect((await json(`${gateway.apiUrl}/approvals/missing/reject`, { method: "POST" })).status).toBe(404);
   });
 

@@ -24,6 +24,14 @@ function writeHashSession(id: string | null) {
   }
 }
 
+function findLastMatchingUserMessage(messages: Message[], text: string): number {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role === "user" && message.text === text) return index;
+  }
+  return -1;
+}
+
 export default function App() {
   const [view, setView] = useState<View>("chat");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -63,7 +71,8 @@ export default function App() {
         case "done": {
           const sid = (d.session_id as string) ?? null;
           if (sid) setActiveSessionId(sid);
-          const assistantMessage = { role: "assistant" as const, text: fullText, toolCalls: [...toolCalls], timestamp: Date.now() };
+          const completedText = typeof d.text === "string" ? d.text : fullText;
+          const assistantMessage = { role: "assistant" as const, text: completedText, toolCalls: [...toolCalls], timestamp: Date.now() };
           setMessages((prev) => d.clear_messages === true ? [assistantMessage] : [...prev, assistantMessage]);
           setStreamingText("");
           setStreamingToolCalls([]);
@@ -111,8 +120,8 @@ export default function App() {
     setStreamingText("");
     setStreamingToolCalls([]);
 
+    const sessionId = activeSessionId ?? crypto.randomUUID();
     try {
-      const sessionId = activeSessionId ?? crypto.randomUUID();
       if (!activeSessionId) setActiveSessionId(sessionId);
       const attachments: Attachment[] = [];
       for (const file of files) {
@@ -130,6 +139,22 @@ export default function App() {
       ));
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
+      try {
+        const persisted = await fetchHistoryMessages(sessionId);
+        const userIndex = findLastMatchingUserMessage(persisted, text);
+        const recovered = userIndex >= 0 && persisted.slice(userIndex + 1).some((message) => (
+          message.role === "assistant" && (message.text.length > 0 || message.toolCalls.length > 0)
+        ));
+        if (recovered) {
+          setMessages(persisted);
+          setStreamingText("");
+          setStreamingToolCalls([]);
+          setSidebarRefreshKey((key) => key + 1);
+          return;
+        }
+      } catch {
+        // Fall through to the connection error when persisted recovery is unavailable.
+      }
       const msg = err instanceof Error ? err.message : String(err);
       setMessages((prev) => [
         ...prev,
@@ -140,7 +165,7 @@ export default function App() {
     }
   }, [activeSessionId, consumeAgentStream]);
 
-  const handleApproveAndResume = useCallback(async (approvalId: string) => {
+  const resumeApproval = useCallback(async (approvalId: string, allowTurn: boolean) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -148,7 +173,7 @@ export default function App() {
     setStreamingText("");
     setStreamingToolCalls([]);
     try {
-      await consumeAgentStream(streamApprovalResume(approvalId, controller.signal));
+      await consumeAgentStream(streamApprovalResume(approvalId, allowTurn, controller.signal));
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       const msg = err instanceof Error ? err.message : String(err);
@@ -160,6 +185,16 @@ export default function App() {
       setIsStreaming(false);
     }
   }, [consumeAgentStream]);
+
+  const handleApproveAndResume = useCallback(
+    (approvalId: string) => resumeApproval(approvalId, false),
+    [resumeApproval],
+  );
+
+  const handleApproveTurnAndResume = useCallback(
+    (approvalId: string) => resumeApproval(approvalId, true),
+    [resumeApproval],
+  );
 
   const handleNewChat = useCallback(() => {
     abortRef.current?.abort();
@@ -234,6 +269,7 @@ export default function App() {
               isRefreshing={isRefreshingMessages}
               onRefreshMessages={handleRefreshMessages}
               onApproveAndResume={handleApproveAndResume}
+              onApproveTurnAndResume={handleApproveTurnAndResume}
             />
             <ChatInput onSend={handleSend} onStop={handleStop} disabled={isStreaming} />
           </>

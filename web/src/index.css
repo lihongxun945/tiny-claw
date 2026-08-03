@@ -94,21 +94,14 @@ summary:focus-visible {
 
 .brand-mark,
 .empty-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--text);
-  color: #fff;
-  font-family: Georgia, serif;
-  font-style: italic;
-  font-weight: 700;
+  display: block;
+  object-fit: contain;
 }
 
 .brand-mark {
   width: 27px;
   height: 27px;
-  font-size: 16px;
+  border-radius: 7px;
 }
 
 .refresh-btn {
@@ -402,7 +395,7 @@ summary:focus-visible {
   width: 48px;
   height: 48px;
   margin-bottom: 18px;
-  font-size: 27px;
+  border-radius: 13px;
 }
 
 .chat-empty-state h1 {
@@ -437,22 +430,14 @@ summary:focus-visible {
 }
 
 .message.assistant::before {
-  content: "t";
+  content: "";
   position: absolute;
   top: 0;
   left: 0;
   width: 28px;
   height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--text);
-  color: #fff;
-  font-family: Georgia, serif;
-  font-size: 16px;
-  font-style: italic;
-  font-weight: 700;
+  border-radius: 7px;
+  background: url("/icon.png") center / contain no-repeat;
 }
 
 .message-content {
@@ -848,15 +833,41 @@ summary:focus-visible {
   color: #f3f3f0;
 }
 
+.tool-block .tool-body.tool-body-approval {
+  height: auto;
+  max-height: min(360px, calc(100vh - 140px));
+  padding: 0;
+  overflow: hidden;
+}
+
 .tool-approval {
-  margin: -14px;
-  padding: 18px;
+  max-height: inherit;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   border: 1px solid #ecd39e;
   background: var(--warning-soft);
   color: var(--text);
   font-family: Inter, ui-sans-serif, sans-serif;
   line-height: 1.6;
   white-space: normal;
+}
+
+.tool-approval-content {
+  min-height: 0;
+  flex: 1;
+  padding: 18px;
+  overflow: auto;
+}
+
+.tool-approval-footer {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  padding: 12px 18px 14px;
+  border-top: 1px solid #ecd39e;
+  background: #fffaf0;
+  box-shadow: 0 -8px 20px rgba(122, 81, 17, 0.06);
 }
 
 .tool-approval-title {
@@ -898,9 +909,22 @@ summary:focus-visible {
 }
 
 .tool-approval-actions {
-  margin-top: 14px;
+  margin-top: 0;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.tool-approval-hint {
+  margin-top: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.tool-approval-actions .approve-turn {
+  border-color: rgba(99, 91, 255, 0.45);
+  color: var(--accent);
 }
 
 .tool-approval-actions button,

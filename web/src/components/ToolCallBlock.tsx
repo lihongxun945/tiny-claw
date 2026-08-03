@@ -6,6 +6,7 @@ import { approveCommand, rejectCommand } from "../lib/api.js";
 interface Props {
   toolCall: ToolCallInfo;
   onApproveAndResume?: (approvalId: string) => Promise<void>;
+  onApproveTurnAndResume?: (approvalId: string) => Promise<void>;
 }
 
 interface ApprovalResult {
@@ -54,7 +55,7 @@ function parseApprovalResult(result: string | undefined): ApprovalResult | undef
   return undefined;
 }
 
-export default function ToolCallBlock({ toolCall, onApproveAndResume }: Props) {
+export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveTurnAndResume }: Props) {
   const approval = parseApprovalResult(toolCall.result);
   const [approvalStatus, setApprovalStatus] = useState<"pending" | "approved" | "rejected">("pending");
   const [approvalMessage, setApprovalMessage] = useState("");
@@ -98,6 +99,21 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume }: Props) {
     }
   };
 
+  const handleApproveTurn = async () => {
+    if (!approval || !onApproveTurnAndResume) return;
+    setIsSubmittingApproval(true);
+    setApprovalMessage("已允许本轮，正在继续执行...");
+    try {
+      await onApproveTurnAndResume(approval.approvalId);
+      setApprovalStatus("approved");
+      setApprovalMessage("本轮后续权限申请已自动允许，任务已继续执行。");
+    } catch (err) {
+      setApprovalMessage(err instanceof Error ? err.message : "允许本轮失败");
+    } finally {
+      setIsSubmittingApproval(false);
+    }
+  };
+
   return (
     <details className="tool-block" open={approval ? true : undefined}>
       <summary>
@@ -105,29 +121,46 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume }: Props) {
         {inputSummary && <span className="tool-input-summary">{inputSummary}</span>}
         {resultSummary && <span className="tool-result-summary">{resultSummary}</span>}
       </summary>
-      <div className="tool-body">
-        <div><strong>Input:</strong></div>
-        <div>{inputStr}</div>
-        {toolCall.result !== undefined && (
-          <>
-            <div style={{ marginTop: 8 }}><strong>Result:</strong></div>
-            {approval ? (
-              <div className="tool-approval">
+      <div className={`tool-body ${approval ? "tool-body-approval" : ""}`}>
+        {approval ? (
+          <div className="tool-approval">
+            <div className="tool-approval-content">
+              <div><strong>Input:</strong></div>
+              <div>{inputStr}</div>
+              <div style={{ marginTop: 8 }}><strong>Result:</strong></div>
+              <div>
                 <div className="tool-approval-title">此工具调用需要批准</div>
                 {approval.error && <div>{approval.error}</div>}
                 <div>审批 ID：<code>{approval.approvalId}</code></div>
                 {approval.command && <pre>{approval.command}</pre>}
                 {approval.cwd && <div>目录：{approval.cwd}</div>}
+                <div className="tool-approval-hint">“允许本轮”仅对当前用户消息的后续权限申请生效，不会修改权限配置。</div>
+              </div>
+            </div>
+            <div className="tool-approval-footer">
                 <div className="tool-approval-actions">
                   <button onClick={handleApprove} disabled={isSubmittingApproval || approvalStatus !== "pending"}>
-                    {approvalStatus === "approved" ? "已批准" : "批准"}
+                    {approvalStatus === "approved" ? "已批准" : "批准本次"}
                   </button>
+                  {onApproveTurnAndResume && (
+                    <button className="approve-turn" onClick={handleApproveTurn} disabled={isSubmittingApproval || approvalStatus !== "pending"}>
+                      允许本轮
+                    </button>
+                  )}
                   <button onClick={handleReject} disabled={isSubmittingApproval || approvalStatus !== "pending"}>拒绝</button>
                 </div>
                 {approvalMessage && <div className="tool-approval-message">{approvalMessage}</div>}
-              </div>
-            ) : (
+            </div>
+          </div>
+        ) : (
+          <>
+            <div><strong>Input:</strong></div>
+            <div>{inputStr}</div>
+            {toolCall.result !== undefined && (
+              <>
+                <div style={{ marginTop: 8 }}><strong>Result:</strong></div>
               <Markdown>{toolCall.result}</Markdown>
+              </>
             )}
           </>
         )}

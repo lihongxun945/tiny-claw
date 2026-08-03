@@ -6,6 +6,7 @@ import { ensureWorkspace } from "./workspace/workspace.js";
 import { appendHistory } from "./workspace/logger.js";
 import { sanitizeToolMessageChains } from "./message-sanitizer.js";
 import { readSessionMessages } from "./session-store.js";
+import { clearTurnApproval } from "./tools/approval.js";
 import type { AgentActor, Config, ContentBlock, Message, ToolUseBlock, ToolResultBlock } from "./types.js";
 
 // === 事件类型 ===
@@ -167,6 +168,7 @@ export class AgentSession {
       await this.notifyError(error, 0);
       yield { type: "error", message: error.message };
     } finally {
+      clearTurnApproval(this.workspacePath, this.id, actor);
       if (this.activeController === controller) this.activeController = undefined;
     }
   }
@@ -213,6 +215,7 @@ export class AgentSession {
       await this.notifyError(error, agentIteration);
       yield { type: "error", message: error.message };
     } finally {
+      clearTurnApproval(this.workspacePath, this.id, actor);
       if (this.activeController === controller) this.activeController = undefined;
     }
   }

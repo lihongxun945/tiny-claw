@@ -132,6 +132,8 @@ npm run web:dev
 
 模型配置保存后，新会话会自动使用最新设置。插件启停、Gateway Host 和 Gateway Token 等启动期配置需要退出并重新打开客户端后生效。
 
+客户端运行后会在 macOS 菜单栏显示 tiny-claw 图标。关闭主窗口只会隐藏窗口，Agent 和 Gateway 会继续在后台运行；点击菜单栏图标、Dock 图标或再次打开应用即可恢复窗口。需要完全退出时，请在菜单栏图标的菜单中选择“退出 tiny-claw”，或按 `Command+Q`。
+
 #### 日常使用
 
 - 在“聊天”页面输入任务并发送，Agent 会根据任务调用工具并流式输出结果。
@@ -307,6 +309,7 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 | `/dream` | 立即触发 workspace 级 auto-memory 整理 |
 | `/approvals` | 列出当前可处理的命令审批 |
 | `/approve <审批 ID>` | 批准一条命令审批；可恢复原任务时会继续执行 |
+| `/approve-all <审批 ID>` | 允许当前对话轮次后续所有 `ask` 权限申请并继续执行 |
 | `/reject <审批 ID>` | 拒绝一条命令审批 |
 
 自定义插件可以通过 `ctx.registerChatCommand(...)` 注册命令。命令会在进入 Agent Loop 前执行，适合做会话管理、审批、上下文查询等轻量操作。
@@ -372,7 +375,7 @@ WebUI 支持选择图片或直接粘贴截图，可在发送前预览和移除�
 }
 ```
 
-权限决策顺序为：`security.tools.<tool>.mode` > `security.mode` > `allow`。`bash` 工具和技能文件中的动态 shell 注入都使用 `bash` 的工具级权限。`ask` 会创建一次性审批记录；Web UI 点击批准后会自动继续原任务，飞书中回复完整 `/approve <审批 ID>` 后也会尝试继续原会话。工具调用默认写入审计日志，可通过 `auditTools: false` 关闭。
+权限决策顺序为：`security.tools.<tool>.mode` > `security.mode` > `allow`。`bash` 工具和技能文件中的动态 shell 注入都使用 `bash` 的工具级权限。`ask` 会创建一次性审批记录；Web UI 可以“批准本次”或“允许本轮”，飞书中可以回复完整 `/approve <审批 ID>` 或 `/approve-all <审批 ID>`，批准后都会尝试继续原会话。“允许本轮”仅对当前 session、调用者和当前 Agent Loop 生效，本轮完成、失败或取消后自动清理，且不会覆盖 `deny`。工具调用默认写入审计日志，可通过 `auditTools: false` 关闭。
 
 | 配置项 | 默认值 | 示例 | 说明 |
 |---|---:|---|---|
@@ -380,6 +383,7 @@ WebUI 支持选择图片或直接粘贴截图，可在发送前预览和移除�
 | `security.tools.<tool>.mode` | 继承全局 | `"deny"` | 单个工具权限模式，覆盖 `security.mode` |
 | `security.gateway.host` | `"127.0.0.1"` | `"0.0.0.0"` | Gateway 监听地址；暴露到非回环地址时必须配置 token |
 | `security.gateway.token` | 无 | `"YOUR_GATEWAY_TOKEN"` | Gateway Bearer token |
+| `security.gateway.sseHeartbeatIntervalMs` | `15000` | `15000` | 流式响应空闲时发送 SSE 心跳的间隔，避免长时间推理导致连接超时 |
 | `security.auditTools` | `true` | `true` | 是否记录工具调用审计日志 |
 
 ### Gateway API
@@ -409,6 +413,7 @@ Gateway 默认只监听 `127.0.0.1`。如需暴露到其他机器，请同时配
 | POST | /sessions/:id/cancel | 取消会话中正在运行的任务 |
 | GET | /approvals | 列出命令审批记录 |
 | POST | /approvals/:id/approve | 允许相同命令执行一次 |
+| POST | /approvals/:id/approve-turn-and-resume | 允许本轮后续 `ask` 权限并继续原任务（SSE） |
 | POST | /approvals/:id/reject | 拒绝命令执行 |
 | GET | /memory | 列出长期记忆 |
 | PUT | /memory/:name | 更新长期记忆 |
@@ -472,6 +477,7 @@ POST /chat 请求示例：
 |------|------|
 | `/approvals` | 列出当前用户在当前会话中可以处理的审批 |
 | `/approve <审批 ID>` | 批准审批，并尝试继续原会话任务 |
+| `/approve-all <审批 ID>` | 允许本轮全部权限申请，并尝试继续原会话任务 |
 | `/reject <审批 ID>` | 拒绝命令执行 |
 
 飞书审批绑定发起用户和会话。批准后会继续原会话中暂停的工具调用；其他用户无法查看、批准或拒绝该审批。

@@ -18,14 +18,22 @@ import {
   updateMemoryRecord,
   type MemorySource,
 } from "./tools/memory.js";
-import { approveRequest, listApprovals, rejectRequest } from "./tools/approval.js";
+import {
+  approveRequest,
+  approveTurnRequest,
+  clearTurnApproval,
+  listApprovals,
+  rejectRequest,
+} from "./tools/approval.js";
 import { deleteStoredSession, listSessionMetas, readSessionMessages } from "./session-store.js";
 import type { RegisteredRoute, RouteContext } from "./plugins/types.js";
 import { ensureWorkspace } from "./workspace/workspace.js";
 import { attachmentLimits, attachmentToImageBlock, readAttachment } from "./attachments.js";
 import type { ImageBlock, Message } from "./types.js";
+import { startSSEHeartbeat } from "./gateway-sse.js";
 
 const SESSION_TIMEOUT = 30 * 60 * 1000;
+const DEFAULT_SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 
 function parseWorkspaceArg(): string | undefined {
   const idx = process.argv.indexOf("--workspace");
@@ -485,6 +493,10 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         }
 
         sendSSEHeader(res);
+        startSSEHeartbeat(
+          res,
+          config.security?.gateway?.sseHeartbeatIntervalMs ?? DEFAULT_SSE_HEARTBEAT_INTERVAL_MS,
+        );
 
         const isNewSessionCommand = /^\/(?:new|reset)(?:\s|$)/i.test(message.trim());
         const commandSession = isNewSessionCommand
@@ -576,15 +588,24 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       return;
     }
 
-    // POST /approvals/:id/approve-and-resume — 批准并继续原 Agent Loop
-    if (req.method === "POST" && url.pathname.startsWith("/approvals/") && url.pathname.endsWith("/approve-and-resume")) {
-      const id = decodeURIComponent(url.pathname.slice("/approvals/".length, -"/approve-and-resume".length));
-      const approval = approveRequest(workspacePath, id);
+    // POST /approvals/:id/approve[-turn]-and-resume — 批准并继续原 Agent Loop
+    const approveTurnAndResume = url.pathname.endsWith("/approve-turn-and-resume");
+    const approveOnceAndResume = url.pathname.endsWith("/approve-and-resume");
+    if (req.method === "POST" && url.pathname.startsWith("/approvals/") && (approveTurnAndResume || approveOnceAndResume)) {
+      const suffix = approveTurnAndResume ? "/approve-turn-and-resume" : "/approve-and-resume";
+      const id = decodeURIComponent(url.pathname.slice("/approvals/".length, -suffix.length));
+      const approval = approveTurnAndResume
+        ? approveTurnRequest(workspacePath, id)
+        : approveRequest(workspacePath, id);
       if (!approval) {
         sendJSON(res, 404, { error: "审批记录不存在或已过期" });
         return;
       }
-      appendLog(workspacePath, "AUDIT", `命令审批通过并续跑 ${approval.toolName} ${approval.id} ${JSON.stringify({ command: approval.command, cwd: approval.cwd })}`);
+      appendLog(
+        workspacePath,
+        "AUDIT",
+        `${approveTurnAndResume ? "本轮工具权限已允许" : "命令审批通过"}并续跑 ${approval.toolName} ${approval.id} ${JSON.stringify({ command: approval.command, cwd: approval.cwd })}`,
+      );
 
       if (!approval.sessionId) {
         sendJSON(res, 409, { error: "审批已通过，但原会话没有可恢复的待执行任务。" });
@@ -592,13 +613,22 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       }
       const session = sessions.get(approval.sessionId);
       if (!session) {
+        if (approveTurnAndResume) clearTurnApproval(workspacePath, approval.sessionId, approval.actor);
         sendJSON(res, 409, { error: "审批已通过，但原会话不可恢复；可能是服务重启或会话已被清理。" });
         return;
       }
 
       sendSSEHeader(res);
-      for await (const event of session.resumeApproval(approval.id)) sendAgentEventSSE(res, event, session.id);
-      res.end();
+      startSSEHeartbeat(
+        res,
+        config.security?.gateway?.sseHeartbeatIntervalMs ?? DEFAULT_SSE_HEARTBEAT_INTERVAL_MS,
+      );
+      try {
+        for await (const event of session.resumeApproval(approval.id)) sendAgentEventSSE(res, event, session.id);
+        res.end();
+      } finally {
+        if (approveTurnAndResume) clearTurnApproval(workspacePath, approval.sessionId, approval.actor);
+      }
       return;
     }
 
@@ -863,6 +893,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 
       // 代理 API 请求到 gateway
       if (url.pathname === "/chat" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
+        let proxyIsSSE = false;
         try {
           const hasRequestBody = req.method !== "GET" && req.method !== "HEAD"
             && (Number(req.headers["content-length"] ?? 0) > 0 || req.headers["transfer-encoding"] !== undefined);
@@ -876,29 +907,37 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
             body: proxyBody as unknown as BodyInit | undefined,
           });
           const contentType = proxyRes.headers.get("content-type") ?? "application/json";
+          proxyIsSSE = contentType.includes("text/event-stream");
           res.writeHead(proxyRes.status, {
             "content-type": contentType,
             "access-control-allow-origin": "*",
             ...(proxyRes.headers.get("cache-control") ? { "cache-control": proxyRes.headers.get("cache-control")! } : {}),
             ...(proxyRes.headers.get("x-content-type-options") ? { "x-content-type-options": proxyRes.headers.get("x-content-type-options")! } : {}),
           });
-          if (contentType.includes("text/event-stream")) {
+          if (proxyIsSSE) {
             const reader = proxyRes.body!.getReader();
             const decoder = new TextDecoder();
-            const pump = async () => {
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) { res.end(); return; }
-                res.write(decoder.decode(value, { stream: true }));
-              }
-            };
-            pump().catch(() => res.end());
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              res.write(decoder.decode(value, { stream: true }));
+            }
+            res.end();
           } else {
             res.end(Buffer.from(await proxyRes.arrayBuffer()));
           }
         } catch (err) {
-          res.writeHead(502, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: `代理请求失败: ${err instanceof Error ? err.message : String(err)}` }));
+          const message = `代理请求失败: ${err instanceof Error ? err.message : String(err)}`;
+          appendLog(workspacePath, "ERROR", message);
+          if (res.headersSent) {
+            if (!res.writableEnded && proxyIsSSE) {
+              sendSSE(res, "error", { message });
+            }
+            if (!res.writableEnded) res.end();
+          } else {
+            res.writeHead(502, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: message }));
+          }
         }
         return;
       }

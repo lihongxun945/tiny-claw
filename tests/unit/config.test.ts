@@ -58,7 +58,7 @@ describe("loadConfig", () => {
       searchProvider: "duckduckgo",
       enabledPlugins: [],
       plugins: {},
-      security: { mode: "allow" },
+      security: { mode: "allow", gateway: { sseHeartbeatIntervalMs: 15000 } },
     });
     expect(() => validateConfig(raw)).not.toThrow();
   });
@@ -130,6 +130,7 @@ describe("loadConfig", () => {
     [{ security: { tools: [] } }, "配置字段 security.tools 必须是对象"],
     [{ security: { tools: { bash: { mode: "unknown" } } } }, "配置字段 security.tools.bash.mode 不受支持"],
     [{ security: { gateway: { host: "0.0.0.0" } } }, "Gateway 暴露到非回环地址时必须配置 security.gateway.token"],
+    [{ security: { gateway: { sseHeartbeatIntervalMs: 999 } } }, "配置字段 security.gateway.sseHeartbeatIntervalMs 超出允许范围"],
     [{ subAgent: { maxConcurrency: 9 } }, "配置字段 subAgent.maxConcurrency 超出允许范围"],
     [{ autoMemory: { lockTimeoutSeconds: 0 } }, "配置字段 autoMemory.lockTimeoutSeconds 超出允许范围"],
     [{ memory: { maxItemChars: 999 } }, "配置字段 memory.maxItemChars 超出允许范围"],
