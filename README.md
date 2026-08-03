@@ -4,17 +4,6 @@ tiny-claw 是一个插件化、可扩展的个人 AI Agent 框架，用于研究
 
 ![tiny-claw WebUI](docs/images/tiny-claw-webui.png)
 
-> [!NOTE]
-> **macOS 客户端签名**
->
-> 当前发布流程生成的 macOS 客户端会使用 Apple Developer ID 签名并提交 Apple 公证。旧版本如果提示“tiny-claw 已损坏，无法打开”，请先将 DMG 的 SHA256 与 GitHub Release 中的 `SHA256SUMS.txt` 核对一致，确认安装包完整且来源可信，然后执行：
->
-> ```bash
-> xattr -dr com.apple.quarantine /Applications/tiny-claw.app
-> ```
->
-> 命令执行完成后重新打开 tiny-claw。该命令会移除应用的 macOS 隔离属性，只应对旧版、来源可信且已经验证校验值的应用执行。
-
 ## 快速开始
 
 ### 安装
