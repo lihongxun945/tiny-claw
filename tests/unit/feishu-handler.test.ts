@@ -140,8 +140,8 @@ describe("feishu approval commands", () => {
     paths.push(workspacePath);
     const chat = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
       yield { type: "text_delta", text: "hello" };
-      yield { type: "tool_call", name: "file_read", input: { path: "a.txt" } };
-      yield { type: "tool_result", name: "file_read", result: "content" };
+      yield { type: "tool_call", toolCallId: "call-1", name: "file_read", input: { path: "a.txt" } };
+      yield { type: "tool_result", toolCallId: "call-1", name: "file_read", result: "content" };
       yield { type: "text_delta", text: " world" };
       yield { type: "done", text: "hello world" };
     });
@@ -174,7 +174,7 @@ describe("feishu approval commands", () => {
       command: "pwd",
     });
     const chat = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
-      yield { type: "tool_result", name: "bash", result };
+      yield { type: "tool_result", toolCallId: "call-1", name: "bash", result };
       yield { type: "done", text: "" };
     });
     const updateMessageCard = vi.fn(async () => {});

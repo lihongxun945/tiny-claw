@@ -522,7 +522,8 @@ function acquireAutoMemoryLock(
     mkdirSync(lockPath);
   } catch (error) {
     if (!isAlreadyExistsError(error)) throw error;
-    if (!isLockExpired(lockPath, timeoutSeconds)) return null;
+    const ownerAlive = isLockOwnerAlive(lockPath);
+    if (ownerAlive !== false && !isLockExpired(lockPath, timeoutSeconds)) return null;
     rmSync(lockPath, { recursive: true, force: true });
     try {
       mkdirSync(lockPath);
@@ -566,6 +567,25 @@ function acquireAutoMemoryLock(
 
 function isAlreadyExistsError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "EEXIST";
+}
+
+function isLockOwnerAlive(lockPath: string): boolean | undefined {
+  try {
+    const owner = JSON.parse(readFileSync(resolve(lockPath, "owner.json"), "utf-8")) as { pid?: unknown };
+    if (!Number.isInteger(owner.pid) || Number(owner.pid) <= 0) return undefined;
+    try {
+      process.kill(Number(owner.pid), 0);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && "code" in error) {
+        if (error.code === "ESRCH") return false;
+        if (error.code === "EPERM") return true;
+      }
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
 }
 
 function isLockExpired(lockPath: string, timeoutSeconds: number): boolean {

@@ -1,6 +1,7 @@
 import type { Plugin, HookContext } from "../types.js";
 import type { Message, Config } from "../../types.js";
 import { estimateTokens } from "../../estimate-tokens.js";
+import { getLocalContextSize } from "../../model/local-catalog.js";
 
 const SESSION_SUMMARY_MARKER = "[当前会话摘要]";
 const HISTORY_SUMMARY_MARKER = "[以下是对话历史的摘要]";
@@ -8,6 +9,8 @@ const SYNTHETIC_SUMMARY_MARKERS = [SESSION_SUMMARY_MARKER, HISTORY_SUMMARY_MARKE
 const MIN_TOOL_RESULT_CHAR_LIMIT = 1_000;
 const DEFAULT_CONTEXT_COMPRESSION_MAX_CHARS = 5000;
 const DEFAULT_CONTEXT_COMPRESSION_TOOL_RESULT_MAX_CHARS = 500;
+// 压缩摘要的输出 token 上限：压缩结果将替代整个历史，需要足够的输出预算
+const DEFAULT_CONTEXT_COMPRESSION_MAX_OUTPUT_TOKENS = 2048;
 const DEFAULT_TOOL_RESULT_INITIAL_MAX_CHARS = 12_000;
 
 function getRecentTurns(config: Config): number {
@@ -32,6 +35,16 @@ function getToolResultInitialMaxChars(config: Config): number {
   const value = config.toolResultInitialMaxChars;
   if (!Number.isFinite(value) || value < MIN_TOOL_RESULT_CHAR_LIMIT) return DEFAULT_TOOL_RESULT_INITIAL_MAX_CHARS;
   return Math.floor(value);
+}
+
+export function getEffectiveMaxContextTokens(config: Config): number {
+  if (config.remoteModel?.enabled === false && config.localModel?.enabled) {
+    return Math.min(
+      config.maxContextTokens,
+      getLocalContextSize(config.localModel.modelId, config.localModel.contextSize),
+    );
+  }
+  return config.maxContextTokens;
 }
 
 function compressPrompt(maxChars: number): string {
@@ -113,7 +126,7 @@ function clampToolResults(messages: Message[], budgetTokens: number, initialMaxC
   return clamped;
 }
 
-async function compressMessages(
+export async function compressMessages(
   messages: Message[],
   ctx: HookContext,
 ): Promise<Message[]> {
@@ -137,6 +150,7 @@ async function compressMessages(
     const summary = await ctx.client.complete(
       [{ role: "user", content: `${compressPrompt(getCompressionMaxChars(ctx.config))}\n\n---\n${text}` }],
       "你是一个对话摘要助手，只输出摘要，不要有任何额外说明。",
+      { maxTokens: DEFAULT_CONTEXT_COMPRESSION_MAX_OUTPUT_TOKENS },
     );
 
     return [
@@ -163,7 +177,7 @@ export const coreCompressPlugin: Plugin = {
         const currentMessages = messages.slice(hookCtx.turnStartIndex);
         const normalizedMessages = [...normalizedPreviousMessages, ...currentMessages];
         const tokens = estimateTokens(normalizedMessages);
-        const threshold = config.maxContextTokens * config.contextCompressionThreshold;
+        const threshold = getEffectiveMaxContextTokens(config) * config.contextCompressionThreshold;
 
         const toolResultInitialMaxChars = getToolResultInitialMaxChars(hookCtx.config);
 

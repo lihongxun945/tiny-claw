@@ -29,7 +29,10 @@ src/
 │   ├── index.ts      # createModelClient 工厂
 │   ├── anthropic.ts  # Anthropic Messages 兼容协议实现
 │   ├── openai.ts     # OpenAI Chat Completions 兼容协议实现
-│   └── request-repair.ts # 模型请求错误修复策略链
+│   ├── request-repair.ts # 模型请求错误修复策略链
+│   ├── local.ts      # node-llama-cpp 本地模型适配器
+│   ├── local-catalog.ts # 内置 Qwen / Gemma GGUF 模型目录
+│   └── local-store.ts # 本地模型下载、状态与持久化清单
 ├── history.ts        # 滑动窗口消息历史
 ├── estimate-tokens.ts # Token 估算（供 compress 插件使用）
 ├── sub-agent.ts      # 并行 sub-agent 执行器（受限工具 + 临时 AgentSession）
@@ -115,15 +118,19 @@ workspace/
 
 仓库提供两个配置示例：`config.simple.example.json` 是推荐入门配置，`config.all.example.json` 是完整配置参考。实际运行时只读取 `workspace/config.json`。
 
-Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件不存在时生成完整默认配置，已存在时绝不覆盖。首次配置允许 `apiKey` 为空，以保证用户能够进入 WebUI 完成设置；AgentSession 在模型调用前检查空密钥并返回明确错误。配置 API 保存后会释放空闲会话，使模型与上下文配置在下一次消息时重新加载；插件启停、Gateway host/token 等启动期配置仍需重启服务。
+Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件不存在时生成完整默认配置，已存在时绝不覆盖。远程模型与本地模型可分别启用，同时启用时模型工厂固定优先选择远程模型；仅启用本地模型时不要求 API Key。本地模型目录、显式后台下载、字节级进度和独立连通性测试由 `core-local-models` 插件提供，GGUF 文件及清单保存在 `workspace/models/`。目录覆盖 Qwen3.5 与 Gemma 4 的不同参数规模，WebUI 通过插件路由动态读取，不维护独立的硬编码型号列表。选择本地模型不会触发下载，只有调用下载路由后才开始。每个本地模型在目录中声明建议内存、推荐上下文与模型上限，运行时和 `core-compress` 使用同一个实际上下文值，防止压缩逻辑按远程模型窗口计算而让本地推理溢出。配置 API 保存后会释放空闲会话，使模型与上下文配置在下一次消息时重新加载。
+
+本地模型适配器在模型首次输出工具调用时立即终止当前次生成，只把工具调用交回 Agent Loop；它不会向模型注入占位工具结果。工具实际执行并返回真实结果后，Agent Loop 才开始下一次模型调用，确保等待审批期间不会生成基于虚假结果的回答。
 
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
 | apiUrl | API 基础地址 | 必填 |
+| remoteModel | 远程模型启用状态 | enabled=true |
+| localModel | Qwen/Gemma 本地模型、上下文与启用状态 | enabled=false, modelId=qwen3.5-4b-q4, contextSize=32768 |
 | apiKey | API 密钥 | 必填 |
 | model | 模型标识 | 必填 |
 | modelProvider | 模型协议适配器 | anthropic-messages |
-| maxTokens | 单次响应最大 token | 4096 |
+| maxTokens | 单次响应最大 token | 16384 |
 | maxContextTokens | 上下文最大 token 估计 | 128000 |
 | contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
 | historyWindowSize | 历史窗口（轮） | 5 |
@@ -230,7 +237,7 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 
 `ask` 模式使用进程内审批队列。审批记录按 workspace、工具名、参数和调用者身份去重，默认 10 分钟过期。单次批准后的许可只消费一次；拒绝、过期或消费后立即失效。“允许本轮”会以 session 和调用者身份建立临时授权，当前审批先按单次许可消费，后续 `ask` 工具在同一个 Agent Loop 中自动通过；`deny` 不受影响。临时授权在恢复执行结束、失败或取消后由 `AgentSession` 的 `finally` 清理，服务重启也会自然失效。Gateway 暴露 `/approvals` 系列接口，Web UI 在聊天工具块内提供“批准本次”“允许本轮”和拒绝操作，批准后会自动调用 `AgentSession.resumeApproval()` 继续原任务。飞书消息会携带用户 `open_id` 和 `chat_id`，用户可以发送 `/approvals`、`/approve <id>`、`/approve-all <id>` 或 `/reject <id>` 处理自己在当前会话发起的审批。
 
-当工具结果包含 `requiresConfirmation: true` 时，Agent Loop 会立即暂停当前轮：审批提示会发给用户并写入历史用于 UI 恢复，但不会再把该结果回灌给模型继续总结。这样用户批准前不会产生基于“未执行命令”的最终回答；批准后由审批命令消费一次性许可并执行记录的命令。
+当工具结果包含 `requiresConfirmation: true` 时，Agent Loop 会立即暂停当前轮：审批提示会发给用户并写入历史用于 UI 恢复，但不会再把该结果回灌给模型继续总结。这样用户批准前不会产生基于“未执行命令”的最终回答；批准后由审批命令消费一次性许可并执行记录的命令。工具调用和工具结果的 SSE 事件携带同一个稳定 `tool_call_id`；Web UI 在审批续跑过程中以该 ID 实时替换原工具块中的待审批结果，并将后续工具调用和回复流投影到同一条助手消息，收到完成事件后再固化该消息，保持实时显示与刷新后的持久化历史一致。
 
 ### autoMemory 配置
 
@@ -258,7 +265,7 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 - `turnThreshold`：workspace 内触发模型整理的主会话完整对话轮数，默认 10
 - `maxCandidates`：单次最多允许的 memory 工具调用次数，默认 5
 - `maxBatchChars`：传给记忆整理模型的增量对话字符上限，默认 8000；已有启用记忆始终全文输入
-- `lockTimeoutSeconds`：workspace 记忆整理锁的过期时间，默认 300 秒
+- `lockTimeoutSeconds`：workspace 记忆整理锁的兜底过期时间，默认 300 秒。锁记录 owner PID；服务重启后如果原进程已经退出，新进程会立即回收残留锁，不需要等待超时。owner 信息缺失或损坏时仍按超时处理，避免误删刚创建的并发锁。
 - `memory.maxItemChars`：单条记忆正文最大字符数，默认 20000
 - `memory.maxTotalChars`：所有启用记忆正文的总字符上限，默认 80000
 
@@ -372,6 +379,10 @@ OpenAI Chat 兼容实现会将内部消息格式转换为 `system/user/assistant
 ```
 
 模型适配器不直接写文件，而是通过 `onModelDebug` 生命周期事件把结构化数据交给 `core-debug` 插件。插件按 Request ID 写入 `workspace/debug/model-calls/YYYY-MM-DD/<requestId>.json`，并通过 `GET /debug/model-calls` 提供列表与详情查询，Web UI 的“日志 → 模型调用”负责展示。
+
+模型调用页面只展示“请求原文”和“最终回复”：最终回复优先使用 `parsed_response`，缺失时回退到 `response` 或 `error`。`stream_event` 和 `repair` 仍保留在 trace 文件中供底层排查，但不在页面中逐条展示。
+
+远程模型与 `local-llama` 本地模型统一通过 `onModelDebug` 生命周期写入调用记录。本地模型记录请求参数、消息、工具定义、最终解析结果和错误，不记录逐 Token 流事件；记录携带实际模型 ID 和 session ID，可与远程模型调用一起筛选和查看。
 
 - `request`：发送给模型的原始请求体
 - `stream_event`：流式接口返回的原始 SSE JSON 事件
@@ -654,6 +665,8 @@ web/
 ```
 
 **SSE 消费：** POST /chat 返回 SSE 流，无法使用 `EventSource`（仅支持 GET）。使用 `fetch` + `ReadableStream` 手动解析 SSE 帧，实现为 async generator。
+
+Web UI 按 session 保存消息、流式文本、工具调用、运行状态和中止控制器。切换会话或进入其他页签不会关闭仍在运行的 SSE；流事件继续写入其所属 session，返回该会话时可恢复处理中状态和已有输出。“停止”只中止当前会话。刷新页面后的任务重连不在这一前端状态机制的范围内。
 
 **记忆管理：** Web UI 提供"记忆"页签，支持搜索、刷新、查看、编辑、保存、删除、启用/禁用长期记忆。面板直接调用 `/memory` API，不通过 agent tool，以避免管理操作被模型行为影响。
 

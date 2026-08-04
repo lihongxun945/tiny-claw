@@ -23,7 +23,9 @@ describe("loadConfig", () => {
       apiKey: "test-api-key",
       model: "test-model",
       modelProvider: "anthropic-messages",
-      maxTokens: 4096,
+      remoteModel: { enabled: true },
+      localModel: { enabled: false, modelId: "qwen3.5-4b-q4", contextSize: 32768 },
+      maxTokens: 16384,
       maxContextTokens: 128000,
       contextCompressionThreshold: 0.7,
       contextCompressionMaxChars: 5000,
@@ -59,6 +61,8 @@ describe("loadConfig", () => {
       enabledPlugins: [],
       plugins: {},
       security: { mode: "allow", gateway: { sseHeartbeatIntervalMs: 15000 } },
+      remoteModel: { enabled: true },
+      localModel: { enabled: false, modelId: "qwen3.5-4b-q4", contextSize: 32768 },
     });
     expect(() => validateConfig(raw)).not.toThrow();
   });
@@ -66,6 +70,31 @@ describe("loadConfig", () => {
   it("allows an empty API key while keeping the field required", () => {
     expect(() => validateConfig(createDefaultConfig())).not.toThrow();
     expect(() => validateConfig({ ...createDefaultConfig(), apiKey: undefined })).toThrow("配置字段 apiKey 必须是字符串");
+  });
+
+  it("supports local-only mode and rejects disabling every model", () => {
+    expect(() => validateConfig({
+      ...createDefaultConfig(),
+      remoteModel: { enabled: false },
+      localModel: { enabled: true, modelId: "qwen3.5-0.8b-q4", contextSize: 2048 },
+    })).not.toThrow();
+    expect(() => validateConfig({
+      ...createDefaultConfig(),
+      localModel: { enabled: true, modelId: "gemma-4-e4b-it-q4", contextSize: 8192 },
+    })).not.toThrow();
+    expect(() => validateConfig({
+      ...createDefaultConfig(),
+      localModel: { enabled: true, modelId: "qwen3.5-35b-a3b-q4", contextSize: 32768 },
+    })).not.toThrow();
+    expect(() => validateConfig({
+      ...createDefaultConfig(),
+      localModel: { enabled: true, modelId: "gemma-4-31b-it-q4", contextSize: 262144 },
+    })).not.toThrow();
+    expect(() => validateConfig({
+      ...createDefaultConfig(),
+      remoteModel: { enabled: false },
+      localModel: { enabled: false },
+    })).toThrow("远程模型和本地模型至少需要启用一个");
   });
 
   it("loads provider-specific search configuration", () => {

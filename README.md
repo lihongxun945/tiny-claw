@@ -25,7 +25,7 @@ cp config.simple.example.json workspace/config.json
 ```
 
 推荐从 `config.simple.example.json` 开始；`config.all.example.json` 是完整配置参考。
-自动生成的配置会预设 DeepSeek API 地址、`deepseek-chat` 模型和可直接使用的 DuckDuckGo 关键词搜索；API Key、飞书密钥和付费搜索服务密钥等用户凭证保持为空。API Key 未配置时 Gateway 和 WebUI 仍可启动，但聊天会提示先完成模型配置。
+自动生成的配置会预设 DeepSeek API 地址、`deepseek-chat` 模型和可直接使用的 DuckDuckGo 关键词搜索；API Key、飞书密钥和付费搜索服务密钥等用户凭证保持为空。可以填写远程 API Key，也可以在配置页面下载并启用 Qwen 或 Gemma 本地模型；仅启用本地模型时不需要 API Key。
 
 `workspace/config.json` 必填字段：
 
@@ -171,11 +171,15 @@ git push origin HEAD --follow-tags
 
 | 配置项 | 默认值 | 示例 | 说明 |
 |---|---:|---|---|
+| `remoteModel.enabled` | `true` | `false` | 是否启用远程模型；与本地模型同时启用时优先使用远程模型 |
+| `localModel.enabled` | `false` | `true` | 是否启用内置本地推理 |
+| `localModel.modelId` | `"qwen3.5-4b-q4"` | `"gemma-4-12b-it-q4"` | 本地模型：Qwen3.5 0.8B/2B/4B/9B/27B/35B-A3B，或 Gemma 4 E2B/E4B/12B/26B-A4B/31B |
+| `localModel.contextSize` | `32768` | `32768` | 本地模型实际加载的上下文 token 数，允许范围最高 262144；默认采用更适合本地内存占用的 32768 |
 | `apiUrl` | 必填 | `"https://ark.cn-beijing.volces.com/api/coding"` | 模型 API 基础地址 |
 | `apiKey` | 必填 | `"YOUR_API_KEY"` | 模型 API Key |
 | `model` | 必填 | `"deepseek-v4-flash"` | 模型名称 |
 | `modelProvider` | `"anthropic-messages"` | `"openai-chat"` | 模型协议适配器：`anthropic-messages`、`openai-chat`、`chatgpt` |
-| `maxTokens` | `4096` | `4096` | 单次模型回复最大 token |
+| `maxTokens` | `16384` | `16384` | 单次模型回复最大 token |
 | `maxContextTokens` | `128000` | `128000` | 上下文窗口 token 估算上限 |
 | `contextCompressionThreshold` | `0.7` | `0.7` | 超过 `maxContextTokens * threshold` 时触发上下文压缩 |
 | `contextCompressionMaxChars` | `5000` | `5000` | 上下文压缩摘要目标字数上限 |
@@ -196,6 +200,8 @@ git push origin HEAD --follow-tags
 | `memory` | 见下文 | `{ "maxTotalChars": 80000 }` | 长期记忆单条与总容量限制 |
 | `debug` | `false` | `{ "enabled": true, "modelIO": true }` | 模型输入输出调试日志 |
 | `security` | 见下文 | `{ "bash": { "mode": "allow" } }` | bash、Gateway、工具审计安全配置 |
+
+本地模型可直接在 WebUI“配置”页面下载和测试，无需安装 Ollama。模型文件保存在 `workspace/models/`；Qwen3.5 4B 更适合中文和 Agent 场景，Gemma 4 提供从 E2B 到 31B 的不同规模。选择模型不会自动下载，点击“下载并安装”后卡片会显示实时百分比和下载字节数；下载完成后才能测试本地模型。远程和本地模型使用独立卡片和测试按钮，测试不会写入会话历史或执行工具。Qwen3.5 和 Gemma 4 目录中的模型均采用 Apache-2.0；模型不会被打包进 tiny-claw 安装包。
 
 ### Sub-agent 配置
 

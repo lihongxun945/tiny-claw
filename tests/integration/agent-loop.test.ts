@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { AgentSession, type AgentEvent } from "../../src/agent.js";
 import { attachmentToImageBlock, saveAttachment } from "../../src/attachments.js";
@@ -219,8 +219,8 @@ describe("AgentSession loop", () => {
     const session = new AgentSession("tool-loop", workspacePath, manager, {}, client);
 
     expect(await collect(session.chat("run"))).toEqual([
-      { type: "tool_call", name: "echo", input: { text: "value" } },
-      { type: "tool_result", name: "echo", result: "echo:value" },
+      { type: "tool_call", toolCallId: "call-1", name: "echo", input: { text: "value" } },
+      { type: "tool_result", toolCallId: "call-1", name: "echo", result: "echo:value" },
       { type: "text_delta", text: "done" },
       { type: "done", text: "done" },
     ]);
@@ -258,8 +258,8 @@ describe("AgentSession loop", () => {
       const session = new AgentSession("auto-memory-input", autoWorkspace, autoManager, {}, client);
 
       expect(await collect(session.chat("用户原始问题"))).toEqual([
-        { type: "tool_call", name: "echo", input: { text: "value" } },
-        { type: "tool_result", name: "echo", result: "工具过程结果" },
+        { type: "tool_call", toolCallId: "call-1", name: "echo", input: { text: "value" } },
+        { type: "tool_result", toolCallId: "call-1", name: "echo", result: "工具过程结果" },
         { type: "text_delta", text: "最终回答：长期结论" },
         { type: "done", text: "最终回答：长期结论" },
       ]);
@@ -527,6 +527,53 @@ describe("AgentSession loop", () => {
     }
   });
 
+  it("reclaims a recent auto-memory lock left by a stopped gateway", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "hybrid", turnThreshold: 1, lockTimeoutSeconds: 300 },
+      sessionSummary: { enabled: false },
+    });
+    const lockPath = resolve(autoWorkspace, ".locks", "auto-memory.lock");
+
+    try {
+      saveSessionState(autoWorkspace, {
+        sessionId: "session-a",
+        summary: "",
+        pendingMessages: [],
+        turnsSinceSummary: 0,
+        autoMemory: {
+          pendingTurns: [{
+            id: "turn-before-restart",
+            user: "重启前的问题",
+            assistant: "重启前的回答",
+            at: "2026-08-04T00:00:00.000Z",
+          }],
+          turnsSinceAnalysis: 1,
+        },
+      });
+      mkdirSync(lockPath, { recursive: true });
+      writeFileSync(resolve(lockPath, "owner.json"), JSON.stringify({
+        runId: "stopped-gateway",
+        pid: 2_147_483_647,
+        startedAt: new Date().toISOString(),
+      }));
+
+      const result = await runWorkspaceAutoMemoryAnalysis({
+        workspacePath: autoWorkspace,
+        config: loadConfig(autoWorkspace),
+        client: new FakeModelClient([]),
+        triggerSessionId: "session-a",
+        getToolDefinitions: () => [],
+        getTool: () => undefined,
+      });
+
+      expect(result.finalText).not.toContain("已有记忆整理任务正在运行");
+      expect(result.analyzedTurns).toBe(1);
+      expect(existsSync(lockPath)).toBe(false);
+    } finally {
+      removeTempWorkspace(autoWorkspace);
+    }
+  });
+
   it("auto-memory rejects oversized memory content instead of truncating it", async () => {
     const autoWorkspace = createTempWorkspace({
       autoMemory: { enabled: true, mode: "hybrid", turnThreshold: 1 },
@@ -769,11 +816,13 @@ describe("AgentSession loop", () => {
 
     expect(events).toContainEqual({
       type: "tool_result",
+      toolCallId: "missing",
       name: "missing",
       result: JSON.stringify({ error: "未知工具: missing" }),
     });
     expect(events).toContainEqual({
       type: "tool_result",
+      toolCallId: "fail",
       name: "fail",
       result: JSON.stringify({ error: "工具执行失败: tool failed" }),
     });
@@ -812,9 +861,10 @@ describe("AgentSession loop", () => {
 
     expect(await collect(session.chat("run"))).toEqual([
       { type: "text_delta", text: "先申请授权" },
-      { type: "tool_call", name: "gated", input: {} },
+      { type: "tool_call", toolCallId: "call-1", name: "gated", input: {} },
       {
         type: "tool_result",
+        toolCallId: "call-1",
         name: "gated",
         result: JSON.stringify({ error: "需要批准", requiresConfirmation: true, approvalId: "approval-1" }),
       },
@@ -882,8 +932,8 @@ describe("AgentSession loop", () => {
       { type: "error", message: "当前会话有待审批的工具调用。请先批准或拒绝最新审批，再继续发送新任务。" },
     ]);
     expect(await collect(session.resumeApproval("approval-1"))).toEqual([
-      { type: "tool_call", name: "gated", input: {} },
-      { type: "tool_result", name: "gated", result: "approved-result" },
+      { type: "tool_call", toolCallId: "call-1", name: "gated", input: {} },
+      { type: "tool_result", toolCallId: "call-1", name: "gated", result: "approved-result" },
       { type: "text_delta", text: "继续后的总结" },
       { type: "done", text: "继续后的总结" },
     ]);
@@ -932,8 +982,8 @@ describe("AgentSession loop", () => {
 
     const resumed = await collect(session.resumeApproval(approval.id));
 
-    expect(resumed).toContainEqual({ type: "tool_result", name: "dangerous", result: "ran-first" });
-    expect(resumed).toContainEqual({ type: "tool_result", name: "dangerous", result: "ran-second" });
+    expect(resumed).toContainEqual({ type: "tool_result", toolCallId: "call-1", name: "dangerous", result: "ran-first" });
+    expect(resumed).toContainEqual({ type: "tool_result", toolCallId: "call-2", name: "dangerous", result: "ran-second" });
     expect(dangerousTool).toHaveBeenCalledTimes(3);
     expect(hasTurnApproval(workspacePath, session.id)).toBe(false);
   });
@@ -1565,8 +1615,8 @@ describe("AgentSession loop", () => {
       const session = new AgentSession("tool-budget-session", toolBudgetWorkspace, toolBudgetManager, {}, client);
 
       expect(await collect(session.chat("继续总结"))).toEqual([
-        { type: "tool_call", name: "large_result", input: {} },
-        { type: "tool_result", name: "large_result", result: "超大搜索结果".repeat(20_000) },
+        { type: "tool_call", toolCallId: "search-1", name: "large_result", input: {} },
+        { type: "tool_result", toolCallId: "search-1", name: "large_result", result: "超大搜索结果".repeat(20_000) },
         { type: "text_delta", text: "完成" },
         { type: "done", text: "完成" },
       ]);
@@ -1635,8 +1685,8 @@ describe("AgentSession loop", () => {
 
     expect(await collect(session.chat("hi"))).toEqual([
       { type: "text_delta", text: "partial" },
-      { type: "tool_call", name: "echo", input: {} },
-      { type: "tool_result", name: "echo", result: "ok" },
+      { type: "tool_call", toolCallId: "call-1", name: "echo", input: {} },
+      { type: "tool_result", toolCallId: "call-1", name: "echo", result: "ok" },
       { type: "done", text: "partial" },
     ]);
   });

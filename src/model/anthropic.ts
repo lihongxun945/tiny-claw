@@ -10,7 +10,7 @@ import type {
   ContentBlockDeltaEvent,
   ContentBlock,
 } from "../types.js";
-import type { ModelClient, ModelClientOptions, ModelDebugEvent, ModelDebugPhase } from "./types.js";
+import type { ModelClient, ModelClientOptions, ModelDebugEvent, ModelDebugPhase, CompleteOptions } from "./types.js";
 import { readImageBlockData } from "../attachments.js";
 
 type AnthropicContentBlock =
@@ -104,13 +104,13 @@ export class AnthropicMessagesClient implements ModelClient {
   }
 
   /** 非流式调用，用于上下文压缩等内部用途 */
-  async complete(messages: Message[], systemPrompt?: string, signal?: AbortSignal): Promise<string> {
+  async complete(messages: Message[], systemPrompt?: string, options?: CompleteOptions): Promise<string> {
     const url = this.endpoint();
     const requestId = randomUUID();
 
     const body: Record<string, unknown> = {
       model: this.config.model,
-      max_tokens: 1024,
+      max_tokens: options?.maxTokens ?? 1024,
       messages: toAnthropicMessages(this.config, messages),
       stream: false,
     };
@@ -132,7 +132,7 @@ export class AnthropicMessagesClient implements ModelClient {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),
-      signal,
+      signal: options?.signal,
     });
 
     if (!response.ok) {

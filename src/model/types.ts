@@ -1,7 +1,13 @@
 import type { ChatResponse, Message, ToolDefinition } from "../types.js";
 
+export interface CompleteOptions {
+  signal?: AbortSignal;
+  /** 输出 token 上限；缺省时使用各实现的内置默认值 */
+  maxTokens?: number;
+}
+
 export interface ModelClient {
-  complete(messages: Message[], systemPrompt?: string, signal?: AbortSignal): Promise<string>;
+  complete(messages: Message[], systemPrompt?: string, options?: CompleteOptions): Promise<string>;
   chat(
     messages: Message[],
     onDelta: (text: string) => void,
@@ -11,7 +17,7 @@ export interface ModelClient {
   ): Promise<ChatResponse>;
 }
 
-export type ModelProvider = "anthropic-messages" | "openai-chat" | "chatgpt";
+export type ModelProvider = "anthropic-messages" | "openai-chat" | "chatgpt" | "local-llama";
 
 export type ModelDebugPhase = "request" | "response" | "parsed_response" | "error" | "repair" | "stream_event";
 

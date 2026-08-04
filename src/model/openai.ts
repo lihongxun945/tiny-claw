@@ -8,7 +8,7 @@ import type {
   ToolUseBlock,
   ImageBlock,
 } from "../types.js";
-import type { ModelClient, ModelClientOptions, ModelDebugEvent, ModelDebugPhase } from "./types.js";
+import type { ModelClient, ModelClientOptions, ModelDebugEvent, ModelDebugPhase, CompleteOptions } from "./types.js";
 import { sanitizeToolMessageChains } from "../message-sanitizer.js";
 import { repairModelRequest } from "./request-repair.js";
 import { readImageBlockData } from "../attachments.js";
@@ -253,15 +253,15 @@ export class OpenAIChatClient implements ModelClient {
     }
   }
 
-  async complete(messages: Message[], systemPrompt?: string, signal?: AbortSignal): Promise<string> {
+  async complete(messages: Message[], systemPrompt?: string, options?: CompleteOptions): Promise<string> {
     const url = this.endpoint();
     const body = this.withCompletionTokenLimit({
       model: this.config.model,
       messages: toOpenAIMessages(this.config, messages, systemPrompt),
       stream: false,
-    }, 1024);
+    }, options?.maxTokens ?? 1024);
 
-    const { response, requestId } = await this.sendRequest(url, body, "complete", signal);
+    const { response, requestId } = await this.sendRequest(url, body, "complete", options?.signal);
 
     const data = await response.json() as {
       choices?: Array<{ message?: { content?: string | null } }>;

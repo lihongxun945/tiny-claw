@@ -34,6 +34,7 @@ test("approves a pending command from the chat tool block", async ({ page }) => 
           role: "assistant",
           text: "",
           toolCalls: [{
+            id: "call-1",
             name: "bash",
             input: { command: "npm test" },
             result,
@@ -48,10 +49,10 @@ test("approves a pending command from the chat tool block", async ({ page }) => 
       headers: { "content-type": "text/event-stream" },
       body: [
         "event: tool_call",
-        "data: {\"name\":\"bash\",\"input\":{\"command\":\"npm test\"}}",
+        "data: {\"tool_call_id\":\"call-1\",\"name\":\"bash\",\"input\":{\"command\":\"npm test\"}}",
         "",
         "event: tool_result",
-        "data: {\"name\":\"bash\",\"result\":\"{\\\"stdout\\\":\\\"approved output\\\",\\\"stderr\\\":\\\"\\\",\\\"exitCode\\\":0}\"}",
+        "data: {\"tool_call_id\":\"call-1\",\"name\":\"bash\",\"result\":\"{\\\"stdout\\\":\\\"approved output\\\",\\\"stderr\\\":\\\"\\\",\\\"exitCode\\\":0}\"}",
         "",
         "event: text_delta",
         "data: {\"text\":\"继续完成\"}",
@@ -72,9 +73,9 @@ test("approves a pending command from the chat tool block", async ({ page }) => 
   await expect(approvalBody).toBeVisible();
   expect((await approvalBody.boundingBox())?.height).toBeLessThan(360);
   await page.getByRole("button", { name: "批准本次" }).click();
-  await expect(page.getByText("已批准，并已继续执行原任务。")).toBeVisible();
   await expect(page.getByText("approved output", { exact: true })).toBeVisible();
   await expect(page.getByText("继续完成")).toBeVisible();
+  await expect(page.locator(".tool-block")).toHaveCount(1);
 });
 
 test("allows every approval in the current turn from the chat tool block", async ({ page }) => {
@@ -97,7 +98,7 @@ test("allows every approval in the current turn from the chat tool block", async
         messages: [{
           role: "assistant",
           text: "",
-          toolCalls: [{ name: "bash", input: { command: longCommand }, result }],
+          toolCalls: [{ id: "call-1", name: "bash", input: { command: longCommand }, result }],
           timestamp: Date.now(),
         }],
       },
@@ -108,10 +109,10 @@ test("allows every approval in the current turn from the chat tool block", async
       headers: { "content-type": "text/event-stream" },
       body: [
         "event: tool_call",
-        "data: {\"name\":\"bash\",\"input\":{\"command\":\"npm test\"}}",
+        "data: {\"tool_call_id\":\"call-1\",\"name\":\"bash\",\"input\":{\"command\":\"npm test\"}}",
         "",
         "event: tool_result",
-        "data: {\"name\":\"bash\",\"result\":\"{\\\"stdout\\\":\\\"turn output\\\",\\\"exitCode\\\":0}\"}",
+        "data: {\"tool_call_id\":\"call-1\",\"name\":\"bash\",\"result\":\"{\\\"stdout\\\":\\\"turn output\\\",\\\"exitCode\\\":0}\"}",
         "",
         "event: done",
         "data: {\"text\":\"本轮完成\",\"session_id\":\"approval-turn\"}",
@@ -135,7 +136,6 @@ test("allows every approval in the current turn from the chat tool block", async
   await expect(approveTurn).toBeInViewport();
   await expect(reject).toBeInViewport();
   await approveTurn.click();
-  await expect(page.getByText("本轮后续权限申请已自动允许，任务已继续执行。")).toBeVisible();
   await expect(page.getByText("turn output", { exact: true })).toBeVisible();
   await expect(page.getByText("本轮完成")).toBeVisible();
 });

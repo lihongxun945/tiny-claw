@@ -10,11 +10,13 @@ import { coreLoggerPlugin } from "./logger.js";
 import { coreChatCommandsPlugin } from "./chat-commands.js";
 import { coreAttachmentsPlugin } from "./attachments.js";
 import { coreDebugPlugin } from "./debug.js";
+import { coreLocalModelsPlugin } from "./local-models.js";
 
 export const corePlugins: Plugin[] = [
   coreChatCommandsPlugin,
   coreAttachmentsPlugin,
   coreDebugPlugin,
+  coreLocalModelsPlugin,
   coreToolsPlugin,
   coreSubAgentPlugin,
   corePromptsPlugin,

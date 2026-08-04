@@ -93,6 +93,47 @@ export async function updateConfig(config: Record<string, unknown>): Promise<Rec
   return data.config ?? {};
 }
 
+export interface LocalModelStatus {
+  id: string;
+  name: string;
+  description: string;
+  size: string;
+  family: "Qwen" | "Gemma";
+  license: "Apache-2.0";
+  recommendedMemoryGb: number;
+  recommendedContextTokens: number;
+  maxContextTokens: number;
+  installed: boolean;
+  status: "idle" | "downloading" | "ready" | "error";
+  progress: number;
+  downloadedBytes: number;
+  totalBytes: number;
+  error?: string;
+}
+
+export async function fetchLocalModels(): Promise<LocalModelStatus[]> {
+  const res = await fetch("/local-models");
+  return (await parseJSON<{ models: LocalModelStatus[] }>(res)).models;
+}
+
+export async function downloadLocalModel(modelId: string): Promise<void> {
+  const res = await fetch("/local-models/download", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ modelId }),
+  });
+  await parseJSON(res);
+}
+
+export async function testModel(target: "remote" | "local", config: Record<string, unknown>): Promise<{ elapsedMs: number; text: string }> {
+  const res = await fetch("/models/test", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target, config }),
+  });
+  return parseJSON(res);
+}
+
 async function parseJSON<T>(res: Response): Promise<T> {
   const data = await res.json();
   if (!res.ok) {

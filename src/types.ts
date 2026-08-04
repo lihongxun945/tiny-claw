@@ -42,6 +42,8 @@ export interface Message {
 // === Config ===
 
 export interface Config {
+  remoteModel?: RemoteModelConfig;
+  localModel?: LocalModelConfig;
   apiUrl: string;
   apiKey: string;
   model: string;
@@ -72,6 +74,29 @@ export interface Config {
   systemPrompt: string;
 }
 
+export interface RemoteModelConfig {
+  enabled?: boolean;
+}
+
+export type LocalModelId =
+  | "qwen3.5-0.8b-q4"
+  | "qwen3.5-2b-q4"
+  | "qwen3.5-4b-q4"
+  | "qwen3.5-9b-q4"
+  | "qwen3.5-27b-q4"
+  | "qwen3.5-35b-a3b-q4"
+  | "gemma-4-e2b-it-q4"
+  | "gemma-4-e4b-it-q4"
+  | "gemma-4-12b-it-q4"
+  | "gemma-4-26b-a4b-it-q4"
+  | "gemma-4-31b-it-q4";
+
+export interface LocalModelConfig {
+  enabled?: boolean;
+  modelId?: LocalModelId;
+  contextSize?: number;
+}
+
 export interface SubAgentConfig {
   allowedTools?: string[];
   disabledTools?: string[];
@@ -84,7 +109,12 @@ export interface SessionSummaryConfig {
   persistent?: boolean;
   turnThreshold?: number;
   recentTurns?: number;
+  /** 摘要输入（本次新增上下文）字符上限（默认 40000） */
+  maxInputChars?: number;
+  /** 摘要存储字符上限（默认 10000） */
   maxChars?: number;
+  /** 摘要 LLM 输出的 token 上限（默认 10000），避免通用 complete 的 1024 限制 */
+  maxOutputTokens?: number;
 }
 
 export interface AutoMemoryConfig {

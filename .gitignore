@@ -15,6 +15,7 @@ web/dist/
 web/node_modules/
 workspace/gateway.pid
 workspace/plugins/
+workspace/models/
 __pycache__/
 *.tsbuildinfo
 coverage/

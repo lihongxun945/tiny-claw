@@ -1,10 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { LOCAL_MODELS } from "./model/local-catalog.js";
 import { loadIdentity } from "./workspace/workspace.js";
 import type { Config } from "./types.js";
 
 const DEFAULTS: Partial<Config> = {
-  maxTokens: 4096,
+  maxTokens: 16384,
   maxContextTokens: 128000,
   contextCompressionThreshold: 0.7,
   contextCompressionMaxChars: 5000,
@@ -17,6 +18,12 @@ const DEFAULTS: Partial<Config> = {
 
 export function createDefaultConfig(): Record<string, unknown> {
   return {
+    remoteModel: { enabled: true },
+    localModel: {
+      enabled: false,
+      modelId: "qwen3.5-4b-q4",
+      contextSize: 32768,
+    },
     apiUrl: "https://api.deepseek.com",
     apiKey: "",
     model: "deepseek-chat",
@@ -34,7 +41,9 @@ export function createDefaultConfig(): Record<string, unknown> {
       persistent: true,
       turnThreshold: 5,
       recentTurns: 3,
-      maxChars: 4000,
+      maxInputChars: 40000,
+      maxChars: 10000,
+      maxOutputTokens: 10000,
     },
     autoMemory: {
       enabled: true,
@@ -132,6 +141,23 @@ export function validateConfig(raw: Record<string, unknown>): void {
   if (typeof raw.apiKey !== "string") throw new Error("配置字段 apiKey 必须是字符串");
   assertString(raw.model, "model");
 
+  if (raw.remoteModel !== undefined) {
+    assertObject(raw.remoteModel, "remoteModel");
+    assertOptionalBoolean(raw.remoteModel.enabled, "remoteModel.enabled");
+  }
+  if (raw.localModel !== undefined) {
+    assertObject(raw.localModel, "localModel");
+    assertOptionalBoolean(raw.localModel.enabled, "localModel.enabled");
+    const localModelId = raw.localModel.modelId;
+    if (localModelId !== undefined && !LOCAL_MODELS.some((model) => model.id === String(localModelId))) {
+      throw new Error("配置字段 localModel.modelId 不受支持");
+    }
+    assertOptionalNumber(raw.localModel.contextSize, "localModel.contextSize", { min: 512, max: 262144, integer: true });
+  }
+  const remoteEnabled = (raw.remoteModel as { enabled?: boolean } | undefined)?.enabled !== false;
+  const localEnabled = (raw.localModel as { enabled?: boolean } | undefined)?.enabled === true;
+  if (!remoteEnabled && !localEnabled) throw new Error("远程模型和本地模型至少需要启用一个");
+
   const modelProvider = raw.modelProvider ?? "anthropic-messages";
   if (!["anthropic-messages", "openai-chat", "chatgpt"].includes(String(modelProvider))) {
     throw new Error("配置字段 modelProvider 不受支持");
@@ -172,7 +198,9 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertOptionalBoolean(raw.sessionSummary.persistent, "sessionSummary.persistent");
     assertOptionalNumber(raw.sessionSummary.turnThreshold, "sessionSummary.turnThreshold", { min: 1, integer: true });
     assertOptionalNumber(raw.sessionSummary.recentTurns, "sessionSummary.recentTurns", { min: 0, integer: true });
+    assertOptionalNumber(raw.sessionSummary.maxInputChars, "sessionSummary.maxInputChars", { min: 1, integer: true });
     assertOptionalNumber(raw.sessionSummary.maxChars, "sessionSummary.maxChars", { min: 1, integer: true });
+    assertOptionalNumber(raw.sessionSummary.maxOutputTokens, "sessionSummary.maxOutputTokens", { min: 256, integer: true });
   }
 
   if (raw.autoMemory !== undefined) {
@@ -274,6 +302,12 @@ export function loadConfig(workspacePath: string): Config {
   validateConfig(raw);
 
   return {
+    remoteModel: (raw.remoteModel as Config["remoteModel"] | undefined) ?? { enabled: true },
+    localModel: (raw.localModel as Config["localModel"] | undefined) ?? {
+      enabled: false,
+      modelId: "qwen3.5-4b-q4",
+      contextSize: 32768,
+    },
     apiUrl: raw.apiUrl as string,
     apiKey: raw.apiKey as string,
     model: raw.model as string,

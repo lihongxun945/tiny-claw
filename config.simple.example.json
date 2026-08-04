@@ -1,10 +1,12 @@
 {
   "$comment": "简单配置示例。复制到 workspace/config.json 后修改 API Key 和插件密钥",
+  "remoteModel": { "enabled": true },
+  "localModel": { "enabled": false, "modelId": "qwen3.5-4b-q4", "contextSize": 32768 },
   "apiUrl": "https://api.deepseek.com",
   "apiKey": "YOUR_API_KEY",
   "model": "deepseek-v4-pro",
   "modelProvider": "openai-chat",
-  "maxTokens": 4096,
+  "maxTokens": 16384,
   "historyWindowSize": 10,
   "maxContextTokens": 128000,
   "debug": {
@@ -16,7 +18,9 @@
     "enabled": true,
     "turnThreshold": 5,
     "recentTurns": 3,
-    "maxChars": 4000
+    "maxInputChars": 40000,
+    "maxChars": 10000,
+    "maxOutputTokens": 10000
   },
   "autoMemory": {
     "enabled": true,

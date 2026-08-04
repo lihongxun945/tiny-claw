@@ -1,11 +1,13 @@
 import { useEffect, useRef } from "react";
 import type { Message, ToolCallInfo } from "../types.js";
 import MessageBubble from "./MessageBubble.js";
+import { mergeApprovalResume } from "../lib/message-merge.js";
 
 interface Props {
   messages: Message[];
   streamingText: string;
   streamingToolCalls: ToolCallInfo[];
+  streamingApprovalId?: string;
   isStreaming: boolean;
   activeSessionId: string | null;
   isRefreshing?: boolean;
@@ -18,6 +20,7 @@ export default function ChatView({
   messages,
   streamingText,
   streamingToolCalls,
+  streamingApprovalId,
   isStreaming,
   activeSessionId,
   isRefreshing,
@@ -26,6 +29,9 @@ export default function ChatView({
   onApproveTurnAndResume,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const displayedMessages = streamingApprovalId
+    ? mergeApprovalResume(messages, streamingApprovalId, streamingText, streamingToolCalls)
+    : messages;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -47,14 +53,14 @@ export default function ChatView({
         </button>
       </div>
       <div className="chat-view">
-        {messages.length === 0 && !isStreaming && (
+        {displayedMessages.length === 0 && !isStreaming && (
           <div className="chat-empty-state">
             <img className="empty-mark" src="/icon.png" alt="" aria-hidden="true" />
             <h1>开始一段新对话</h1>
             <p>描述你想完成的任务，tiny-claw 会调用合适的工具并持续执行。</p>
           </div>
         )}
-        {messages.map((msg, i) => (
+        {displayedMessages.map((msg, i) => (
           <MessageBubble
             key={i}
             message={msg}
@@ -62,7 +68,7 @@ export default function ChatView({
             onApproveTurnAndResume={onApproveTurnAndResume}
           />
         ))}
-        {isStreaming && (
+        {isStreaming && !streamingApprovalId && (
           streamingText || streamingToolCalls.length > 0 ? (
             <MessageBubble
               message={{

@@ -1,10 +1,16 @@
 {
   "$comment": "完整配置示例。复制到 workspace/config.json 后按需修改；入门推荐使用 config.simple.example.json",
+  "remoteModel": { "enabled": true },
+  "localModel": {
+    "enabled": false,
+    "modelId": "qwen3.5-4b-q4",
+    "contextSize": 32768
+  },
   "apiUrl": "https://ark.cn-beijing.volces.com/api/coding",
   "apiKey": "YOUR_API_KEY",
   "model": "deepseek-v4-flash",
   "modelProvider": "anthropic-messages",
-  "maxTokens": 4096,
+  "maxTokens": 16384,
   "maxContextTokens": 128000,
   "contextCompressionThreshold": 0.7,
   "contextCompressionMaxChars": 5000,
@@ -17,7 +23,9 @@
     "persistent": true,
     "turnThreshold": 5,
     "recentTurns": 3,
-    "maxChars": 4000
+    "maxInputChars": 40000,
+    "maxChars": 10000,
+    "maxOutputTokens": 10000
   },
   "autoMemory": {
     "enabled": true,

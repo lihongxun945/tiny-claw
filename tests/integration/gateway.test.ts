@@ -294,13 +294,24 @@ describe("Gateway HTTP API", () => {
     ]);
   });
 
-  it("serves WebUI static files and proxies memory API", async () => {
+  it("serves WebUI static files and proxies core plugin APIs", async () => {
     const page = await fetch(`${gateway.webUrl}/`);
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toContain("text/html");
 
     const proxied = await json(`${gateway.webUrl}/memory?include_disabled=true`);
     expect(proxied).toEqual({ status: 200, body: { memories: [] } });
+
+    const localModels = await json(`${gateway.webUrl}/local-models`);
+    expect(localModels.status).toBe(200);
+    expect(localModels.body.models).toHaveLength(11);
+    expect(localModels.body.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "qwen3.5-0.8b-q4", status: "idle" }),
+      expect.objectContaining({ id: "qwen3.5-4b-q4", status: "idle" }),
+      expect.objectContaining({ id: "qwen3.5-35b-a3b-q4", recommendedMemoryGb: 32 }),
+      expect.objectContaining({ id: "gemma-4-e2b-it-q4", maxContextTokens: 131072 }),
+      expect.objectContaining({ id: "gemma-4-31b-it-q4", maxContextTokens: 262144 }),
+    ]));
   });
 
   it("uploads session-scoped images and serves them through the WebUI proxy", async () => {

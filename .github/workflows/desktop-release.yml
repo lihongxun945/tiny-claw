@@ -27,7 +27,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20.10.0"
+          node-version: "20.19.0"
           cache: npm
 
       - name: Check release version
@@ -53,6 +53,9 @@ jobs:
           npm run web:build
           npm test
           npm run test:e2e
+
+      - name: Test embedded Qwen model
+        run: npm run test:local-model
 
       - name: Import Developer ID certificate
         env:

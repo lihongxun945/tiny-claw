@@ -13,8 +13,8 @@ import type { AgentActor, Config, ContentBlock, Message, ToolUseBlock, ToolResul
 
 export type AgentEvent =
   | { type: "text_delta"; text: string }
-  | { type: "tool_call"; name: string; input: Record<string, unknown> }
-  | { type: "tool_result"; name: string; result: string }
+  | { type: "tool_call"; toolCallId: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_result"; toolCallId: string; name: string; result: string }
   | { type: "done"; text: string }
   | { type: "error"; message: string };
 
@@ -128,7 +128,7 @@ export class AgentSession {
     actor?: AgentActor,
     userContent?: ContentBlock[],
   ): AsyncGenerator<AgentEvent> {
-    if (!this.config.apiKey.trim()) {
+    if (this.config.remoteModel?.enabled !== false && !this.config.apiKey.trim()) {
       yield { type: "error", message: "尚未配置模型 API Key，请先在配置页面填写并保存。" };
       return;
     }
@@ -198,8 +198,8 @@ export class AgentSession {
       }
 
       const result = await this.executeToolCall(pending.toolCall, controller, actor, agentIteration);
-      yield { type: "tool_call", name: pending.toolCall.name, input: pending.toolCall.input };
-      yield { type: "tool_result", name: pending.toolCall.name, result };
+      yield { type: "tool_call", toolCallId: pending.toolCall.id, name: pending.toolCall.name, input: pending.toolCall.input };
+      yield { type: "tool_result", toolCallId: pending.toolCall.id, name: pending.toolCall.name, result };
       this.appendToolResult(pending.toolCall.id, result);
 
       for (const skipped of pending.skippedToolCalls) {
@@ -332,9 +332,9 @@ export class AgentSession {
         const toolCall = response.toolCalls[toolCallIndex];
         if (controller.signal.aborted) throw new Error("会话已取消");
 
-        yield { type: "tool_call", name: toolCall.name, input: toolCall.input };
+        yield { type: "tool_call", toolCallId: toolCall.id, name: toolCall.name, input: toolCall.input };
         const result = await this.executeToolCall(toolCall, controller, actor, agentIteration);
-        yield { type: "tool_result", name: toolCall.name, result };
+        yield { type: "tool_result", toolCallId: toolCall.id, name: toolCall.name, result };
 
         if (requiresUserConfirmation(result)) {
           const approvalId = getApprovalId(result);

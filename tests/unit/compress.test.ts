@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { compressIfNeeded } from "../../src/compress.js";
+import { compressMessages } from "../../src/plugins/core/compress.js";
+import type { HookContext } from "../../src/plugins/types.js";
 import type { ModelClient } from "../../src/model/index.js";
 import type { ChatResponse, Config, Message, ToolDefinition } from "../../src/types.js";
 
@@ -42,9 +43,13 @@ class CaptureCompleteClient implements ModelClient {
   }
 }
 
-describe("compressIfNeeded", () => {
+describe("compressMessages (core-compress plugin)", () => {
   it("uses configured tool result length in compression prompt", async () => {
     const client = new CaptureCompleteClient();
+    const ctx = {
+      config: config({ contextCompressionToolResultMaxChars: 120 }),
+      client,
+    } as unknown as HookContext;
     const longToolResult = `${"工具结果".repeat(80)}TAIL_SHOULD_NOT_APPEAR`;
     const messages: Message[] = [
       { role: "user", content: "请搜索" },
@@ -60,14 +65,16 @@ describe("compressIfNeeded", () => {
         content: [{ type: "tool_result", tool_use_id: "tool-1", content: longToolResult }],
       },
       { role: "assistant", content: [{ type: "text", text: "搜索完成" }] },
-      { role: "user", content: "继续" },
     ];
 
-    await compressIfNeeded(messages, config({ contextCompressionToolResultMaxChars: 120 }), client, 4);
+    const result = await compressMessages(messages, ctx);
 
     const prompt = String(client.completeCalls[0][0].content);
     expect(prompt).toContain("不超过 5000 字");
     expect(prompt).toContain("[工具结果]");
     expect(prompt).not.toContain("TAIL_SHOULD_NOT_APPEAR");
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toContain("[以下是对话历史的摘要]");
+    expect(result[0].content).toContain("压缩摘要");
   });
 });

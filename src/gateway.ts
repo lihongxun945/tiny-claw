@@ -334,10 +334,10 @@ function sendAgentEventSSE(res: ServerResponse, event: AgentEvent, sessionId?: s
       sendSSE(res, "text_delta", { text: event.text });
       break;
     case "tool_call":
-      sendSSE(res, "tool_call", { name: event.name, input: event.input });
+      sendSSE(res, "tool_call", { tool_call_id: event.toolCallId, name: event.name, input: event.input });
       break;
     case "tool_result":
-      sendSSE(res, "tool_result", { name: event.name, result: event.result });
+      sendSSE(res, "tool_result", { tool_call_id: event.toolCallId, name: event.name, result: event.result });
       break;
     case "done":
       sendSSE(res, "done", { text: event.text, session_id: sessionId });
@@ -892,7 +892,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const url = new URL(req.url ?? "/", `http://localhost:${webPort}`);
 
       // 代理 API 请求到 gateway
-      if (url.pathname === "/chat" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
+      if (url.pathname === "/chat" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname === "/local-models" || url.pathname === "/local-models/download" || url.pathname === "/models/test" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
         let proxyIsSSE = false;
         try {
           const hasRequestBody = req.method !== "GET" && req.method !== "HEAD"

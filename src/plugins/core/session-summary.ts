@@ -6,7 +6,12 @@ import { loadSessionState, updateSessionState, type SessionStateInput } from "..
 const SUMMARY_MARKER = "[当前会话摘要]";
 const DEFAULT_RECENT_TURNS = 3;
 const DEFAULT_TURN_THRESHOLD = 5;
-const DEFAULT_MAX_CHARS = 4000;
+const DEFAULT_MAX_INPUT_CHARS = 40000; // 摘要输入（本次新增上下文）字符上限
+const DEFAULT_MAX_CHARS = 10000; // 摘要存储字符上限（输出）
+const DEFAULT_SUMMARY_MAX_TOKENS = 10000; // LLM 摘要输出 token 上限
+// 工具结果/输入进入摘要输入时的裁剪上限（避免噪音霸占预算）
+const TOOL_RESULT_MAX_CHARS = 300;
+const TOOL_INPUT_MAX_CHARS = 200;
 
 interface CachedSessionState extends SessionStateInput {
   updatedAt?: string;
@@ -45,16 +50,40 @@ function getTurnThreshold(ctx: HookContext): number {
   return Math.min(Math.floor(value), 100);
 }
 
+function getMaxInputChars(ctx: HookContext): number {
+  const value = ctx.config.sessionSummary?.maxInputChars;
+  if (!Number.isFinite(value) || !value || value < 1000) return DEFAULT_MAX_INPUT_CHARS;
+  return Math.min(Math.floor(value), 200000);
+}
+
 function getMaxChars(ctx: HookContext): number {
   const value = ctx.config.sessionSummary?.maxChars;
   if (!Number.isFinite(value) || !value || value < 500) return DEFAULT_MAX_CHARS;
+  return Math.min(Math.floor(value), 100000);
+}
+
+function getSummaryMaxTokens(ctx: HookContext): number {
+  const value = ctx.config.sessionSummary?.maxOutputTokens;
+  if (!Number.isFinite(value) || !value || value < 256) return DEFAULT_SUMMARY_MAX_TOKENS;
   return Math.min(Math.floor(value), 20000);
 }
 
 function blockToText(block: ContentBlock): string {
   if (block.type === "text") return block.text;
-  if (block.type === "tool_use") return `[工具调用 ${block.name}]: ${JSON.stringify(block.input)}`;
-  if (block.type === "tool_result") return `[工具结果]: ${block.content.slice(0, 1200)}`;
+  if (block.type === "tool_use") {
+    const input = JSON.stringify(block.input);
+    const clipped = input.length > TOOL_INPUT_MAX_CHARS
+      ? `${input.slice(0, TOOL_INPUT_MAX_CHARS)}…[省略 ${input.length - TOOL_INPUT_MAX_CHARS} 字符]`
+      : input;
+    return `[工具调用 ${block.name}]: ${clipped}`;
+  }
+  if (block.type === "tool_result") {
+    const content = block.content;
+    const clipped = content.length > TOOL_RESULT_MAX_CHARS
+      ? `${content.slice(0, TOOL_RESULT_MAX_CHARS)}…[省略 ${content.length - TOOL_RESULT_MAX_CHARS} 字符]`
+      : content;
+    return `[工具结果]: ${clipped}`;
+  }
   if (block.type === "image") return `[图片附件]: ${block.name}`;
   return "";
 }
@@ -116,8 +145,14 @@ function withSummaryMessage(summary: string, messages: Message[]): Message[] {
   return [{ role: "user", content: summaryText }, ...messages];
 }
 
+/**
+ * 文本截断：超过上限时保留**尾部**（最新内容），头部标注省略。
+ * 滚动摘要的输入是时间序追加的，最新进展在末尾，若用 slice(0, max) 会丢掉最新信息。
+ */
 function truncateText(text: string, maxChars: number): string {
-  return text.length > maxChars ? `${text.slice(0, maxChars)}\n...[已截断]` : text;
+  return text.length > maxChars
+    ? `...[旧内容已省略，仅保留最近 ${maxChars} 字符]\n${text.slice(-maxChars)}`
+    : text;
 }
 
 function messageKey(message: Message): string {
@@ -285,19 +320,22 @@ export const coreSessionSummaryPlugin: Plugin = {
 ${existingSummary}
 
 本次新增上下文：
-${truncateText(text, getMaxChars(hookCtx))}`;
+${truncateText(text, getMaxInputChars(hookCtx))}`;
 
         try {
           const summary = await hookCtx.client.complete(
             [{ role: "user", content: prompt }],
             "你是会话状态摘要器。只输出新的会话摘要，不要输出解释。",
+            { maxTokens: getSummaryMaxTokens(hookCtx) },
           );
           state.summary = truncateText(summary.trim(), getMaxChars(hookCtx));
           state.pendingMessages = [];
           state.turnsSinceSummary = 0;
           putState(hookCtx, state);
         } catch {
-          // 摘要失败不应影响主回答。
+          // 摘要失败不应影响主回答；退避重试间隔（保留 pendingMessages），避免每轮重复请求。
+          state.turnsSinceSummary = Math.max(1, Math.floor(state.turnsSinceSummary / 2));
+          putState(hookCtx, state);
         }
 
         return response;

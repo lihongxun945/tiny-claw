@@ -14,6 +14,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
+    "test:local-model": "RUN_LOCAL_MODEL_TEST=1 vitest run tests/integration/local-model-smoke.test.ts",
     "test:all": "npm run typecheck && npm run web:build && npm run test:coverage && npm run test:e2e",
     "web:dev": "cd web && npm run dev",
     "web:build": "cd web && npm install && npm run build",
@@ -23,6 +24,7 @@
   },
   "author": "lihongxun",
   "license": "ISC",
+  "engines": { "node": ">=20.17.0" },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
     "@types/node": "^25.9.0",
@@ -35,6 +37,7 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.65.0",
+    "node-llama-cpp": "^3.19.1",
     "tsx": "^4.22.2"
   },
   "build": {

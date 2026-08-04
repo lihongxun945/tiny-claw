@@ -2,15 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchModelCall, fetchModelCalls } from "../lib/api.js";
 import type { ModelCallSummary, ModelCallTrace } from "../types.js";
 
-const PHASE_LABELS: Record<string, string> = {
-  request: "请求原文",
-  response: "响应原文",
-  parsed_response: "解析结果",
-  error: "错误响应",
-  repair: "修复过程",
-  stream_event: "流事件",
-};
-
 function formatTime(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN");
@@ -49,21 +40,24 @@ export default function ModelDebugViewer() {
     fetchModelCall(selectedId)
       .then((next) => {
         setTrace(next);
-        setEventIndex(Math.max(0, next.events.findIndex((event) => event.phase === "request")));
+        setEventIndex(0);
       })
       .catch(() => setTrace(null));
   }, [selectedId]);
 
-  const eventLabels = useMemo(() => {
-    const counts = new Map<string, number>();
-    return trace?.events.map((event) => {
-      const count = (counts.get(event.phase) ?? 0) + 1;
-      counts.set(event.phase, count);
-      return `${PHASE_LABELS[event.phase] ?? event.phase}${count > 1 ? ` ${count}` : ""}`;
-    }) ?? [];
+  const displayEvents = useMemo(() => {
+    if (!trace) return [];
+    const request = trace.events.find((event) => event.phase === "request");
+    const finalResponse = [...trace.events].reverse().find((event) => event.phase === "parsed_response")
+      ?? [...trace.events].reverse().find((event) => event.phase === "response")
+      ?? [...trace.events].reverse().find((event) => event.phase === "error");
+    return [
+      ...(request ? [{ label: "请求原文", event: request }] : []),
+      ...(finalResponse ? [{ label: "最终回复", event: finalResponse }] : []),
+    ];
   }, [trace]);
 
-  const selectedEvent = trace?.events[eventIndex];
+  const selectedEvent = displayEvents[eventIndex]?.event;
 
   return (
     <div className="model-debug-viewer">
@@ -111,13 +105,13 @@ export default function ModelDebugViewer() {
                 <span>Request ID：{trace.requestId}</span>
               </div>
               <div className="model-event-tabs">
-                {trace.events.map((event, index) => (
+                {displayEvents.map((item, index) => (
                   <button
-                    key={`${event.timestamp}-${index}`}
+                    key={`${item.event.timestamp}-${index}`}
                     className={eventIndex === index ? "active" : ""}
                     onClick={() => setEventIndex(index)}
                   >
-                    {eventLabels[index]}
+                    {item.label}
                   </button>
                 ))}
               </div>

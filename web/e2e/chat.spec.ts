@@ -174,6 +174,14 @@ test("shows structured model request data in the debug log view", async ({ page 
             timestamp: "2026-07-31T12:00:00.000Z",
             phase: "request",
             data: { body: { model: "gpt-test", messages: [{ role: "user", content: "原始问题" }] } },
+          }, {
+            timestamp: "2026-07-31T12:00:00.500Z",
+            phase: "stream_event",
+            data: { choices: [{ delta: { content: "分片内容" } }] },
+          }, {
+            timestamp: "2026-07-31T12:00:01.000Z",
+            phase: "parsed_response",
+            data: { text: "完整最终回复", toolCalls: [] },
           }],
         },
       },
@@ -204,6 +212,12 @@ test("shows structured model request data in the debug log view", async ({ page 
 
   await expect(page.getByRole("button", { name: /gpt-test openai-chat/ })).toBeVisible();
   await expect(page.locator(".model-event-json")).toContainText("原始问题");
+  await expect(page.getByRole("button", { name: "请求原文" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "最终回复" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "流事件" })).toHaveCount(0);
+  await page.getByRole("button", { name: "最终回复" }).click();
+  await expect(page.locator(".model-event-json")).toContainText("完整最终回复");
+  await expect(page.locator(".model-event-json")).not.toContainText("分片内容");
   await expect(page.getByRole("button", { name: "复制 JSON" })).toBeVisible();
 });
 
@@ -348,6 +362,45 @@ test("shows processing state immediately after sending", async ({ page }) => {
 
   await expect(page.getByText("正在处理")).toBeVisible();
   await expect(page.getByText("收到")).toBeVisible();
+});
+
+test("keeps a session running while switching to another conversation", async ({ page }) => {
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({
+      json: {
+        sessions: [
+          { id: "session-a", lastActivity: Date.now(), preview: "后台任务" },
+          { id: "session-b", lastActivity: Date.now() - 1, preview: "其他会话" },
+        ],
+      },
+    });
+  });
+  await page.route("**/history/sessions/*/messages", async (route) => {
+    await route.fulfill({ json: { messages: [] } });
+  });
+  await page.route("**/chat", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    await route.fulfill({
+      contentType: "text/event-stream",
+      body: [
+        'event: text_delta\ndata: {"text":"后台完成"}',
+        'event: done\ndata: {"text":"后台完成","session_id":"session-a"}',
+        "",
+      ].join("\n\n"),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByText("后台任务").click();
+  await page.getByRole("textbox").fill("执行耗时任务");
+  await page.getByRole("button", { name: "↑" }).click();
+  await expect(page.getByText("正在处理")).toBeVisible();
+
+  await page.getByText("其他会话").click();
+  await expect(page.getByText("正在处理")).not.toBeVisible();
+  await page.getByText("后台任务").click();
+  await expect(page.getByText("正在处理")).toBeVisible();
+  await expect(page.getByText("后台完成")).toBeVisible();
 });
 
 test("clears chat and switches session when /new completes", async ({ page }) => {
