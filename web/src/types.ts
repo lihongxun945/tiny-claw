@@ -19,6 +19,8 @@ export interface Message {
   toolCalls: ToolCallInfo[];
   attachments?: Attachment[];
   timestamp: number;
+  turnId?: string;
+  plan?: SessionPlan;
 }
 
 export interface Session {
@@ -26,6 +28,13 @@ export interface Session {
   lastActivity: number;
   preview?: string;
   busy?: boolean;
+  context: SessionContext;
+  executionMode: ExecutionMode;
+}
+
+export interface SessionContext {
+  mode: "chat" | "project";
+  project?: { root: string; name: string };
 }
 
 export interface SSEEvent {
@@ -92,4 +101,49 @@ export interface MemoryRecord {
   source: MemorySource;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProjectInfo {
+  root: string;
+  name: string;
+  stack: string[];
+  rules: string;
+}
+
+export interface ProjectChangedFile {
+  path: string;
+  previousPath?: string;
+  indexStatus: string;
+  workTreeStatus: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+}
+
+export interface ProjectGitStatus {
+  isRepository: boolean;
+  branch: string;
+  clean: boolean;
+  changedCount: number;
+  files: ProjectChangedFile[];
+}
+
+export interface ProjectDiff {
+  path: string;
+  staged: string;
+  unstaged: string;
+  truncated: boolean;
+}
+
+export type ExecutionMode = "normal" | "plan";
+export type PlanStepStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped" | "waiting_approval";
+
+export interface SessionPlan {
+  id: string;
+  turnId: string;
+  status: "planning" | "executing" | "completed" | "failed";
+  createdAt: string;
+  updatedAt: string;
+  currentStepId?: string;
+  steps: Array<{ id: string; title: string; status: PlanStepStatus; summary?: string }>;
 }

@@ -9,7 +9,7 @@ interface Props {
   onApproveTurnAndResume?: (approvalId: string) => Promise<void>;
 }
 
-interface ApprovalResult {
+export interface ApprovalResult {
   requiresConfirmation: true;
   approvalId: string;
   command?: string;
@@ -44,7 +44,7 @@ function summarizeResult(result: string | undefined): string {
   return result.slice(0, 80);
 }
 
-function parseApprovalResult(result: string | undefined): ApprovalResult | undefined {
+export function parseApprovalResult(result: string | undefined): ApprovalResult | undefined {
   if (!result) return undefined;
   try {
     const obj = JSON.parse(result) as Partial<ApprovalResult>;
@@ -53,6 +53,16 @@ function parseApprovalResult(result: string | undefined): ApprovalResult | undef
     }
   } catch { /* not JSON */ }
   return undefined;
+}
+
+export function isToolCallFailure(result: string | undefined): boolean {
+  if (!result) return false;
+  try {
+    const value = JSON.parse(result) as { error?: unknown; requiresConfirmation?: unknown };
+    return typeof value.error === "string" && value.requiresConfirmation !== true;
+  } catch {
+    return false;
+  }
 }
 
 export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveTurnAndResume }: Props) {

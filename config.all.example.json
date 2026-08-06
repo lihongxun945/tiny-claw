@@ -15,9 +15,10 @@
   "contextCompressionThreshold": 0.7,
   "contextCompressionMaxChars": 5000,
   "contextCompressionToolResultMaxChars": 500,
+  "contextCompressionMaxOutputTokens": 2048,
   "toolResultInitialMaxChars": 12000,
   "historyWindowSize": 20,
-  "maxAgentIterations": 20,
+  "maxAgentIterations": 100,
   "sessionSummary": {
     "enabled": true,
     "persistent": true,
@@ -78,6 +79,35 @@
       "sseHeartbeatIntervalMs": 15000
     },
     "auditTools": true
+  },
+  "project": {
+    "security": {
+      "mode": "ask",
+      "tools": {
+        "file_read": { "mode": "allow" },
+        "file_write": { "mode": "ask" },
+        "file_edit": { "mode": "ask" },
+        "bash": { "mode": "ask" },
+        "project_tree": { "mode": "allow" },
+        "project_search": { "mode": "allow" },
+        "git_status": { "mode": "allow" },
+        "git_diff": { "mode": "allow" }
+      }
+    },
+    "historyWindowSize": 8,
+    "maxAgentIterations": 100,
+    "gitTimeoutMs": 10000,
+    "diffMaxChars": 200000,
+    "openTimeoutMs": 30000,
+    "treeMaxDepth": 4,
+    "treeMaxEntries": 2000,
+    "searchMaxResults": 200,
+    "searchMaxChars": 50000,
+    "searchTimeoutMs": 10000
+  },
+  "plan": {
+    "enabled": true,
+    "maxSteps": 8
   },
   "searchProvider": "ollama",
   "ollamaApiKey": "YOUR_OLLAMA_API_KEY",

@@ -36,7 +36,7 @@ describe("security boundary", () => {
     writeFileSync(resolve(outsidePath, "outside.txt"), "outside", "utf-8");
     symlinkSync(outsidePath, resolve(workspacePath, "escape"));
 
-    const read = createFileReadTool(workspacePath);
+    const read = createFileReadTool(workspacePath, () => loadConfig(workspacePath));
     const write = createFileWriteTool(workspacePath, () => loadConfig(workspacePath));
     const edit = createFileEditTool(workspacePath, () => loadConfig(workspacePath));
 

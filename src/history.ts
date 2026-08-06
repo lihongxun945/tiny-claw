@@ -41,14 +41,8 @@ export class MessageHistory {
   private _buildContext(windowSize: number): { messages: Message[]; turnStartIndex: number } {
     const currentTurn = this.messages.slice(this.currentTurnStart);
     const previousMessages = this.messages.slice(0, this.currentTurnStart);
-    const maxPrevious = windowSize * 2;
-    let trimmed = maxPrevious > 0 ? previousMessages.slice(-maxPrevious) : [];
-
-    if (trimmed.length > 0 && trimmed[0].role === "assistant") {
-      trimmed = trimmed.slice(1);
-    }
-
-    const sanitizedPrevious = stripToolMessagesForNewTurn(trimmed);
+    const readablePrevious = stripToolMessagesForNewTurn(previousMessages);
+    const sanitizedPrevious = takeRecentUserTurns(readablePrevious, windowSize);
     const sanitizedCurrentTurn = sanitizeToolMessageChains(currentTurn);
 
     return {
@@ -56,4 +50,20 @@ export class MessageHistory {
       turnStartIndex: sanitizedPrevious.length,
     };
   }
+}
+
+function takeRecentUserTurns(messages: Message[], windowSize: number): Message[] {
+  if (windowSize <= 0) return [];
+  if (!Number.isFinite(windowSize)) return messages;
+
+  let userTurns = 0;
+  let startIndex = messages.length;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index].role !== "user") continue;
+    userTurns++;
+    startIndex = index;
+    if (userTurns >= windowSize) break;
+  }
+
+  return messages.slice(startIndex);
 }

@@ -1,6 +1,7 @@
-import { app, BrowserWindow, dialog, Menu, nativeImage, shell, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
+import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import {
   handleDesktopWindowClose,
@@ -9,11 +10,23 @@ import {
 } from "./window-lifecycle.js";
 import { createLoadingPageUrl } from "./loading-page.js";
 import { initializeDesktopWorkspace } from "./workspace.js";
+import { selectProjectDirectory } from "./directory-picker.js";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let gatewayProcess: ChildProcess | null = null;
 let quitting = false;
+
+ipcMain.handle("project:select-directory", async (event) => {
+  const window = mainWindow;
+  if (!window || event.sender !== window.webContents) {
+    throw new Error("无效的目录选择请求");
+  }
+  return selectProjectDirectory(() => dialog.showOpenDialog(window, {
+    title: "选择项目目录",
+    properties: ["openDirectory", "createDirectory"],
+  }));
+});
 
 function reservePort(): Promise<number> {
   return new Promise((resolvePort, reject) => {
@@ -107,6 +120,7 @@ async function launchDesktop(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: fileURLToPath(new URL("./preload.cjs", import.meta.url)),
     },
   });
 

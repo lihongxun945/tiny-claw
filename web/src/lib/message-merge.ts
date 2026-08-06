@@ -15,6 +15,7 @@ export function mergeApprovalResume(
   approvalId: string,
   text: string,
   resumedToolCalls: ToolCallInfo[],
+  metadata?: Pick<Message, "turnId" | "plan">,
 ): Message[] {
   const messageIndex = messages.findIndex((message) => (
     message.role === "assistant"
@@ -26,6 +27,7 @@ export function mergeApprovalResume(
       text,
       toolCalls: resumedToolCalls,
       timestamp: Date.now(),
+      ...metadata,
     }];
   }
 
@@ -44,6 +46,7 @@ export function mergeApprovalResume(
     ...target,
     text: text ? [target.text, text].filter(Boolean).join("\n") : target.text,
     toolCalls,
+    ...metadata,
   };
   return next;
 }

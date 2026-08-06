@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Message } from "./types.js";
+import type { ExecutionMode, Message, SessionContext } from "./types.js";
 
 const META_VERSION = 1;
 
@@ -14,6 +14,45 @@ export interface SessionMeta {
   lastActivity: number;
   archived: boolean;
   pinned: boolean;
+  context: SessionContext;
+  preferences: { executionMode: ExecutionMode };
+}
+
+export function readSessionMeta(workspacePath: string, sessionId: string): SessionMeta | undefined {
+  return readSessionMetaPath(resolve(sessionDir(workspacePath, sessionId), "meta.json"));
+}
+
+export function createSessionMeta(
+  workspacePath: string,
+  sessionId: string,
+  context: SessionContext,
+): SessionMeta {
+  const dir = sessionDir(workspacePath, sessionId);
+  mkdirSync(dir, { recursive: true });
+  const path = resolve(dir, "meta.json");
+  const existing = readSessionMetaPath(path);
+  if (existing) {
+    if (JSON.stringify(existing.context) !== JSON.stringify(context)) {
+      throw new Error("会话已绑定其他运行上下文，不能切换项目");
+    }
+    return existing;
+  }
+  const now = new Date();
+  const meta: SessionMeta = {
+    version: META_VERSION,
+    id: sessionId,
+    title: sessionId.slice(0, 8),
+    preview: "",
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    lastActivity: now.getTime(),
+    archived: false,
+    pinned: false,
+    context,
+    preferences: { executionMode: "normal" },
+  };
+  writeFileSync(path, `${JSON.stringify(meta, null, 2)}\n`, "utf-8");
+  return meta;
 }
 
 export interface SessionDeleteResult {
@@ -63,6 +102,7 @@ export function readSessionMessages(workspacePath: string, sessionId: string): M
         role: record.role,
         content: record.content,
         _timestamp: typeof record._timestamp === "number" ? record._timestamp : undefined,
+        _turnId: typeof record._turnId === "string" ? record._turnId : undefined,
       });
     } catch {
       // Ignore malformed message records.
@@ -96,6 +136,23 @@ export function deleteStoredSession(workspacePath: string, sessionId: string): S
   return { deleted: true, deletedHistoryRecords, deletedSessionState };
 }
 
+export function updateSessionExecutionMode(
+  workspacePath: string,
+  sessionId: string,
+  executionMode: ExecutionMode,
+): SessionMeta {
+  const path = resolve(sessionDir(workspacePath, sessionId), "meta.json");
+  const meta = readSessionMetaPath(path);
+  if (!meta) throw new Error("会话不存在");
+  const updated = {
+    ...meta,
+    updatedAt: new Date().toISOString(),
+    preferences: { ...meta.preferences, executionMode },
+  };
+  writeFileSync(path, `${JSON.stringify(updated, null, 2)}\n`, "utf-8");
+  return updated;
+}
+
 function updateSessionMeta(workspacePath: string, sessionId: string, message: Message): void {
   const dir = sessionDir(workspacePath, sessionId);
   const path = resolve(dir, "meta.json");
@@ -112,6 +169,8 @@ function updateSessionMeta(workspacePath: string, sessionId: string, message: Me
     lastActivity: now.getTime(),
     archived: existing?.archived ?? false,
     pinned: existing?.pinned ?? false,
+    context: existing?.context ?? { mode: "chat" },
+    preferences: existing?.preferences ?? { executionMode: "normal" },
   };
   writeFileSync(path, `${JSON.stringify(meta, null, 2)}\n`, "utf-8");
 }
@@ -130,10 +189,29 @@ function readSessionMetaPath(path: string): SessionMeta | undefined {
       lastActivity: typeof parsed.lastActivity === "number" ? parsed.lastActivity : Date.parse(String(parsed.updatedAt)) || 0,
       archived: parsed.archived === true,
       pinned: parsed.pinned === true,
+      context: parseSessionContext(parsed.context),
+      preferences: {
+        executionMode: parsed.preferences?.executionMode === "plan" ? "plan" : "normal",
+      },
     };
   } catch {
     return undefined;
   }
+}
+
+function parseSessionContext(value: unknown): SessionContext {
+  if (!value || typeof value !== "object") return { mode: "chat" };
+  const context = value as Partial<SessionContext>;
+  if (context.mode !== "project" || !context.project || typeof context.project.root !== "string") {
+    return { mode: "chat" };
+  }
+  return {
+    mode: "project",
+    project: {
+      root: context.project.root,
+      name: typeof context.project.name === "string" ? context.project.name : context.project.root.split("/").pop() || context.project.root,
+    },
+  };
 }
 
 function messagePreview(message: Message): string {

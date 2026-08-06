@@ -37,6 +37,7 @@ export interface Message {
   role: "user" | "assistant";
   content: string | ContentBlock[];
   _timestamp?: number;
+  _turnId?: string;
 }
 
 // === Config ===
@@ -53,6 +54,7 @@ export interface Config {
   contextCompressionThreshold: number;
   contextCompressionMaxChars: number;
   contextCompressionToolResultMaxChars: number;
+  contextCompressionMaxOutputTokens?: number;
   toolResultInitialMaxChars: number;
   historyWindowSize: number;
   maxAgentIterations: number;
@@ -70,8 +72,53 @@ export interface Config {
   attachments?: AttachmentsConfig;
   debug?: boolean | DebugConfig;
   security?: SecurityConfig;
+  /** 项目开发模式配置 */
+  project?: ProjectConfig;
+  plan?: PlanConfig;
   workspacePath: string;
   systemPrompt: string;
+}
+
+export type ExecutionMode = "normal" | "plan";
+
+export interface PlanConfig {
+  enabled?: boolean;
+  maxSteps?: number;
+}
+
+export interface ProjectConfig {
+  security?: {
+    mode?: PermissionMode;
+    tools?: Record<string, ToolSecurityConfig>;
+  };
+  /** 项目模式历史窗口（轮数，默认 8） */
+  historyWindowSize?: number;
+  /** 项目模式最大 agent 迭代数（默认 100） */
+  maxAgentIterations?: number;
+  /** Git 命令超时（毫秒，默认 10000） */
+  gitTimeoutMs?: number;
+  /** 单个文件 diff 返回字符上限（默认 200000） */
+  diffMaxChars?: number;
+  /** WebUI 打开项目超时（毫秒，默认 30000） */
+  openTimeoutMs?: number;
+  /** 项目目录树最大深度（默认 4） */
+  treeMaxDepth?: number;
+  /** 项目目录树最大条目数（默认 2000） */
+  treeMaxEntries?: number;
+  /** 项目搜索最大结果数（默认 200） */
+  searchMaxResults?: number;
+  /** 项目搜索最大输出字符数（默认 50000） */
+  searchMaxChars?: number;
+  /** 项目搜索超时（毫秒，默认 10000） */
+  searchTimeoutMs?: number;
+}
+
+export interface SessionContext {
+  mode: "chat" | "project";
+  project?: {
+    root: string;
+    name: string;
+  };
 }
 
 export interface RemoteModelConfig {
@@ -177,6 +224,7 @@ export interface Tool {
   name: string;
   description: string;
   inputSchema: ToolDefinition["input_schema"];
+  isAvailable?: (context: SessionContext, executionMode: ExecutionMode) => boolean;
   execute: (args: Record<string, unknown>, context?: ToolExecutionContext) => Promise<string>;
 }
 
@@ -184,6 +232,12 @@ export interface ToolExecutionContext {
   signal?: AbortSignal;
   sessionId?: string;
   actor?: AgentActor;
+  rootPath?: string;
+  restrictToRoot?: boolean;
+  config?: Config;
+  sessionContext?: SessionContext;
+  executionMode?: ExecutionMode;
+  turnId?: string;
 }
 
 export interface AgentActor {

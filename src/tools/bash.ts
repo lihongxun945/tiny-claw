@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type { Tool } from "../types.js";
 import type { Config } from "../types.js";
 import { checkDangerousToolPermission } from "./permission.js";
+import { resolveRootFile } from "./workspace-path.js";
 
 const MAX_OUTPUT = 10000;
 const DEFAULT_TIMEOUT = 30;
@@ -35,10 +36,17 @@ export function createBashTool(workspacePath: string, getConfig: () => Config): 
     execute: async (args, context) => {
       const command = args.command as string;
       const timeout = (args.timeout as number) ?? DEFAULT_TIMEOUT;
-      const cwd = resolve(workspacePath, (args.cwd as string | undefined) ?? ".");
+      const root = context?.rootPath ?? workspacePath;
+      const requestedCwd = (args.cwd as string | undefined) ?? ".";
+      let cwd: string;
+      try {
+        cwd = context?.restrictToRoot ? resolveRootFile(root, requestedCwd) : resolve(root, requestedCwd);
+      } catch (error) {
+        return JSON.stringify({ error: error instanceof Error ? error.message : String(error) });
+      }
       const permission = checkDangerousToolPermission({
         workspacePath,
-        config: getConfig(),
+        config: context?.config ?? getConfig(),
         toolName: "bash",
         args,
         context,

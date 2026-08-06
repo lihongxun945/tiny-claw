@@ -57,9 +57,9 @@ describe("PluginManager hook lifecycle", () => {
         calls.push("build-prompt-1");
         return `${prompt}base`;
       },
-      onBeforeModelCall: (_ctx, messages) => {
+      onBeforeModelCall: (_ctx, modelContext) => {
         calls.push("before-model-1");
-        return [...messages, { role: "user", content: "from-hook" }];
+        return { ...modelContext, messages: [...modelContext.messages, { role: "user", content: "from-hook" }] };
       },
       onChatResponse: (_ctx, response) => {
         calls.push("chat-response-1");
@@ -75,9 +75,9 @@ describe("PluginManager hook lifecycle", () => {
         calls.push("build-prompt-2");
         return `${prompt}-extended`;
       },
-      onBeforeModelCall: (_ctx, messages) => {
+      onBeforeModelCall: (_ctx, modelContext) => {
         calls.push("before-model-2");
-        return [...messages, { role: "assistant", content: "second-hook" }];
+        return { ...modelContext, messages: [...modelContext.messages, { role: "assistant", content: "second-hook" }] };
       },
       onChatResponse: (_ctx, response) => {
         calls.push("chat-response-2");
@@ -89,10 +89,18 @@ describe("PluginManager hook lifecycle", () => {
       input: "input-first-second",
     });
     expect(await manager.callOnBuildPrompt("", "main")).toBe("base-extended");
-    expect(await manager.callOnBeforeModelCall([], 0, 1, "main")).toEqual([
-      { role: "user", content: "from-hook" },
-      { role: "assistant", content: "second-hook" },
-    ]);
+    expect(await manager.callOnBeforeModelCall(
+      { messages: [], turnStartIndex: 0, messageTokenBudget: 1000 },
+      1,
+      "main",
+    )).toEqual({
+      messages: [
+        { role: "user", content: "from-hook" },
+        { role: "assistant", content: "second-hook" },
+      ],
+      turnStartIndex: 0,
+      messageTokenBudget: 1000,
+    });
     expect(await manager.callOnChatResponse({ text: "response", toolCalls: [] }, 1, "main")).toEqual({
       text: "response-first-second",
       toolCalls: [],

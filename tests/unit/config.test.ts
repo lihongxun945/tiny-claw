@@ -30,9 +30,10 @@ describe("loadConfig", () => {
       contextCompressionThreshold: 0.7,
       contextCompressionMaxChars: 5000,
       contextCompressionToolResultMaxChars: 500,
+      contextCompressionMaxOutputTokens: 2048,
       toolResultInitialMaxChars: 12000,
       historyWindowSize: 5,
-      maxAgentIterations: 20,
+      maxAgentIterations: 100,
       searchProvider: "ollama",
       workspacePath,
       systemPrompt: "You are tiny-claw.",
@@ -152,6 +153,7 @@ describe("loadConfig", () => {
     [{ maxTokens: 0 }, "配置字段 maxTokens 超出允许范围"],
     [{ contextCompressionMaxChars: 99 }, "配置字段 contextCompressionMaxChars 超出允许范围"],
     [{ contextCompressionToolResultMaxChars: 99 }, "配置字段 contextCompressionToolResultMaxChars 超出允许范围"],
+    [{ contextCompressionMaxOutputTokens: 255 }, "配置字段 contextCompressionMaxOutputTokens 超出允许范围"],
     [{ toolResultInitialMaxChars: 999 }, "配置字段 toolResultInitialMaxChars 超出允许范围"],
     [{ maxAgentIterations: -1 }, "配置字段 maxAgentIterations 超出允许范围"],
     [{ searchProvider: "unknown" }, "配置字段 searchProvider 不受支持"],
@@ -160,6 +162,11 @@ describe("loadConfig", () => {
     [{ security: { tools: { bash: { mode: "unknown" } } } }, "配置字段 security.tools.bash.mode 不受支持"],
     [{ security: { gateway: { host: "0.0.0.0" } } }, "Gateway 暴露到非回环地址时必须配置 security.gateway.token"],
     [{ security: { gateway: { sseHeartbeatIntervalMs: 999 } } }, "配置字段 security.gateway.sseHeartbeatIntervalMs 超出允许范围"],
+    [{ project: { security: { mode: "unknown" } } }, "配置字段 project.security.mode 不受支持"],
+    [{ project: { security: { tools: { bash: { mode: "unknown" } } } } }, "配置字段 project.security.tools.bash.mode 不受支持"],
+    [{ project: { treeMaxDepth: 0 } }, "配置字段 project.treeMaxDepth 超出允许范围"],
+    [{ project: { searchMaxResults: 0 } }, "配置字段 project.searchMaxResults 超出允许范围"],
+    [{ plan: { maxSteps: 1 } }, "配置字段 plan.maxSteps 超出允许范围"],
     [{ subAgent: { maxConcurrency: 9 } }, "配置字段 subAgent.maxConcurrency 超出允许范围"],
     [{ autoMemory: { lockTimeoutSeconds: 0 } }, "配置字段 autoMemory.lockTimeoutSeconds 超出允许范围"],
     [{ memory: { maxItemChars: 999 } }, "配置字段 memory.maxItemChars 超出允许范围"],
@@ -178,12 +185,14 @@ describe("loadConfig", () => {
     const workspacePath = createTempWorkspace({
       contextCompressionMaxChars: 1200,
       contextCompressionToolResultMaxChars: 300,
+      contextCompressionMaxOutputTokens: 1024,
       toolResultInitialMaxChars: 6000,
     });
     workspaces.push(workspacePath);
 
     expect(loadConfig(workspacePath).contextCompressionMaxChars).toBe(1200);
     expect(loadConfig(workspacePath).contextCompressionToolResultMaxChars).toBe(300);
+    expect(loadConfig(workspacePath).contextCompressionMaxOutputTokens).toBe(1024);
     expect(loadConfig(workspacePath).toolResultInitialMaxChars).toBe(6000);
   });
 });

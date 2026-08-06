@@ -58,7 +58,18 @@ interface Plugin {
 | `onBeforeTool` | 工具执行前 | 权限校验、阻断 |
 | `onAfterTool` | 工具执行后 | 结果处理、日志 |
 | `onAfterIteration` | 每轮迭代结束 | 进度追踪 |
+| `onTurnEnd` | 当前用户轮次完成、等待审批或达到迭代上限 | 按结束原因执行状态持久化与清理 |
 | `onError` | 异常发生时 | 错误处理 |
+
+`onBeforeModelCall` 接收结构化 `ModelCallContext`。插件执行耗时预处理时，可以调用 `modelContext.reportStatus?.(...)` 上报临时状态；状态会通过 Agent 事件流发送给客户端，但不会写入消息历史或进入后续模型上下文：
+
+```typescript
+modelContext.reportStatus?.({
+  stage: "custom_prepare",
+  state: "started",
+  message: "正在准备上下文…",
+});
+```
 
 ## 快速开始：创建一个简单插件
 
@@ -210,6 +221,7 @@ ctx.registerRoute({
 核心插件是学习插件开发的最佳参考：
 
 - [core-tools](../src/plugins/core/tools.ts) — 注册基础内置工具，演示 `registerTool` 用法
+- [core-project-tools](../src/plugins/core/project-tools.ts) — 注册仅在项目会话中暴露的目录、搜索和 Git 工具
 - [core-chat-commands](../src/plugins/core/chat-commands.ts) — 注册内置斜杠命令，演示 `registerChatCommand` 用法
 - [core-sub-agent](../src/plugins/core/sub-agent.ts) — 注册 `sub_agent_run`，演示将编排能力封装为独立核心插件
 - [core-prompts](../src/plugins/core/prompts.ts) — 系统提示词模板加载，演示 `extendPrompt` 和 `onBuildPrompt` 钩子

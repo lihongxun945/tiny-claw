@@ -58,7 +58,7 @@ describe("MessageHistory", () => {
     ]);
   });
 
-  it("drops orphaned tool results after trimming the context window", () => {
+  it("counts readable user turns after removing tool messages", () => {
     const history = new MessageHistory([
       message("user", "u1"),
       {
@@ -75,9 +75,49 @@ describe("MessageHistory", () => {
     ]);
 
     expect(history.getRecentMessages(2)).toEqual([
+      message("user", "u1"),
       message("assistant", "a1"),
       message("user", "u2"),
       message("assistant", "a2"),
+    ]);
+  });
+
+  it("does not let dense tool traffic evict the previous user prompt", () => {
+    const history = new MessageHistory([
+      message("user", "original-task"),
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "progress-1" },
+          { type: "tool_use", id: "call-1", name: "bash", input: { command: "one" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call-1", content: "large-result-1" }],
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "progress-2" },
+          { type: "tool_use", id: "call-2", name: "bash", input: { command: "two" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call-2", content: "large-result-2" }],
+      },
+      message("assistant", "iteration-limit"),
+    ]);
+    history.markTurnStart();
+    history.push(message("user", "continue"));
+
+    expect(history.getRecentMessages(1)).toEqual([
+      message("user", "original-task"),
+      { role: "assistant", content: [{ type: "text", text: "progress-1" }] },
+      { role: "assistant", content: [{ type: "text", text: "progress-2" }] },
+      message("assistant", "iteration-limit"),
+      message("user", "continue"),
     ]);
   });
 

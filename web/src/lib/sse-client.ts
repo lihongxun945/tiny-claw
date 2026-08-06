@@ -1,14 +1,18 @@
-import type { SSEEvent } from "../types.js";
+import type { ExecutionMode, SSEEvent } from "../types.js";
 
 export async function* streamChat(
   message: string,
   sessionId?: string,
   attachmentIds?: string[],
   signal?: AbortSignal,
+  executionMode: ExecutionMode = "normal",
+  turnId?: string,
 ): AsyncGenerator<SSEEvent> {
   const body: Record<string, unknown> = { message };
   if (sessionId) body.session_id = sessionId;
   if (attachmentIds?.length) body.attachments = attachmentIds;
+  body.execution_mode = executionMode;
+  if (turnId) body.turn_id = turnId;
 
   yield* streamPost("/chat", body, signal);
 }

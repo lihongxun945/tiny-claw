@@ -4,18 +4,25 @@ import { MessageHistory } from "./history.js";
 import { PluginManager } from "./plugin-manager.js";
 import { ensureWorkspace } from "./workspace/workspace.js";
 import { appendHistory } from "./workspace/logger.js";
-import { sanitizeToolMessageChains } from "./message-sanitizer.js";
+import { sanitizeToolMessageChains, validateToolMessageChains } from "./message-sanitizer.js";
 import { readSessionMessages } from "./session-store.js";
 import { clearTurnApproval } from "./tools/approval.js";
-import type { AgentActor, Config, ContentBlock, Message, ToolUseBlock, ToolResultBlock } from "./types.js";
+import { applySessionConfig } from "./project.js";
+import { readSessionMeta } from "./session-store.js";
+import type { AgentActor, Config, ContentBlock, Message, ToolUseBlock, ToolResultBlock, SessionContext, ExecutionMode } from "./types.js";
+import { randomUUID } from "node:crypto";
+import { calculateMessageTokenBudget } from "./context-budget.js";
+import { estimateTokens } from "./estimate-tokens.js";
+import type { AgentStatusUpdate } from "./plugins/types.js";
 
 // === 事件类型 ===
 
 export type AgentEvent =
+  | ({ type: "status" } & AgentStatusUpdate)
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; toolCallId: string; name: string; input: Record<string, unknown> }
   | { type: "tool_result"; toolCallId: string; name: string; result: string }
-  | { type: "done"; text: string }
+  | { type: "done"; text: string; reason: "completed" | "approval_required" | "iteration_limit" }
   | { type: "error"; message: string };
 
 // === 流式事件队列 ===
@@ -54,6 +61,8 @@ interface PendingApprovalContinuation {
   toolCall: ToolUseBlock;
   skippedToolCalls: ToolUseBlock[];
   iteration: number;
+  executionMode: ExecutionMode;
+  turnId: string;
 }
 
 // === AgentSession ===
@@ -70,6 +79,7 @@ export class AgentSession {
   private pluginManager: PluginManager;
   private systemPrompt: string;
   private workspacePath: string;
+  private sessionContext: SessionContext;
   private activeController?: AbortController;
   private pendingApprovals = new Map<string, PendingApprovalContinuation>();
   lastActivity: number;
@@ -102,13 +112,17 @@ export class AgentSession {
     pluginManager: PluginManager,
     configOverrides: Partial<Config> = {},
     client?: ModelClient,
+    sessionContext?: SessionContext,
   ) {
     this.id = id;
     this.workspacePath = workspacePath;
+    this.sessionContext = sessionContext ?? readSessionMeta(workspacePath, id)?.context ?? { mode: "chat" };
     ensureWorkspace(workspacePath);
     ensureConfigFile(workspacePath);
 
-    this.config = { ...loadConfig(workspacePath), ...configOverrides };
+    const config = applySessionConfig({ ...loadConfig(workspacePath), ...configOverrides }, this.sessionContext);
+
+    this.config = config;
     this.pluginManager = pluginManager;
     this.client = client ?? createModelClient(this.config, {
       sessionId: id,
@@ -117,7 +131,7 @@ export class AgentSession {
     this.history = new MessageHistory(loadPersistedSessionMessages(workspacePath, id));
     this.lastActivity = Date.now();
 
-    this.pluginManager.setRuntimeDeps(this.config, this.client, this.history, this.id);
+    this.pluginManager.setRuntimeDeps(this.config, this.client, this.history, this.id, this.sessionContext);
 
     this.systemPrompt = "";
   }
@@ -127,7 +141,13 @@ export class AgentSession {
     userInput: string,
     actor?: AgentActor,
     userContent?: ContentBlock[],
+    executionMode: ExecutionMode = "normal",
+    turnId: string = randomUUID(),
   ): AsyncGenerator<AgentEvent> {
+    if (executionMode === "plan" && this.config.plan?.enabled === false) {
+      yield { type: "error", message: "计划模式已在配置中禁用" };
+      return;
+    }
     if (this.config.remoteModel?.enabled !== false && !this.config.apiKey.trim()) {
       yield { type: "error", message: "尚未配置模型 API Key，请先在配置页面填写并保存。" };
       return;
@@ -142,6 +162,8 @@ export class AgentSession {
     }
     const controller = new AbortController();
     this.activeController = controller;
+    this.pluginManager.setExecutionMode(this.id, executionMode);
+    this.pluginManager.setTurnId(this.id, turnId);
 
     try {
       this.lastActivity = Date.now();
@@ -169,6 +191,8 @@ export class AgentSession {
       yield { type: "error", message: error.message };
     } finally {
       clearTurnApproval(this.workspacePath, this.id, actor);
+      this.pluginManager.clearExecutionMode(this.id);
+      this.pluginManager.clearTurnId(this.id);
       if (this.activeController === controller) this.activeController = undefined;
     }
   }
@@ -189,6 +213,8 @@ export class AgentSession {
 
     const controller = new AbortController();
     this.activeController = controller;
+    this.pluginManager.setExecutionMode(this.id, pending.executionMode);
+    this.pluginManager.setTurnId(this.id, pending.turnId);
     let agentIteration = pending.iteration;
 
     try {
@@ -216,6 +242,8 @@ export class AgentSession {
       yield { type: "error", message: error.message };
     } finally {
       clearTurnApproval(this.workspacePath, this.id, actor);
+      this.pluginManager.clearExecutionMode(this.id);
+      this.pluginManager.clearTurnId(this.id);
       if (this.activeController === controller) this.activeController = undefined;
     }
   }
@@ -232,34 +260,66 @@ export class AgentSession {
       if (controller.signal.aborted) throw new Error("会话已取消");
       agentIteration++;
 
-      // 4. 获取上下文
+      const executionMode = this.pluginManager.getExecutionMode(this.id);
+      const toolDefs = this.pluginManager.getToolDefinitions(this.sessionContext, executionMode);
+      const turnPrompt = await this.pluginManager.callOnBuildTurnPrompt(this.systemPrompt, agentIteration, this.id);
+
+      // 4. 获取上下文和完整请求预算
       const context = this.history.getRecentMessages(this.config.historyWindowSize);
       const turnStartIdx = this.history.getTurnStartIndexInContext(this.config.historyWindowSize);
+      const messageTokenBudget = calculateMessageTokenBudget(this.config, turnPrompt, toolDefs);
 
       // 5. Before Model Call Hook：上下文压缩等
-      const modifiedContext = await this.pluginManager.callOnBeforeModelCall(
-        context, turnStartIdx, agentIteration, this.id,
-      );
-      if (modifiedContext !== context) {
-        // 钩子修改了消息（如压缩），替换历史
-        const estimatedTurnStart = modifiedContext.length - (context.length - turnStartIdx);
-        this.history.replaceWithCompressed(modifiedContext, Math.max(0, estimatedTurnStart));
+      const hookEventQueue = new EventQueue();
+      const hookPromise = this.pluginManager.callOnBeforeModelCall(
+        {
+          messages: context,
+          turnStartIndex: turnStartIdx,
+          messageTokenBudget,
+          reportStatus: (status) => hookEventQueue.push({ type: "status", ...status }),
+        },
+        agentIteration,
+        this.id,
+      ).finally(() => hookEventQueue.close());
+      let hookEvent = await hookEventQueue.next();
+      while (!hookEvent.done) {
+        yield hookEvent.value;
+        hookEvent = await hookEventQueue.next();
+      }
+      const modifiedContext = await hookPromise;
+      if (modifiedContext.messages !== context || modifiedContext.turnStartIndex !== turnStartIdx) {
+        this.history.replaceWithCompressed(modifiedContext.messages, modifiedContext.turnStartIndex);
       }
 
-      const toolDefs = this.pluginManager.getToolDefinitions();
+      const estimatedMessageTokens = estimateTokens(modifiedContext.messages);
+      if (estimatedMessageTokens > messageTokenBudget) {
+        const error = new Error(
+          `当前请求压缩后仍超过模型上下文限制（消息约 ${estimatedMessageTokens} tokens，预算 ${messageTokenBudget} tokens）。请缩小单次输入或工具读取范围。`,
+        );
+        await this.notifyError(error, agentIteration);
+        yield { type: "error", message: error.message };
+        return;
+      }
+      const toolChainError = validateToolMessageChains(modifiedContext.messages);
+      if (toolChainError) {
+        const error = new Error(`上下文压缩产生了无效的工具消息链：${toolChainError}`);
+        await this.notifyError(error, agentIteration);
+        yield { type: "error", message: error.message };
+        return;
+      }
 
       // 6. 流式调用模型
       const eventQueue = new EventQueue();
       let chatError: string | null = null;
 
       const chatPromise = this.client.chat(
-        this.history.getRecentMessages(this.config.historyWindowSize),
+        modifiedContext.messages.map(({ _turnId: _ignoredTurnId, ...message }) => message),
         (delta) => {
           fullText += delta;
           eventQueue.push({ type: "text_delta", text: delta });
         },
         toolDefs.length > 0 ? toolDefs : undefined,
-        this.systemPrompt,
+        turnPrompt,
         controller.signal,
       ).then(
         (response) => {
@@ -313,7 +373,7 @@ export class AgentSession {
       }
 
       if (assistantContent.length > 0) {
-        const assistantMsg: Message = { role: "assistant", content: assistantContent, _timestamp: Date.now() };
+        const assistantMsg: Message = { role: "assistant", content: assistantContent, _timestamp: Date.now(), _turnId: this.pluginManager.getTurnId(this.id) };
         appendHistory(this.workspacePath, assistantMsg, this.id);
         this.history.push(assistantMsg);
       }
@@ -323,7 +383,8 @@ export class AgentSession {
 
       // 9. 无工具调用，结束
       if (response.toolCalls.length === 0) {
-        yield { type: "done", text: fullText };
+        await this.pluginManager.callOnTurnEnd("completed", agentIteration, this.id);
+        yield { type: "done", text: fullText, reason: "completed" };
         return;
       }
 
@@ -343,9 +404,12 @@ export class AgentSession {
               toolCall,
               skippedToolCalls: response.toolCalls.slice(toolCallIndex + 1),
               iteration: agentIteration,
+              executionMode,
+              turnId: this.pluginManager.getTurnId(this.id) ?? randomUUID(),
             });
           }
-          yield { type: "done", text: fullText };
+          await this.pluginManager.callOnTurnEnd("approval_required", agentIteration, this.id);
+          yield { type: "done", text: fullText, reason: "approval_required" };
           return;
         }
 
@@ -354,7 +418,18 @@ export class AgentSession {
     }
 
     if (this.config.maxAgentIterations > 0 && agentIteration >= maxIterations) {
-      yield { type: "done", text: fullText };
+      const notice = `\n\n任务已停止：Agent 已达到最大迭代次数（${this.config.maxAgentIterations} 次），当前任务可能尚未完成。你可以继续发送“继续”，或在设置中调整 maxAgentIterations。`;
+      const noticeMessage: Message = {
+        role: "assistant",
+        content: [{ type: "text", text: notice.trim() }],
+        _timestamp: Date.now(),
+        _turnId: this.pluginManager.getTurnId(this.id),
+      };
+      appendHistory(this.workspacePath, noticeMessage, this.id);
+      this.history.push(noticeMessage);
+      await this.pluginManager.callOnTurnEnd("iteration_limit", agentIteration, this.id);
+      yield { type: "text_delta", text: notice };
+      yield { type: "done", text: `${fullText}${notice}`, reason: "iteration_limit" };
     }
   }
 
@@ -374,7 +449,17 @@ export class AgentSession {
     let result: string;
     if (tool) {
       try {
-        result = await tool.execute(toolCall.input, { signal: controller.signal, sessionId: this.id, actor });
+        result = await tool.execute(toolCall.input, {
+          signal: controller.signal,
+          sessionId: this.id,
+          actor,
+          rootPath: this.sessionContext.project?.root ?? this.workspacePath,
+          restrictToRoot: this.sessionContext.mode === "project",
+          config: this.config,
+          sessionContext: this.sessionContext,
+          executionMode: this.pluginManager.getExecutionMode(this.id),
+          turnId: this.pluginManager.getTurnId(this.id),
+        });
       } catch (err) {
         await this.notifyError(err instanceof Error ? err : new Error(String(err)), agentIteration);
         result = JSON.stringify({
@@ -397,7 +482,7 @@ export class AgentSession {
       tool_use_id: toolUseId,
       content: result,
     };
-    const toolResultMsg: Message = { role: "user", content: [toolResult], _timestamp: Date.now() };
+    const toolResultMsg: Message = { role: "user", content: [toolResult], _timestamp: Date.now(), _turnId: this.pluginManager.getTurnId(this.id) };
     appendHistory(this.workspacePath, toolResultMsg, this.id);
     this.history.push(toolResultMsg);
   }

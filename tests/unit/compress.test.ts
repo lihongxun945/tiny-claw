@@ -26,9 +26,11 @@ function config(overrides: Partial<Config> = {}): Config {
 
 class CaptureCompleteClient implements ModelClient {
   completeCalls: Message[][] = [];
+  completeOptions: Array<{ maxTokens?: number } | undefined> = [];
 
-  async complete(messages: Message[]): Promise<string> {
+  async complete(messages: Message[], _systemPrompt?: string, options?: { maxTokens?: number }): Promise<string> {
     this.completeCalls.push(messages);
+    this.completeOptions.push(options);
     return "压缩摘要";
   }
 
@@ -74,7 +76,26 @@ describe("compressMessages (core-compress plugin)", () => {
     expect(prompt).toContain("[工具结果]");
     expect(prompt).not.toContain("TAIL_SHOULD_NOT_APPEAR");
     expect(result).toHaveLength(1);
-    expect(result[0].content).toContain("[以下是对话历史的摘要]");
+    expect(result[0].content).toContain("[当前会话摘要]");
     expect(result[0].content).toContain("压缩摘要");
+    expect(client.completeOptions[0]).toEqual({ maxTokens: 2048 });
+  });
+
+  it("returns no synthetic summary when the compression model fails", async () => {
+    const client = new CaptureCompleteClient();
+    client.complete = async () => { throw new Error("model unavailable"); };
+    const ctx = { config: config(), client } as unknown as HookContext;
+
+    await expect(compressMessages([{ role: "user", content: "必须保留的历史" }], ctx)).resolves.toEqual([]);
+  });
+
+  it("enforces the configured summary character limit after generation", async () => {
+    const client = new CaptureCompleteClient();
+    client.complete = async () => "摘要内容".repeat(100);
+    const ctx = { config: config({ contextCompressionMaxChars: 100 }), client } as unknown as HookContext;
+
+    const result = await compressMessages([{ role: "user", content: "历史" }], ctx);
+    const content = String(result[0].content).replace("[当前会话摘要]\n", "");
+    expect(content.length).toBeLessThanOrEqual(100);
   });
 });

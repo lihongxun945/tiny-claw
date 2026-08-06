@@ -11,6 +11,9 @@ import { coreChatCommandsPlugin } from "./chat-commands.js";
 import { coreAttachmentsPlugin } from "./attachments.js";
 import { coreDebugPlugin } from "./debug.js";
 import { coreLocalModelsPlugin } from "./local-models.js";
+import { coreProjectPlugin } from "./project.js";
+import { coreProjectToolsPlugin } from "./project-tools.js";
+import { corePlanPlugin } from "./plan.js";
 
 export const corePlugins: Plugin[] = [
   coreChatCommandsPlugin,
@@ -20,6 +23,9 @@ export const corePlugins: Plugin[] = [
   coreToolsPlugin,
   coreSubAgentPlugin,
   corePromptsPlugin,
+  coreProjectPlugin,
+  coreProjectToolsPlugin,
+  corePlanPlugin,
   coreHistoryPlugin,
   coreSessionSummaryPlugin,
   coreAutoMemoryPlugin,

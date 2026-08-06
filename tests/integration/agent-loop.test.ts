@@ -13,6 +13,7 @@ import { approveTurnRequest, hasTurnApproval, listApprovals } from "../../src/to
 import { checkDangerousToolPermission } from "../../src/tools/permission.js";
 import type { ChatResponse, Message, Tool, ToolDefinition } from "../../src/types.js";
 import { runWorkspaceAutoMemoryAnalysis } from "../../src/plugins/core/auto-memory.js";
+import { readSessionPlan } from "../../src/plan-store.js";
 import { FakeModelClient } from "../helpers/fake-model-client.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
@@ -118,7 +119,7 @@ describe("AgentSession loop", () => {
 
     expect(await collect(session.chat("hi"))).toEqual([
       { type: "text_delta", text: "hello" },
-      { type: "done", text: "hello" },
+      { type: "done", text: "hello", reason: "completed" },
     ]);
     expect(client.calls).toHaveLength(1);
     expect(client.calls[0].messages).toEqual([
@@ -222,7 +223,7 @@ describe("AgentSession loop", () => {
       { type: "tool_call", toolCallId: "call-1", name: "echo", input: { text: "value" } },
       { type: "tool_result", toolCallId: "call-1", name: "echo", result: "echo:value" },
       { type: "text_delta", text: "done" },
-      { type: "done", text: "done" },
+      { type: "done", text: "done", reason: "completed" },
     ]);
     expect(client.calls).toHaveLength(2);
     const records = readFileSync(sessionMessagesPath(workspacePath, "tool-loop"), "utf-8")
@@ -233,6 +234,44 @@ describe("AgentSession loop", () => {
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "call-1", content: "echo:value" }],
     }));
+  });
+
+  it("creates and completes a persisted plan before finishing plan mode", async () => {
+    registerTool(manager, {
+      name: "echo",
+      description: "echo",
+      inputSchema: { type: "object", properties: {} },
+      execute: async () => "ok",
+    });
+    const toolCall = (id: string, name: string, input: Record<string, unknown>): ChatResponse => ({
+      text: "",
+      toolCalls: [{ type: "tool_use", id, name, input }],
+    });
+    const client = new FakeModelClient([
+      toolCall("plan-1", "plan_create", { steps: ["分析", "实现"] }),
+      toolCall("plan-2", "plan_update", { step_id: "step-1", status: "in_progress" }),
+      toolCall("work-1", "echo", {}),
+      toolCall("plan-3", "plan_update", { step_id: "step-1", status: "completed", summary: "分析完成" }),
+      toolCall("plan-4", "plan_update", { step_id: "step-2", status: "in_progress" }),
+      toolCall("plan-5", "plan_update", { step_id: "step-2", status: "completed", summary: "实现完成" }),
+      { text: "全部完成", toolCalls: [] },
+    ]);
+    const session = new AgentSession("plan-loop", workspacePath, manager, {}, client);
+
+    const planTurnId = "11111111-1111-4111-8111-111111111111";
+    const events = await collect(session.chat("执行任务", undefined, undefined, "plan", planTurnId));
+    expect(events.at(-1)).toEqual({ type: "done", text: "全部完成", reason: "completed" });
+    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["plan_create", "plan_update"]));
+    expect(client.calls[0].systemPrompt).toContain("计划执行模式");
+    const persistedPlan = readSessionPlan(workspacePath, "plan-loop", planTurnId);
+    expect(persistedPlan?.status).toBe("completed");
+    expect(persistedPlan?.currentStepId).toBeUndefined();
+
+    const normalClient = new FakeModelClient([{ text: "普通回复", toolCalls: [] }]);
+    const normalSession = new AgentSession("normal-loop", workspacePath, manager, {}, normalClient);
+    await collect(normalSession.chat("普通任务"));
+    expect(normalClient.calls[0].tools?.some((tool) => tool.name === "plan_create")).toBe(false);
+    expect(normalClient.calls[0].systemPrompt).not.toContain("计划执行模式");
   });
 
   it("auto-memory analyzes only user questions and final answers", async () => {
@@ -261,7 +300,7 @@ describe("AgentSession loop", () => {
         { type: "tool_call", toolCallId: "call-1", name: "echo", input: { text: "value" } },
         { type: "tool_result", toolCallId: "call-1", name: "echo", result: "工具过程结果" },
         { type: "text_delta", text: "最终回答：长期结论" },
-        { type: "done", text: "最终回答：长期结论" },
+        { type: "done", text: "最终回答：长期结论", reason: "completed" },
       ]);
 
       expect(client.completeCalls).toHaveLength(0);
@@ -868,7 +907,7 @@ describe("AgentSession loop", () => {
         name: "gated",
         result: JSON.stringify({ error: "需要批准", requiresConfirmation: true, approvalId: "approval-1" }),
       },
-      { type: "done", text: "先申请授权" },
+      { type: "done", text: "先申请授权", reason: "approval_required" },
     ]);
     expect(client.calls).toHaveLength(1);
     expect(gatedTool).toHaveBeenCalledTimes(1);
@@ -935,7 +974,7 @@ describe("AgentSession loop", () => {
       { type: "tool_call", toolCallId: "call-1", name: "gated", input: {} },
       { type: "tool_result", toolCallId: "call-1", name: "gated", result: "approved-result" },
       { type: "text_delta", text: "继续后的总结" },
-      { type: "done", text: "继续后的总结" },
+      { type: "done", text: "继续后的总结", reason: "completed" },
     ]);
     expect(client.calls).toHaveLength(2);
     expect(gatedTool).toHaveBeenCalledTimes(2);
@@ -1023,7 +1062,7 @@ describe("AgentSession loop", () => {
 
     expect(await collect(session.chat("continue"))).toEqual([
       { type: "text_delta", text: "done" },
-      { type: "done", text: "done" },
+      { type: "done", text: "done", reason: "completed" },
     ]);
   });
 
@@ -1041,7 +1080,7 @@ describe("AgentSession loop", () => {
 
       expect(await collect(firstSession.chat("记住这个目标"))).toEqual([
         { type: "text_delta", text: "第一轮完成" },
-        { type: "done", text: "第一轮完成" },
+        { type: "done", text: "第一轮完成", reason: "completed" },
       ]);
       expect(loadSessionState(summaryWorkspace, "summary-session").summary).toContain("持久化摘要");
 
@@ -1051,7 +1090,7 @@ describe("AgentSession loop", () => {
 
       expect(await collect(secondSession.chat("继续"))).toEqual([
         { type: "text_delta", text: "第二轮完成" },
-        { type: "done", text: "第二轮完成" },
+        { type: "done", text: "第二轮完成", reason: "completed" },
       ]);
       expect(secondClient.calls[0]).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -1088,7 +1127,7 @@ describe("AgentSession loop", () => {
 
       expect(await collect(session.chat("先缓存空摘要"))).toEqual([
         { type: "text_delta", text: "第一轮完成" },
-        { type: "done", text: "第一轮完成" },
+        { type: "done", text: "第一轮完成", reason: "completed" },
       ]);
 
       const cachedState = loadSessionState(summaryRefreshWorkspace, "summary-refresh-session");
@@ -1106,7 +1145,7 @@ describe("AgentSession loop", () => {
 
       expect(await collect(session.chat("继续"))).toEqual([
         { type: "text_delta", text: "第二轮完成" },
-        { type: "done", text: "第二轮完成" },
+        { type: "done", text: "第二轮完成", reason: "completed" },
       ]);
 
       expect(client.calls[1]).toEqual(expect.arrayContaining([
@@ -1157,7 +1196,7 @@ describe("AgentSession loop", () => {
 
       expect(await collect(session.chat("当前问题"))).toEqual([
         { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成" },
+        { type: "done", text: "完成", reason: "completed" },
       ]);
 
       expect(client.calls[0]).toEqual([
@@ -1250,7 +1289,7 @@ describe("AgentSession loop", () => {
 
       expect(await collect(session.chat("当前问题"))).toEqual([
         { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成" },
+        { type: "done", text: "完成", reason: "completed" },
       ]);
 
       expect(client.calls[0]).toEqual(expect.arrayContaining([
@@ -1324,7 +1363,7 @@ describe("AgentSession loop", () => {
 
       expect(await collect(session.chat("当前问题"))).toEqual([
         { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成" },
+        { type: "done", text: "完成", reason: "completed" },
       ]);
 
       expect(client.calls[0]).toEqual(expect.arrayContaining([
@@ -1351,14 +1390,15 @@ describe("AgentSession loop", () => {
     const compressWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
       sessionSummary: { enabled: false, recentTurns: 1 },
-      maxContextTokens: 100,
+      maxTokens: 1000,
+      maxContextTokens: 10_000,
       contextCompressionThreshold: 0.1,
       historyWindowSize: 10,
     });
     const compressManager = new PluginManager(compressWorkspace);
     try {
       await compressManager.loadCorePlugins();
-      const oldText = "旧历史内容".repeat(40);
+      const oldText = "旧历史内容".repeat(200);
       appendSessionMessage(compressWorkspace, "compress-session", { role: "user", content: `old user ${oldText}`, _timestamp: 1 });
       appendSessionMessage(compressWorkspace, "compress-session", { role: "assistant", content: [{ type: "text", text: `old assistant ${oldText}` }], _timestamp: 2 });
       appendSessionMessage(compressWorkspace, "compress-session", { role: "user", content: `older user ${oldText}`, _timestamp: 3 });
@@ -1370,15 +1410,17 @@ describe("AgentSession loop", () => {
       const session = new AgentSession("compress-session", compressWorkspace, compressManager, {}, client);
 
       expect(await collect(session.chat("current user raw"))).toEqual([
+        { type: "status", stage: "context_compression", state: "started", message: "正在压缩上下文…", beforeTokens: expect.any(Number) },
+        { type: "status", stage: "context_compression", state: "completed", message: "上下文压缩完成，正在调用模型…", beforeTokens: expect.any(Number), afterTokens: expect.any(Number) },
         { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成" },
+        { type: "done", text: "完成", reason: "completed" },
       ]);
 
       expect(client.completeCalls[0][0].content).toContain("不超过 5000 字");
       expect(client.calls[0]).toEqual([
         expect.objectContaining({
           role: "user",
-          content: expect.stringContaining("[以下是对话历史的摘要]"),
+          content: expect.stringContaining("[当前会话摘要]"),
         }),
         expect.objectContaining({ role: "user", content: "recent user raw" }),
         expect.objectContaining({
@@ -1397,7 +1439,8 @@ describe("AgentSession loop", () => {
     const compressLengthWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
       sessionSummary: { enabled: false, recentTurns: 1 },
-      maxContextTokens: 100,
+      maxTokens: 1000,
+      maxContextTokens: 10_000,
       contextCompressionThreshold: 0.1,
       contextCompressionMaxChars: 1200,
       historyWindowSize: 10,
@@ -1405,7 +1448,7 @@ describe("AgentSession loop", () => {
     const compressLengthManager = new PluginManager(compressLengthWorkspace);
     try {
       await compressLengthManager.loadCorePlugins();
-      const oldText = "旧历史内容".repeat(40);
+      const oldText = "旧历史内容".repeat(200);
       appendSessionMessage(compressLengthWorkspace, "compress-length-session", { role: "user", content: `old user ${oldText}`, _timestamp: 1 });
       appendSessionMessage(compressLengthWorkspace, "compress-length-session", { role: "assistant", content: [{ type: "text", text: `old assistant ${oldText}` }], _timestamp: 2 });
       appendSessionMessage(compressLengthWorkspace, "compress-length-session", { role: "user", content: `older user ${oldText}`, _timestamp: 3 });
@@ -1417,8 +1460,10 @@ describe("AgentSession loop", () => {
       const session = new AgentSession("compress-length-session", compressLengthWorkspace, compressLengthManager, {}, client);
 
       expect(await collect(session.chat("current user raw"))).toEqual([
+        { type: "status", stage: "context_compression", state: "started", message: "正在压缩上下文…", beforeTokens: expect.any(Number) },
+        { type: "status", stage: "context_compression", state: "completed", message: "上下文压缩完成，正在调用模型…", beforeTokens: expect.any(Number), afterTokens: expect.any(Number) },
         { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成" },
+        { type: "done", text: "完成", reason: "completed" },
       ]);
 
       expect(client.completeCalls[0][0].content).toContain("不超过 1200 字");
@@ -1432,7 +1477,8 @@ describe("AgentSession loop", () => {
     const summaryCompressWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
       sessionSummary: { enabled: true, persistent: true, turnThreshold: 100, recentTurns: 1 },
-      maxContextTokens: 10,
+      maxTokens: 1000,
+      maxContextTokens: 10_000,
       contextCompressionThreshold: 0.1,
       historyWindowSize: 10,
     });
@@ -1457,7 +1503,7 @@ describe("AgentSession loop", () => {
 
       expect(await collect(session.chat("current user raw"))).toEqual([
         { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成" },
+        { type: "done", text: "完成", reason: "completed" },
       ]);
 
       expect(client.completeCalls).toHaveLength(0);
@@ -1496,14 +1542,13 @@ describe("AgentSession loop", () => {
 
       expect(await collect(session.chat("继续"))).toEqual([
         { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成" },
+        { type: "done", text: "完成", reason: "completed" },
       ]);
 
       const syntheticSummaries = client.calls[0].filter((message) => typeof message.content === "string"
         && (message.content.startsWith("[当前会话摘要]") || message.content.startsWith("[以下是对话历史的摘要]")));
       expect(syntheticSummaries).toEqual([
         expect.objectContaining({ content: "[当前会话摘要]\n旧会话摘要" }),
-        expect.objectContaining({ content: "[以下是对话历史的摘要]\n最新历史摘要" }),
       ]);
       expect(client.calls[0]).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -1523,7 +1568,8 @@ describe("AgentSession loop", () => {
     const previousToolWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
       sessionSummary: { enabled: false },
-      maxContextTokens: 100,
+      maxTokens: 1000,
+      maxContextTokens: 10_000,
       contextCompressionThreshold: 0.1,
       historyWindowSize: 10,
     });
@@ -1559,7 +1605,7 @@ describe("AgentSession loop", () => {
 
       expect(await collect(session.chat("新一轮问题"))).toEqual([
         { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成" },
+        { type: "done", text: "完成", reason: "completed" },
       ]);
 
       expect(client.completeCalls).toHaveLength(0);
@@ -1594,6 +1640,7 @@ describe("AgentSession loop", () => {
       autoMemory: { enabled: false },
       sessionSummary: { enabled: false },
       maxContextTokens: 20_000,
+      maxTokens: 1000,
       contextCompressionThreshold: 0.5,
       toolResultInitialMaxChars: 4000,
       historyWindowSize: 10,
@@ -1618,7 +1665,7 @@ describe("AgentSession loop", () => {
         { type: "tool_call", toolCallId: "search-1", name: "large_result", input: {} },
         { type: "tool_result", toolCallId: "search-1", name: "large_result", result: "超大搜索结果".repeat(20_000) },
         { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成" },
+        { type: "done", text: "完成", reason: "completed" },
       ]);
 
       const toolResultMessage = client.calls[1].find((message) => Array.isArray(message.content)
@@ -1687,7 +1734,129 @@ describe("AgentSession loop", () => {
       { type: "text_delta", text: "partial" },
       { type: "tool_call", toolCallId: "call-1", name: "echo", input: {} },
       { type: "tool_result", toolCallId: "call-1", name: "echo", result: "ok" },
-      { type: "done", text: "partial" },
+      {
+        type: "text_delta",
+        text: "\n\n任务已停止：Agent 已达到最大迭代次数（1 次），当前任务可能尚未完成。你可以继续发送“继续”，或在设置中调整 maxAgentIterations。",
+      },
+      {
+        type: "done",
+        text: "partial\n\n任务已停止：Agent 已达到最大迭代次数（1 次），当前任务可能尚未完成。你可以继续发送“继续”，或在设置中调整 maxAgentIterations。",
+        reason: "iteration_limit",
+      },
     ]);
+    expect(session.getMessages().at(-1)).toEqual({
+      role: "assistant",
+      _turnId: expect.any(String),
+      content: [{
+        type: "text",
+        text: "任务已停止：Agent 已达到最大迭代次数（1 次），当前任务可能尚未完成。你可以继续发送“继续”，或在设置中调整 maxAgentIterations。",
+      }],
+      _timestamp: expect.any(Number),
+    });
+  });
+
+  it("carries an iteration-limited tool-heavy turn into the next model request", async () => {
+    const limitedWorkspace = createTempWorkspace({
+      autoMemory: { enabled: false },
+      sessionSummary: { enabled: true, persistent: true, turnThreshold: 100, recentTurns: 1 },
+      historyWindowSize: 1,
+      maxAgentIterations: 1,
+    });
+    const limitedManager = new PluginManager(limitedWorkspace);
+    try {
+      await limitedManager.loadCorePlugins();
+      registerTool(limitedManager, {
+        name: "echo",
+        description: "echo",
+        inputSchema: { type: "object", properties: {} },
+        execute: async () => "large tool output",
+      });
+      const client = new SummaryModelClient([
+        {
+          text: "正在处理原任务",
+          toolCalls: [{ type: "tool_use", id: "call-limit", name: "echo", input: {} }],
+        },
+        { text: "继续完成", toolCalls: [] },
+      ]);
+      const session = new AgentSession("limited-history", limitedWorkspace, limitedManager, {}, client);
+
+      await collect(session.chat("需要完整保留的原始任务"));
+      const state = loadSessionState(limitedWorkspace, "limited-history");
+      expect(state.pendingMessages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: "需要完整保留的原始任务" }),
+        expect.objectContaining({
+          role: "assistant",
+          content: [{ type: "text", text: "正在处理原任务" }],
+        }),
+        expect.objectContaining({
+          role: "assistant",
+          content: [expect.objectContaining({
+            type: "text",
+            text: expect.stringContaining("达到最大迭代次数"),
+          })],
+        }),
+      ]));
+
+      await collect(session.chat("继续"));
+      expect(client.calls[1]).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: "需要完整保留的原始任务" }),
+        expect.objectContaining({
+          role: "assistant",
+          content: [{ type: "text", text: "正在处理原任务" }],
+        }),
+        expect.objectContaining({ role: "user", content: "继续" }),
+      ]));
+      expect(client.calls[1]).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          content: expect.arrayContaining([expect.objectContaining({ type: "tool_result" })]),
+        }),
+      ]));
+    } finally {
+      await limitedManager.destroy();
+      removeTempWorkspace(limitedWorkspace);
+    }
+  });
+
+  it("applies project tool permissions to the actual tool execution", async () => {
+    const projectWorkspace = createTempWorkspace({
+      autoMemory: { enabled: false },
+      sessionSummary: { enabled: false },
+      security: { mode: "allow", tools: {} },
+      project: { security: { mode: "ask", tools: { file_write: { mode: "deny" } } } },
+    });
+    const projectManager = new PluginManager(projectWorkspace);
+    try {
+      await projectManager.loadCorePlugins();
+      const client = new FakeModelClient([
+        {
+          text: "准备写入",
+          toolCalls: [{ type: "tool_use", id: "write-1", name: "file_write", input: { path: "blocked.txt", content: "no" } }],
+        },
+        { text: "写入被拒绝", toolCalls: [] },
+      ]);
+      const context = { mode: "project" as const, project: { root: projectWorkspace, name: "project" } };
+      const session = new AgentSession("project-permission", projectWorkspace, projectManager, {}, client, context);
+
+      await collect(session.chat("写一个文件"));
+
+      expect(existsSync(resolve(projectWorkspace, "blocked.txt"))).toBe(false);
+      expect(client.calls[1].messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: "tool_result",
+              content: expect.stringContaining("file_write 执行已禁用"),
+            }),
+          ]),
+        }),
+      ]));
+      expect(client.calls[0].messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: "写一个文件" }),
+      ]));
+    } finally {
+      await projectManager.destroy();
+      removeTempWorkspace(projectWorkspace);
+    }
   });
 });

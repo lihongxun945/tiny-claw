@@ -51,6 +51,7 @@ src/
 │   │   ├── history.ts # 会话历史插件（用户消息进入 MessageHistory）
 │   │   ├── session-summary.ts # 会话滚动摘要插件（摘要 + 最近几轮原文）
 │   │   ├── auto-memory.ts # 自动记忆插件（每 10 轮批量整理长期记忆）
+│   │   ├── plan.ts # 计划执行模式（工具、状态机、恢复 API）
 │   │   ├── attachments.ts # 图片上传路由与 session 附件存储
 │   │   ├── compress.ts # 上下文压缩插件（阈值判断+模型摘要）
 │   │   └── logger.ts # 日志插件（通过钩子记录所有事件）
@@ -66,6 +67,10 @@ src/
 │   ├── file_read.ts  # 文件读取
 │   ├── file_write.ts # 文件写入
 │   ├── file_edit.ts  # 文件精确替换
+│   ├── project-tree.ts # 项目目录树（异步、边界与数量限制）
+│   ├── project-search.ts # 项目结构化搜索（ripgrep）
+│   ├── project-git.ts # 项目 Git 状态与 Diff 工具
+│   ├── plan.ts       # 计划创建与步骤状态更新工具
 │   ├── memory.ts     # 持久化记忆（读写 memory/*.md）
 │   ├── skill.ts      # 技能系统（加载/激活 skills/*.md）
 │   └── sub_agent.ts  # sub_agent_run 工具定义
@@ -86,7 +91,7 @@ desktop/                # Electron macOS 桌面壳
 
 ## 桌面应用
 
-macOS 桌面版使用 Electron 承载现有 Web UI，不改变 Agent Loop 和插件边界。Electron 主进程创建窗口后先加载内置浅色启动页，展示应用 Logo 和服务启动状态；同时启动独立 Gateway 子进程，Gateway 就绪后在同一窗口切换到本机随机端口上的 Web UI。窗口不直接开放 Node.js 能力。桌面主进程创建系统菜单栏图标，关闭主窗口时只隐藏窗口并保持 Gateway 常驻；点击菜单栏图标、Dock 图标或再次启动应用会恢复并聚焦现有窗口。只有通过菜单栏“退出 tiny-claw”、`Command+Q` 等显式退出应用时，主进程才向 Gateway 发送 `SIGTERM`，等待其销毁插件并关闭 HTTP 服务。
+macOS 桌面版使用 Electron 承载现有 Web UI，不改变 Agent Loop 和插件边界。Electron 主进程创建窗口后先加载内置浅色启动页，展示应用 Logo 和服务启动状态；同时启动独立 Gateway 子进程，Gateway 就绪后在同一窗口切换到本机随机端口上的 Web UI。窗口不直接开放 Node.js 能力。受 sandbox 和 context isolation 保护的 preload 只暴露 `selectProjectDirectory()`，通过固定 IPC 请求调用系统目录选择器；主进程仅接受当前主窗口的请求。浏览器版没有该桥接能力，继续使用手动路径输入。桌面主进程创建系统菜单栏图标，关闭主窗口时只隐藏窗口并保持 Gateway 常驻；点击菜单栏图标、Dock 图标或再次启动应用会恢复并聚焦现有窗口。只有通过菜单栏“退出 tiny-claw”、`Command+Q` 等显式退出应用时，主进程才向 Gateway 发送 `SIGTERM`，等待其销毁插件并关闭 HTTP 服务。
 
 桌面版 workspace 默认位于 `~/Library/Application Support/tiny-claw/workspace`。首次启动由统一配置初始化器生成不含真实密钥的完整默认配置，应用升级和重新安装不会覆盖已有配置、会话、记忆、技能及插件。开发模式和 CLI/Gateway 模式仍使用原有 `./workspace` 或显式指定的目录。
 
@@ -109,10 +114,37 @@ workspace/
 │       ├── messages.jsonl
 │       ├── meta.json
 │       ├── state.json
+│       ├── plans/          # 按对话轮次持久化的结构化任务计划与步骤进度
 │       └── attachments/   # 图片文件及附件元数据
 └── logs/              # 执行日志，[时间] [级别] 消息，每日轮转
     └── 2026-05-19.log
 ```
+
+## 项目开发模式
+
+项目开发模式建立在持久化的 `SessionContext` 上。普通会话使用 `{ mode: "chat" }`；项目会话在创建时绑定规范化后的项目真实路径，并把 `{ mode: "project", project: { root, name } }` 写入 `sessions/<session>/meta.json`。绑定创建后不可修改，后续 `/chat` 只接收 `session_id`，不会从请求中临时切换项目。
+
+`core-project` 插件负责 `/projects/inspect`、`/projects/status`、`/projects/diff` 路由和项目提示词注入。静态项目检查只识别技术栈与规则文件，并按文件签名缓存；动态 Git 状态与 diff 通过异步子进程按需读取，不阻塞 Gateway 事件循环，也不重复注入模型上下文。Git 参数使用数组传递而不拼接 shell 字符串，超时和 diff 最大字符数由 `project.gitTimeoutMs`、`project.diffMaxChars` 控制。读取 `.tiny-claw/rules.md` 和根目录 `AGENTS.md` 时应用单文件与总字符上限。Gateway 只维护一个 `PluginManager`，项目根目录和有效配置通过 session 运行时上下文传递给插件及工具。
+
+`core-project-tools` 插件注册 `project_tree`、`project_search`、`git_status`、`git_diff` 四个只读开发工具。工具注册支持基于 `SessionContext` 的可用性过滤，因此普通会话不会把项目工具定义发送给模型。目录树使用异步文件系统 API，并跳过依赖、版本库和常见构建目录；项目搜索使用 `rg --json` 解析结构化结果，达到结果数、字符数或超时上限时主动终止子进程。四个工具都强制使用项目根目录和符号链接边界校验，并继承统一权限审批与审计日志。
+
+WebUI 打开项目时使用前端互斥锁和 loading 状态阻止重复提交，并用 `project.openTimeoutMs` 控制检查与会话创建总时限。Gateway 的 `reuseEmpty` 语义会复用同一项目最近的空闲空会话，作为重复请求的第二层保护。项目栏展示分支、工作区状态和变更文件，任务完成后自动刷新；diff 仅在用户选择文件时按需加载。
+
+项目会话的有效配置在创建 `AgentSession` 时由全局配置和 `project` 段合并：项目工具配置覆盖项目模式，项目模式覆盖全局配置；未显式配置时项目危险操作默认 `ask`。工具执行时从 `ToolExecutionContext` 获取有效配置，禁止自行重新加载未合并的全局权限。项目模式下 bash 和文件工具的相对路径基于项目根目录，绝对路径、`..` 和符号链接均不能越过项目边界；sub-agent 继承父会话的项目上下文。
+
+WebUI 先调用 `/projects/inspect` 检查目录，选择成功后立即通过 `POST /sessions` 创建项目会话，不等待用户发送第一条消息。应用启动时读取持久化 Session 列表，分别恢复普通对话和项目模式最后使用的 Session；切换视图时恢复各自状态。右侧功能页面由 `view` 控制，左侧普通会话/项目列表由独立的 `sidebarMode` 控制，因此从项目进入记忆、日志或设置时仍保留项目列表。项目侧栏按 `SessionContext.project.root` 分组：项目行显示持久化目录名并提供项目级新对话和删除按钮，下面缩进显示该项目的会话预览；顶部“新建项目”单独进入目录选择流程。项目不是独立持久化实体，删除项目会复用 Session 删除接口清理该目录关联的全部会话及会话数据，但不会删除用户选择的本地项目目录或其中的文件。
+
+## 计划执行模式
+
+计划模式在执行层仍是每轮请求的临时 `ExecutionMode`，不修改 Session 的普通/项目上下文绑定；用户选择则作为 `meta.json` 中可变的 `preferences.executionMode` 持久化。WebUI 切换模式时立即更新 Session 偏好，发送 `POST /chat` 时再次携带并兜底保存；刷新、切换会话和 Gateway 重启后从 Session 元数据恢复各自选择。AgentSession 在本轮开始时把模式注册到 PluginManager，审批暂停时将模式写入待恢复状态，恢复执行后继续沿用，最终在本轮结束时清理。工具注册支持同时按 `SessionContext` 和 `ExecutionMode` 过滤，因此 `plan_create`、`plan_update` 只在计划模式下发送给模型。
+
+`core-plan` 插件通过 `onBuildTurnPrompt` 注入不进入历史记录的本轮计划规则，并负责计划工具、状态机及 `GET /plan?session_id=...` 恢复接口。每轮消息生成独立 `turnId`，消息和 Hook 只把该标识作为内部元数据使用，调用模型前会将其剥离。计划原子写入 `sessions/<session>/plans/<turnId>.json`，步骤状态为 pending、in_progress、completed、failed、skipped、waiting_approval；同一时间只能有一个执行中步骤且必须按顺序推进。需要审批时插件把当前步骤切换到 waiting_approval，恢复工具执行前切回 in_progress；迭代上限和执行错误会明确标记当前步骤失败。
+
+模型输出无工具调用的最终回复时，如果当前步骤是唯一未结束的执行中步骤，插件会通过计划状态机自动将其标记为 completed，避免模型遗漏最后一次 `plan_update` 而把已经完成的任务误判为失败。只要仍有其他 pending 或执行中步骤，就不会自动收尾，仍按计划提前结束处理。
+
+WebUI 收到计划工具结果或终止事件后重新读取持久化计划，避免解析模型自然语言或依赖单条 SSE 连接。执行中或等待审批的计划显示在输入框上方；完成或失败后，历史消息接口按 `turnId` 将计划挂到对应轮次的最终助手消息下。切换 Session、刷新页面和 Gateway 重启后均能恢复每轮计划，后续对话不会覆盖或全局展示旧计划。
+
+WebUI 以单条助手消息作为工具调用的展示边界。同一轮出现多个工具调用时聚合为一个可展开面板，完成后显示成功和失败数量并默认折叠，展开后的列表限制高度并独立滚动。仍在执行的调用默认展开；只要存在待审批调用，聚合面板就强制展开且不能折叠，确保审批入口持续可见。单个工具调用继续使用原有工具卡片，不增加额外层级。
 
 ### config.json
 
@@ -133,14 +165,16 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 | maxTokens | 单次响应最大 token | 16384 |
 | maxContextTokens | 上下文最大 token 估计 | 128000 |
 | contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
+| contextCompressionMaxOutputTokens | 压缩摘要模型输出 token 上限 | 2048 |
 | historyWindowSize | 历史窗口（轮） | 5 |
-| maxAgentIterations | Agent Loop 最大迭代次数，显式配置 0 表示不限 | 20 |
+| maxAgentIterations | Agent Loop 最大迭代次数；达到上限时明确提示，显式配置 0 表示不限 | 100 |
 | sessionSummary | 会话滚动摘要配置 | enabled=true, persistent=true, turnThreshold=5, recentTurns=3 |
 | autoMemory | 自动记忆配置 | enabled=true, turnThreshold=10 |
 | memory | 长期记忆容量限制 | maxItemChars=20000, maxTotalChars=80000 |
 | attachments | 图片附件配置 | enabled=true, 每条最多 4 张、单张 10 MB |
 | debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
 | security | 基础安全边界：bash 策略、Gateway host/token、工具审计 | 见下文 |
+| project | 项目会话权限、历史窗口与迭代上限 | security.mode=ask, historyWindowSize=8, maxAgentIterations=100 |
 | searchProvider | 搜索引擎 (ollama/searxng/brave/duckduckgo) | ollama |
 | ollamaApiKey | Ollama Web Search API key | - |
 | searxngUrl | SearXNG 实例地址 | - |
@@ -396,21 +430,24 @@ OpenAI Chat 兼容实现会将内部消息格式转换为 `system/user/assistant
 
 ### SSE 连接稳定性
 
-Gateway 在聊天和审批续跑的 SSE 响应空闲期间发送注释心跳，间隔由 `security.gateway.sseHeartbeatIntervalMs` 配置，默认 15000 毫秒。心跳只维持连接，不进入 Agent 事件流。Web UI 以 `done.text` 作为最终回答的权威内容；如果流在 `done` / `error` 前意外关闭，会重新读取当前 session 的持久化历史，仅在确认当前用户消息之后已有 assistant 结果时恢复界面。
+Gateway 在聊天和审批续跑的 SSE 响应空闲期间发送注释心跳，间隔由 `security.gateway.sseHeartbeatIntervalMs` 配置，默认 15000 毫秒。心跳只维持连接，不进入 Agent 事件流。插件可以在耗时 Hook 中通过 `ModelCallContext.reportStatus()` 产生临时 `status` 事件；WebUI 只在当前处理状态中展示，收到正文、工具调用或终止事件后清除，不写入会话历史。Web UI 以 `done.text` 作为最终回答的权威内容；`done.reason` 区分正常完成、等待审批和达到迭代上限。达到上限时 Agent 会先输出明确停止提示，再发送 `iteration_limit` 完成事件。如果流在 `done` / `error` 前意外关闭，会重新读取当前 session 的持久化历史，仅在确认当前用户消息之后已有 assistant 结果时恢复界面。
 
 ### 消息历史：滑动窗口
 
-`historyWindowSize` 按"轮"计算（1轮 = 1 user + 1 assistant），截取时保证第一条是 user 消息，满足 API 交替约束。默认 5 轮。
+`historyWindowSize` 按用户轮次计算。进入新一轮前先移除旧轮次的 `tool_use` / `tool_result`，再从后向前保留最近 N 条用户消息及其后续可读助手文本；工具密集型任务不会因为中间工具消息过多而挤掉原始用户问题。当前轮工具链不参与裁剪。默认 5 轮。
 
 ### 上下文压缩（插件化）
 
-上下文压缩逻辑已迁移到 `plugins/core/compress.ts` 插件中，通过 `onBeforeModelCall` 钩子实现。当对话历史 token 估计超过 `maxContextTokens * contextCompressionThreshold` 时触发压缩：
+上下文压缩逻辑位于 `plugins/core/compress.ts`，通过结构化的 `onBeforeModelCall` 上下文执行。Agent 先从模型上下文窗口中扣除系统提示词、工具定义和最大输出空间，再取 `contextCompressionThreshold` 与硬输入上限中的较小值作为消息预算：
 
-1. **优先压缩历史对话**：markTurnStart 之前的多条消息用模型摘要为一条 `[对话历史摘要]` 用户消息
-2. **回退压缩当前轮早期**：历史不足时，压缩当前 Agent Loop 早期消息，保留最后 4 条
-3. **压缩失败兜底**：API 调用失败时简单截断，保留最后 2 条
+1. **只压缩历史轮次**：`turnStartIndex` 之前尚未进入摘要的消息用于增量更新唯一的 `[当前会话摘要]`；当前用户轮次及其中完整工具链不参与摘要或任意切分。
+2. **摘要和游标持久化**：摘要正文与 `summaryThroughTimestamp` 原子写入 `sessions/<session>/state.json`，刷新、切换会话或 Gateway 重启后继续增量压缩，不重复摘要已覆盖消息。
+3. **近期原文按完整用户轮次保留**：压缩后从配置的 `sessionSummary.recentTurns` 开始逐轮缩减，直到满足预算；不会从轮次中间截断消息。
+4. **工具结果受控截断**：仅缩短 `tool_result.content`，保留 `tool_use` / `tool_result` 协议结构；最终调用模型前再次校验工具消息链。
+5. **失败显式终止**：压缩模型失败时保留原始合法上下文，不静默丢弃历史；若仍超预算，Agent 返回明确错误而不调用主模型。
+6. **过程状态可见**：真正调用摘要模型时依次上报压缩开始和完成/失败状态，并附带压缩前后的 token 估算；这些状态只进入实时事件流。
 
-token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），不追求精确，只用于判断是否接近上下文上限。压缩使用 `client.complete()` 非流式调用，max_tokens=1024，避免流式开销。
+token 估算采用统一粗略规则，只用于预算保护。压缩使用 `client.complete()` 非流式调用，摘要字符硬上限由 `contextCompressionMaxChars` 控制，模型输出 token 上限由 `contextCompressionMaxOutputTokens` 控制。
 
 ### 会话滚动摘要
 
@@ -419,7 +456,8 @@ token 估算采用粗略规则（CJK 1.5 token/字，ASCII 0.25 token/字），�
 1. `onBeforeModelCall`：移除旧摘要消息；如果已有摘要，优先保留上次摘要后尚未沉淀的增量消息和当前轮消息，并将摘要合并进下一条 user 消息前部。没有未沉淀增量时，回退保留最近 `recentTurns` 轮原文。
 2. 摘要尚未生成时，不会因为 `recentTurns` 提前裁掉历史，仍由 `historyWindowSize` 控制底层历史窗口。
 3. `onChatResponse`：当模型给出最终回复（没有 tool_calls）后，累计本轮增量消息；达到 `turnThreshold` 后调用 `client.complete()`，用“已有摘要 + 累计增量上下文”更新会话摘要。
-4. `sub:` 开头的临时 sub-agent 会话跳过摘要，避免额外模型调用。
+4. `onTurnEnd`：Agent 因迭代上限停止时，把本轮原始用户问题、可读助手进度和停止提示写入待摘要状态，不保存工具调用与工具结果；审批暂停不计为完整轮次。
+5. `sub:` 开头的临时 sub-agent 会话跳过摘要，避免额外模型调用。
 
 默认配置：
 
@@ -735,6 +773,7 @@ interface Plugin {
 | `onBeforeTool` | 工具执行前 | 日志、阻断 |
 | `onAfterTool` | 工具执行后 | 日志、结果修改 |
 | `onAfterIteration` | 每次 Agent 迭代完成 | 状态更新 |
+| `onTurnEnd` | Agent 本轮完成、等待审批或达到迭代上限 | 轮次收尾与未完成任务状态持久化 |
 | `onError` | 发生错误 | 错误日志 |
 | `onModelDebug` | 模型适配器产生调试事件 | 持久化请求、响应、错误与修复过程 |
 

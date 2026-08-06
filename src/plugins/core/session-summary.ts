@@ -214,6 +214,7 @@ export const coreSessionSummaryPlugin: Plugin = {
       return {
         sessionId: state.sessionId,
         summary: state.summary,
+        summaryThroughTimestamp: state.summaryThroughTimestamp,
         pendingMessages: state.pendingMessages,
         turnsSinceSummary: state.turnsSinceSummary,
         updatedAt: state.updatedAt,
@@ -227,6 +228,7 @@ export const coreSessionSummaryPlugin: Plugin = {
       if (loadedTime < currentTime) return false;
       return loaded.summary !== current.summary
         || loaded.turnsSinceSummary !== current.turnsSinceSummary
+        || loaded.summaryThroughTimestamp !== current.summaryThroughTimestamp
         || JSON.stringify(loaded.pendingMessages) !== JSON.stringify(current.pendingMessages);
     }
 
@@ -257,6 +259,7 @@ export const coreSessionSummaryPlugin: Plugin = {
         next.updatedAt = updateSessionState(ctx.workspacePath, state.sessionId, (latest) => ({
           sessionId: state.sessionId,
           summary: state.summary,
+          summaryThroughTimestamp: state.summaryThroughTimestamp,
           pendingMessages: state.pendingMessages,
           turnsSinceSummary: state.turnsSinceSummary,
           autoMemory: latest.autoMemory,
@@ -265,9 +268,55 @@ export const coreSessionSummaryPlugin: Plugin = {
       states.set(hookCtx.sessionId, next);
     }
 
+    async function recordCompletedTurn(
+      hookCtx: HookContext,
+      messages: Message[],
+    ): Promise<void> {
+      const state = getState(hookCtx);
+      state.pendingMessages.push(...messages);
+      state.turnsSinceSummary += 1;
+      putState(hookCtx, state);
+
+      if (state.turnsSinceSummary < getTurnThreshold(hookCtx)) return;
+
+      const text = state.pendingMessages.map(messageToText).join("\n");
+      const existingSummary = state.summary || "暂无";
+      const prompt = `${UPDATE_SUMMARY_PROMPT}
+
+已有会话摘要：
+${existingSummary}
+
+本次新增上下文：
+${truncateText(text, getMaxInputChars(hookCtx))}`;
+
+      try {
+        const summary = await hookCtx.client.complete(
+          [{ role: "user", content: prompt }],
+          "你是会话状态摘要器。只输出新的会话摘要，不要输出解释。",
+          { maxTokens: getSummaryMaxTokens(hookCtx) },
+        );
+        state.summary = truncateText(summary.trim(), getMaxChars(hookCtx));
+        state.summaryThroughTimestamp = Math.max(
+          state.summaryThroughTimestamp ?? 0,
+          ...state.pendingMessages
+            .map((message) => message._timestamp)
+            .filter((timestamp): timestamp is number => typeof timestamp === "number"),
+        );
+        state.pendingMessages = [];
+        state.turnsSinceSummary = 0;
+        putState(hookCtx, state);
+      } catch {
+        // 摘要失败不应影响主回答；退避重试间隔（保留 pendingMessages），避免每轮重复请求。
+        state.turnsSinceSummary = Math.max(1, Math.floor(state.turnsSinceSummary / 2));
+        putState(hookCtx, state);
+      }
+    }
+
     ctx.registerHooks({
-      onBeforeModelCall: (hookCtx: HookContext, messages: Message[]) => {
-        if (!isEnabled(hookCtx) || isSubAgentSession(hookCtx.sessionId)) return messages;
+      onBeforeModelCall: (hookCtx: HookContext, modelContext) => {
+        if (!isEnabled(hookCtx) || isSubAgentSession(hookCtx.sessionId)) return modelContext;
+
+        const messages = modelContext.messages;
 
         const stripped = stripSummaryMessages(messages, hookCtx.turnStartIndex);
         const previousMessages = stripped.messages.slice(0, stripped.turnStartIndex);
@@ -275,7 +324,9 @@ export const coreSessionSummaryPlugin: Plugin = {
         const state = getState(hookCtx);
 
         if (!state.summary) {
-          return stripped.messages.length === messages.length ? messages : stripped.messages;
+          return stripped.messages.length === messages.length
+            ? modelContext
+            : { ...modelContext, messages: stripped.messages, turnStartIndex: stripped.turnStartIndex };
         }
 
         const recentTurns = getRecentTurns(hookCtx);
@@ -291,54 +342,33 @@ export const coreSessionSummaryPlugin: Plugin = {
 
         const cleanContext = [...recentPrevious, ...currentMessages];
 
-        return withSummaryMessage(state.summary, cleanContext);
+        const summarizedMessages = withSummaryMessage(state.summary, cleanContext);
+        return {
+          ...modelContext,
+          messages: summarizedMessages,
+          turnStartIndex: summarizedMessages.length - currentMessages.length,
+        };
       },
 
       onChatResponse: async (hookCtx: HookContext, response: ChatResponse) => {
         if (!isEnabled(hookCtx) || isSubAgentSession(hookCtx.sessionId)) return response;
         if (response.toolCalls.length > 0) return response;
 
-        const state = getState(hookCtx);
         const currentTurnMessages = stripSummaryMessages(
           hookCtx.history.getCurrentTurnMessages(),
           0,
         ).messages;
-        state.pendingMessages.push(...currentTurnMessages, responseToMessage(response));
-        state.turnsSinceSummary += 1;
-        putState(hookCtx, state);
-
-        if (state.turnsSinceSummary < getTurnThreshold(hookCtx)) {
-          return response;
-        }
-
-        const newMessages = [...state.pendingMessages];
-        const text = newMessages.map(messageToText).join("\n");
-        const existingSummary = state.summary || "暂无";
-        const prompt = `${UPDATE_SUMMARY_PROMPT}
-
-已有会话摘要：
-${existingSummary}
-
-本次新增上下文：
-${truncateText(text, getMaxInputChars(hookCtx))}`;
-
-        try {
-          const summary = await hookCtx.client.complete(
-            [{ role: "user", content: prompt }],
-            "你是会话状态摘要器。只输出新的会话摘要，不要输出解释。",
-            { maxTokens: getSummaryMaxTokens(hookCtx) },
-          );
-          state.summary = truncateText(summary.trim(), getMaxChars(hookCtx));
-          state.pendingMessages = [];
-          state.turnsSinceSummary = 0;
-          putState(hookCtx, state);
-        } catch {
-          // 摘要失败不应影响主回答；退避重试间隔（保留 pendingMessages），避免每轮重复请求。
-          state.turnsSinceSummary = Math.max(1, Math.floor(state.turnsSinceSummary / 2));
-          putState(hookCtx, state);
-        }
+        await recordCompletedTurn(hookCtx, [...currentTurnMessages, responseToMessage(response)]);
 
         return response;
+      },
+
+      onTurnEnd: async (hookCtx, reason) => {
+        if (reason !== "iteration_limit" || !isEnabled(hookCtx) || isSubAgentSession(hookCtx.sessionId)) return;
+        const currentTurnMessages = stripToolMessagesForNewTurn(
+          stripSummaryMessages(hookCtx.history.getCurrentTurnMessages(), 0).messages,
+        );
+        await recordCompletedTurn(hookCtx, currentTurnMessages);
       },
     });
   },

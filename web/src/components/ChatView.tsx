@@ -1,11 +1,13 @@
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import type { Message, ToolCallInfo } from "../types.js";
 import MessageBubble from "./MessageBubble.js";
+import PlanProgress from "./PlanProgress.js";
 import { mergeApprovalResume } from "../lib/message-merge.js";
 
 interface Props {
   messages: Message[];
   streamingText: string;
+  streamingStatus: string;
   streamingToolCalls: ToolCallInfo[];
   streamingApprovalId?: string;
   isStreaming: boolean;
@@ -19,6 +21,7 @@ interface Props {
 export default function ChatView({
   messages,
   streamingText,
+  streamingStatus,
   streamingToolCalls,
   streamingApprovalId,
   isStreaming,
@@ -61,12 +64,14 @@ export default function ChatView({
           </div>
         )}
         {displayedMessages.map((msg, i) => (
-          <MessageBubble
-            key={i}
-            message={msg}
-            onApproveAndResume={onApproveAndResume}
-            onApproveTurnAndResume={onApproveTurnAndResume}
-          />
+          <Fragment key={`${msg.turnId ?? "message"}-${i}`}>
+            <MessageBubble
+              message={msg}
+              onApproveAndResume={onApproveAndResume}
+              onApproveTurnAndResume={onApproveTurnAndResume}
+            />
+            {msg.role === "assistant" && msg.plan && <PlanProgress plan={msg.plan} />}
+          </Fragment>
         ))}
         {isStreaming && !streamingApprovalId && (
           streamingText || streamingToolCalls.length > 0 ? (
@@ -84,7 +89,7 @@ export default function ChatView({
           ) : (
             <div className="message assistant">
               <div className="message-content processing-indicator" aria-live="polite">
-                <span>正在处理</span>
+                <span>{streamingStatus || "正在处理"}</span>
                 <span className="processing-dots" aria-hidden="true">
                   <span />
                   <span />

@@ -10,9 +10,10 @@ const DEFAULTS: Partial<Config> = {
   contextCompressionThreshold: 0.7,
   contextCompressionMaxChars: 5000,
   contextCompressionToolResultMaxChars: 500,
+  contextCompressionMaxOutputTokens: 2048,
   toolResultInitialMaxChars: 12_000,
   historyWindowSize: 5,
-  maxAgentIterations: 20,
+  maxAgentIterations: 100,
   searchProvider: "ollama",
 };
 
@@ -33,6 +34,7 @@ export function createDefaultConfig(): Record<string, unknown> {
     contextCompressionThreshold: DEFAULTS.contextCompressionThreshold,
     contextCompressionMaxChars: DEFAULTS.contextCompressionMaxChars,
     contextCompressionToolResultMaxChars: DEFAULTS.contextCompressionToolResultMaxChars,
+    contextCompressionMaxOutputTokens: DEFAULTS.contextCompressionMaxOutputTokens,
     toolResultInitialMaxChars: DEFAULTS.toolResultInitialMaxChars,
     historyWindowSize: DEFAULTS.historyWindowSize,
     maxAgentIterations: DEFAULTS.maxAgentIterations,
@@ -77,6 +79,35 @@ export function createDefaultConfig(): Record<string, unknown> {
         sseHeartbeatIntervalMs: 15000,
       },
       auditTools: true,
+    },
+    project: {
+      security: {
+        mode: "ask",
+        tools: {
+          file_read: { mode: "allow" },
+          file_write: { mode: "ask" },
+          file_edit: { mode: "ask" },
+          bash: { mode: "ask" },
+          project_tree: { mode: "allow" },
+          project_search: { mode: "allow" },
+          git_status: { mode: "allow" },
+          git_diff: { mode: "allow" },
+        },
+      },
+      historyWindowSize: 8,
+      maxAgentIterations: 100,
+      gitTimeoutMs: 10000,
+      diffMaxChars: 200000,
+      openTimeoutMs: 30000,
+      treeMaxDepth: 4,
+      treeMaxEntries: 2000,
+      searchMaxResults: 200,
+      searchMaxChars: 50000,
+      searchTimeoutMs: 10000,
+    },
+    plan: {
+      enabled: true,
+      maxSteps: 8,
     },
     searchProvider: "duckduckgo",
     ollamaApiKey: "",
@@ -168,6 +199,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
   assertNumber(raw.contextCompressionThreshold ?? DEFAULTS.contextCompressionThreshold, "contextCompressionThreshold", { min: 0.1, max: 1 });
   assertNumber(raw.contextCompressionMaxChars ?? DEFAULTS.contextCompressionMaxChars, "contextCompressionMaxChars", { min: 100, max: 1_000_000, integer: true });
   assertNumber(raw.contextCompressionToolResultMaxChars ?? DEFAULTS.contextCompressionToolResultMaxChars, "contextCompressionToolResultMaxChars", { min: 100, max: 1_000_000, integer: true });
+  assertNumber(raw.contextCompressionMaxOutputTokens ?? DEFAULTS.contextCompressionMaxOutputTokens, "contextCompressionMaxOutputTokens", { min: 256, max: 1_000_000, integer: true });
   assertNumber(raw.toolResultInitialMaxChars ?? DEFAULTS.toolResultInitialMaxChars, "toolResultInitialMaxChars", { min: 1000, max: 10_000_000, integer: true });
   assertNumber(raw.historyWindowSize ?? DEFAULTS.historyWindowSize, "historyWindowSize", { min: 0, max: 10_000, integer: true });
   assertNumber(raw.maxAgentIterations ?? DEFAULTS.maxAgentIterations, "maxAgentIterations", { min: 0, max: 1_000, integer: true });
@@ -284,6 +316,45 @@ export function validateConfig(raw: Record<string, unknown>): void {
     throw new Error("Gateway 暴露到非回环地址时必须配置 security.gateway.token");
   }
   assertOptionalBoolean(security?.auditTools, "security.auditTools");
+
+  if (raw.project !== undefined) {
+    assertObject(raw.project, "project");
+    const project = raw.project as Record<string, unknown>;
+    if (project.security !== undefined) {
+      assertObject(project.security, "project.security");
+      const projectSecurity = project.security as Record<string, unknown>;
+      if (projectSecurity.mode !== undefined && !["deny", "ask", "allow"].includes(String(projectSecurity.mode))) {
+        throw new Error("配置字段 project.security.mode 不受支持");
+      }
+      if (projectSecurity.tools !== undefined) {
+        assertObject(projectSecurity.tools, "project.security.tools");
+        for (const [toolName, toolConfig] of Object.entries(projectSecurity.tools)) {
+          assertObject(toolConfig, `project.security.tools.${toolName}`);
+        const toolSecurity = toolConfig as { mode?: unknown };
+        const mode = toolSecurity.mode;
+        if (mode !== undefined && (typeof mode !== "string" || !["deny", "ask", "allow"].includes(mode))) {
+            throw new Error(`配置字段 project.security.tools.${toolName}.mode 不受支持`);
+          }
+        }
+      }
+    }
+    assertOptionalNumber(project.historyWindowSize, "project.historyWindowSize", { min: 0, max: 10_000, integer: true });
+    assertOptionalNumber(project.maxAgentIterations, "project.maxAgentIterations", { min: 0, max: 1_000, integer: true });
+    assertOptionalNumber(project.gitTimeoutMs, "project.gitTimeoutMs", { min: 1000, max: 120_000, integer: true });
+    assertOptionalNumber(project.diffMaxChars, "project.diffMaxChars", { min: 1000, max: 5_000_000, integer: true });
+    assertOptionalNumber(project.openTimeoutMs, "project.openTimeoutMs", { min: 1000, max: 120_000, integer: true });
+    assertOptionalNumber(project.treeMaxDepth, "project.treeMaxDepth", { min: 1, max: 20, integer: true });
+    assertOptionalNumber(project.treeMaxEntries, "project.treeMaxEntries", { min: 10, max: 100_000, integer: true });
+    assertOptionalNumber(project.searchMaxResults, "project.searchMaxResults", { min: 1, max: 10_000, integer: true });
+    assertOptionalNumber(project.searchMaxChars, "project.searchMaxChars", { min: 1000, max: 5_000_000, integer: true });
+    assertOptionalNumber(project.searchTimeoutMs, "project.searchTimeoutMs", { min: 1000, max: 120_000, integer: true });
+  }
+  if (raw.plan !== undefined) {
+    assertObject(raw.plan, "plan");
+    const plan = raw.plan as Record<string, unknown>;
+    assertOptionalBoolean(plan.enabled, "plan.enabled");
+    assertOptionalNumber(plan.maxSteps, "plan.maxSteps", { min: 2, max: 50, integer: true });
+  }
 }
 
 export function loadConfig(workspacePath: string): Config {
@@ -317,6 +388,7 @@ export function loadConfig(workspacePath: string): Config {
     contextCompressionThreshold: (raw.contextCompressionThreshold as number) ?? DEFAULTS.contextCompressionThreshold!,
     contextCompressionMaxChars: (raw.contextCompressionMaxChars as number) ?? DEFAULTS.contextCompressionMaxChars!,
     contextCompressionToolResultMaxChars: (raw.contextCompressionToolResultMaxChars as number) ?? DEFAULTS.contextCompressionToolResultMaxChars!,
+    contextCompressionMaxOutputTokens: (raw.contextCompressionMaxOutputTokens as number) ?? DEFAULTS.contextCompressionMaxOutputTokens!,
     toolResultInitialMaxChars: (raw.toolResultInitialMaxChars as number) ?? DEFAULTS.toolResultInitialMaxChars!,
     historyWindowSize: (raw.historyWindowSize as number) ?? DEFAULTS.historyWindowSize!,
     maxAgentIterations: (raw.maxAgentIterations as number) ?? DEFAULTS.maxAgentIterations!,
@@ -334,6 +406,8 @@ export function loadConfig(workspacePath: string): Config {
     attachments: raw.attachments as Config["attachments"] | undefined,
     debug: raw.debug as Config["debug"] | undefined,
     security: raw.security as Config["security"] | undefined,
+    project: raw.project as Config["project"] | undefined,
+    plan: raw.plan as Config["plan"] | undefined,
     workspacePath,
     systemPrompt: loadIdentity(workspacePath),
   };

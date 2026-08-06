@@ -7,7 +7,7 @@ export const coreHistoryPlugin: Plugin = {
   async init(ctx) {
     ctx.registerHooks({
       onUserMessage: (hookCtx, input, content) => {
-        const userMsg: Message = { role: "user", content: content ?? input, _timestamp: Date.now() };
+        const userMsg: Message = { role: "user", content: content ?? input, _timestamp: Date.now(), _turnId: hookCtx.turnId };
         hookCtx.history.markTurnStart();
         hookCtx.history.push(userMsg);
         appendHistory(ctx.workspacePath, userMsg, hookCtx.sessionId);

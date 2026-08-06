@@ -4,7 +4,7 @@ test("renders markdown tables from persisted messages", async ({ page }) => {
   await page.route("**/history/sessions", async (route) => {
     await route.fulfill({
       json: {
-        sessions: [{ id: "session-1", lastActivity: Date.now(), preview: "table" }],
+        sessions: [{ id: "session-1", lastActivity: Date.now(), preview: "table", context: { mode: "chat" } }],
       },
     });
   });
@@ -282,7 +282,7 @@ test("previews message images in a lightbox and navigates within the message", a
   await page.route("**/history/sessions", async (route) => {
     await route.fulfill({
       json: {
-        sessions: [{ id: "gallery-session", lastActivity: Date.now(), preview: "两张图片" }],
+        sessions: [{ id: "gallery-session", lastActivity: Date.now(), preview: "两张图片", context: { mode: "chat" } }],
       },
     });
   });
@@ -369,8 +369,8 @@ test("keeps a session running while switching to another conversation", async ({
     await route.fulfill({
       json: {
         sessions: [
-          { id: "session-a", lastActivity: Date.now(), preview: "后台任务" },
-          { id: "session-b", lastActivity: Date.now() - 1, preview: "其他会话" },
+          { id: "session-a", lastActivity: Date.now(), preview: "后台任务", context: { mode: "chat" } },
+          { id: "session-b", lastActivity: Date.now() - 1, preview: "其他会话", context: { mode: "chat" } },
         ],
       },
     });
@@ -428,7 +428,7 @@ test("clears chat and switches session when /new completes", async ({ page }) =>
 });
 
 test("deletes a persisted session and keeps it gone after refresh", async ({ page }) => {
-  let sessions = [{ id: "session?special#id", lastActivity: Date.now(), preview: "delete me" }];
+  let sessions = [{ id: "session?special#id", lastActivity: Date.now(), preview: "delete me", context: { mode: "chat" } }];
   let deletePath = "";
 
   await page.route("**/history/sessions", async (route) => {
@@ -454,4 +454,83 @@ test("deletes a persisted session and keeps it gone after refresh", async ({ pag
   await page.reload();
   await expect(page.getByText("delete me")).not.toBeVisible();
   expect(deletePath).toBe("/sessions/session%3Fspecial%23id");
+});
+
+test("sends plan execution mode and restores structured progress", async ({ page }) => {
+  let requestedMode = "";
+  let sessionId = "";
+  const plan = {
+    id: "plan-1",
+    turnId: "",
+    status: "executing",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    currentStepId: "step-2",
+    steps: [
+      { id: "step-1", title: "分析现有实现", status: "completed", summary: "分析完成" },
+      { id: "step-2", title: "修改代码", status: "in_progress" },
+      { id: "step-3", title: "运行测试", status: "pending" },
+    ],
+  };
+  await page.route("**/history/sessions", async (route) => route.fulfill({ json: { sessions: [] } }));
+  await page.route("**/commands", async (route) => route.fulfill({ json: { commands: [] } }));
+  await page.route("**/plan?*", async (route) => route.fulfill({ json: { plans: [plan] } }));
+  await page.route("**/chat", async (route) => {
+    const body = route.request().postDataJSON() as { execution_mode?: string; session_id?: string; turn_id?: string };
+    requestedMode = body.execution_mode ?? "";
+    sessionId = body.session_id ?? "";
+    plan.turnId = body.turn_id ?? "";
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: [
+        `event: tool_call\ndata: ${JSON.stringify({ tool_call_id: "tool-1", name: "plan_create", input: { steps: plan.steps.map((step) => step.title) } })}\n\n`,
+        `event: tool_result\ndata: ${JSON.stringify({ tool_call_id: "tool-1", name: "plan_create", result: JSON.stringify({ plan }) })}\n\n`,
+        `event: done\ndata: ${JSON.stringify({ text: "正在按计划执行", session_id: body.session_id, reason: "completed" })}\n\n`,
+      ].join(""),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "计划", exact: true }).click();
+  await page.locator("textarea").fill("实现计划模式");
+  await page.locator("textarea").press("Enter");
+
+  await expect.poll(() => requestedMode).toBe("plan");
+  await expect.poll(() => sessionId.length > 0).toBe(true);
+  await expect(page.getByLabel("任务计划进度")).toBeVisible();
+  await expect(page.getByLabel("任务计划进度")).toContainText("1 / 3");
+  await expect(page.getByLabel("任务计划进度")).toContainText("2. 修改代码");
+  await expect(page.getByLabel("任务计划进度")).toContainText("执行中");
+});
+
+test("restores and persists the execution mode for each session", async ({ page }) => {
+  const modes = new Map([
+    ["session-plan", "plan"],
+    ["session-normal", "normal"],
+  ]);
+  const sessions = () => ([
+    { id: "session-plan", lastActivity: 2, preview: "计划会话", context: { mode: "chat" }, executionMode: modes.get("session-plan") },
+    { id: "session-normal", lastActivity: 1, preview: "普通会话", context: { mode: "chat" }, executionMode: modes.get("session-normal") },
+  ]);
+  await page.route("**/history/sessions", async (route) => route.fulfill({ json: { sessions: sessions() } }));
+  await page.route("**/history/sessions/*/messages", async (route) => route.fulfill({ json: { messages: [] } }));
+  await page.route("**/plan?*", async (route) => route.fulfill({ json: { plans: [] } }));
+  await page.route("**/commands", async (route) => route.fulfill({ json: { commands: [] } }));
+  await page.route("**/sessions/*/execution-mode", async (route) => {
+    const sessionId = decodeURIComponent(new URL(route.request().url()).pathname.split("/")[2]);
+    const body = route.request().postDataJSON() as { executionMode: "normal" | "plan" };
+    modes.set(sessionId, body.executionMode);
+    await route.fulfill({ json: { executionMode: body.executionMode } });
+  });
+
+  await page.goto("/#sid=session-plan");
+  await expect(page.getByRole("button", { name: "计划", exact: true })).toHaveClass(/active/);
+  await page.getByRole("button", { name: "普通", exact: true }).click();
+  await expect.poll(() => modes.get("session-plan")).toBe("normal");
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: "普通", exact: true })).toHaveClass(/active/);
+  await page.getByText("普通会话").click();
+  await expect(page.getByRole("button", { name: "普通", exact: true })).toHaveClass(/active/);
 });

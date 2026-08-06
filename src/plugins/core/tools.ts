@@ -25,7 +25,7 @@ function summarizeArgs(tool: Tool, args: Record<string, unknown>): Record<string
   return { keys: Object.keys(args) };
 }
 
-function withAudit(workspacePath: string, tool: Tool): Tool {
+export function withAudit(workspacePath: string, tool: Tool): Tool {
   return {
     ...tool,
     async execute(args, context) {
@@ -50,7 +50,7 @@ export const coreToolsPlugin: Plugin = {
       createWebSearchTool(getConfig),
       createWebFetchTool(),
       createBashTool(ctx.workspacePath, getConfig),
-      createFileReadTool(ctx.workspacePath),
+      createFileReadTool(ctx.workspacePath, getConfig),
       createFileWriteTool(ctx.workspacePath, getConfig),
       createFileEditTool(ctx.workspacePath, getConfig),
       createMemorySaveTool(ctx.workspacePath, getConfig),

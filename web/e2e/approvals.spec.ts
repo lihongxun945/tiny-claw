@@ -23,7 +23,7 @@ test("approves a pending command from the chat tool block", async ({ page }) => 
   await page.route("**/history/sessions", async (route) => {
     await route.fulfill({
       json: {
-        sessions: [{ id: "approval-chat", lastActivity: Date.now(), preview: "approval" }],
+        sessions: [{ id: "approval-chat", lastActivity: Date.now(), preview: "approval", context: { mode: "chat" } }],
       },
     });
   });
@@ -90,7 +90,7 @@ test("allows every approval in the current turn from the chat tool block", async
   });
 
   await page.route("**/history/sessions", async (route) => {
-    await route.fulfill({ json: { sessions: [{ id: "approval-turn", lastActivity: Date.now(), preview: "approval turn" }] } });
+    await route.fulfill({ json: { sessions: [{ id: "approval-turn", lastActivity: Date.now(), preview: "approval turn", context: { mode: "chat" } }] } });
   });
   await page.route("**/history/sessions/approval-turn/messages", async (route) => {
     await route.fulfill({

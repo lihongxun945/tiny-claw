@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { Config, Tool } from "../types.js";
 import { checkDangerousToolPermission } from "./permission.js";
+import { resolveRootFile } from "./workspace-path.js";
 
 export function createFileEditTool(workspacePath: string, getConfig: () => Config): Tool {
   return {
@@ -27,7 +28,15 @@ export function createFileEditTool(workspacePath: string, getConfig: () => Confi
       required: ["path", "old_text", "new_text"],
     },
     execute: async (args, context) => {
-      const filePath = resolve(workspacePath, args.path as string);
+      const root = context?.rootPath ?? workspacePath;
+      let filePath: string;
+      try {
+        filePath = context?.restrictToRoot
+          ? resolveRootFile(root, args.path as string)
+          : resolve(root, args.path as string);
+      } catch (error) {
+        return JSON.stringify({ error: error instanceof Error ? error.message : String(error) });
+      }
       const oldText = args.old_text as string;
       const newText = args.new_text as string;
 
@@ -38,7 +47,7 @@ export function createFileEditTool(workspacePath: string, getConfig: () => Confi
       try {
         const permission = checkDangerousToolPermission({
           workspacePath,
-          config: getConfig(),
+          config: context?.config ?? getConfig(),
           toolName: "file_edit",
           args,
           context,

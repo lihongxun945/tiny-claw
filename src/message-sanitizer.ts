@@ -77,6 +77,34 @@ export function sanitizeToolMessageChains(messages: Message[]): Message[] {
   return sanitized;
 }
 
+export function validateToolMessageChains(messages: Message[]): string | undefined {
+  let pendingIds: Set<string> | undefined;
+
+  for (const message of messages) {
+    const toolUses = message.role === "assistant" && Array.isArray(message.content)
+      ? message.content.filter((block): block is ToolUseBlock => block.type === "tool_use")
+      : [];
+    const results = toolResultBlocks(message);
+
+    if (pendingIds) {
+      if (!isToolResultOnly(message)) return "工具调用后缺少对应的工具结果消息";
+      for (const result of results) {
+        if (!pendingIds.delete(result.tool_use_id)) return `工具结果无法匹配工具调用: ${result.tool_use_id}`;
+      }
+      if (pendingIds.size === 0) pendingIds = undefined;
+      continue;
+    }
+
+    if (results.length > 0) return `工具结果前不存在对应的工具调用: ${results[0].tool_use_id}`;
+    if (toolUses.length > 0) {
+      pendingIds = new Set(toolUses.map((block) => block.id));
+      if (pendingIds.size !== toolUses.length) return "工具调用 ID 重复";
+    }
+  }
+
+  return pendingIds ? "工具调用后缺少对应的工具结果消息" : undefined;
+}
+
 export function stripToolMessagesForNewTurn(messages: Message[]): Message[] {
   const stripped: Message[] = [];
 

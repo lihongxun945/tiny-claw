@@ -13,6 +13,7 @@ export interface PersistedSessionState {
   version: number;
   sessionId: string;
   summary: string;
+  summaryThroughTimestamp?: number;
   pendingMessages: Message[];
   turnsSinceSummary: number;
   autoMemory: PersistedAutoMemoryState;
@@ -22,6 +23,7 @@ export interface PersistedSessionState {
 export interface SessionStateInput {
   sessionId: string;
   summary: string;
+  summaryThroughTimestamp?: number;
   pendingMessages: Message[];
   turnsSinceSummary: number;
   autoMemory?: AutoMemoryStateInput;
@@ -63,6 +65,7 @@ export function emptySessionState(sessionId: string): PersistedSessionState {
     version: STATE_VERSION,
     sessionId,
     summary: "",
+    summaryThroughTimestamp: undefined,
     pendingMessages: [],
     turnsSinceSummary: 0,
     autoMemory: emptyAutoMemoryState(),
@@ -82,6 +85,9 @@ export function loadSessionState(workspacePath: string, sessionId: string): Pers
       version: STATE_VERSION,
       sessionId,
       summary: typeof parsed.summary === "string" ? parsed.summary : "",
+      summaryThroughTimestamp: typeof parsed.summaryThroughTimestamp === "number"
+        ? parsed.summaryThroughTimestamp
+        : undefined,
       pendingMessages: Array.isArray(parsed.pendingMessages) ? sanitizeMessages(parsed.pendingMessages) : [],
       turnsSinceSummary: typeof turnsSinceSummary === "number" && Number.isInteger(turnsSinceSummary) && turnsSinceSummary >= 0
         ? turnsSinceSummary
@@ -100,6 +106,7 @@ export function saveSessionState(workspacePath: string, state: SessionStateInput
     version: STATE_VERSION,
     sessionId: state.sessionId,
     summary: state.summary,
+    summaryThroughTimestamp: state.summaryThroughTimestamp,
     pendingMessages: sanitizeMessages(state.pendingMessages),
     turnsSinceSummary: Math.max(0, Math.floor(state.turnsSinceSummary)),
     autoMemory: state.autoMemory === undefined ? existing.autoMemory : sanitizeAutoMemoryState(state.autoMemory),

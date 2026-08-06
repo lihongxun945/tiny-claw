@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import type { Message } from "../types.js";
 import ImageLightbox from "./ImageLightbox.js";
 import ToolCallBlock from "./ToolCallBlock.js";
+import ToolCallGroup from "./ToolCallGroup.js";
 
 interface Props {
   message: Message;
@@ -47,10 +48,16 @@ export default function MessageBubble({ message, isStreaming, onApproveAndResume
             <span>{message.text}</span>
           ) : (
             <>
-              {message.toolCalls.map((tc, i) => (
+              {message.toolCalls.length > 1 ? (
+                <ToolCallGroup
+                  toolCalls={message.toolCalls}
+                  onApproveAndResume={onApproveAndResume}
+                  onApproveTurnAndResume={onApproveTurnAndResume}
+                />
+              ) : message.toolCalls.map((toolCall, index) => (
                 <ToolCallBlock
-                  key={i}
-                  toolCall={tc}
+                  key={toolCall.id ?? index}
+                  toolCall={toolCall}
                   onApproveAndResume={onApproveAndResume}
                   onApproveTurnAndResume={onApproveTurnAndResume}
                 />

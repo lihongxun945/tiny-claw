@@ -1,14 +1,17 @@
 import { useState, useRef, useEffect } from "react";
 import { fetchChatCommands } from "../lib/api.js";
 import type { ChatCommand } from "../types.js";
+import type { ExecutionMode } from "../types.js";
 
 interface Props {
   onSend: (text: string, files: File[]) => void;
   onStop: () => void;
   disabled: boolean;
+  executionMode: ExecutionMode;
+  onExecutionModeChange: (mode: ExecutionMode) => void;
 }
 
-export default function ChatInput({ onSend, onStop, disabled }: Props) {
+export default function ChatInput({ onSend, onStop, disabled, executionMode, onExecutionModeChange }: Props) {
   const [text, setText] = useState("");
   const [commands, setCommands] = useState<ChatCommand[]>([]);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
@@ -211,6 +214,10 @@ export default function ChatInput({ onSend, onStop, disabled }: Props) {
                 event.target.value = "";
               }}
             />
+            <div className="execution-mode-switch" role="group" aria-label="执行模式">
+              <button type="button" className={executionMode === "normal" ? "active" : ""} onClick={() => onExecutionModeChange("normal")} disabled={disabled}>普通</button>
+              <button type="button" className={executionMode === "plan" ? "active" : ""} onClick={() => onExecutionModeChange("plan")} disabled={disabled}>计划</button>
+            </div>
             <span>Enter 发送 · Shift+Enter 换行</span>
           </div>
           {disabled ? (

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentSession } from "../agent.js";
 import type { MessageHistory } from "../history.js";
-import type { Tool, ToolDefinition, Config, Message, ChatResponse, AgentActor } from "../types.js";
+import type { Tool, ToolDefinition, Config, Message, ChatResponse, AgentActor, SessionContext, ExecutionMode } from "../types.js";
 import type { ModelClient } from "../model/index.js";
 import type { ModelDebugEvent } from "../model/types.js";
 
@@ -76,9 +76,11 @@ export interface PluginHooks {
     { input?: string; abort?: string } | Promise<{ input?: string; abort?: string } | void> | void;
   onBuildPrompt?: (ctx: HookContext, prompt: string) =>
     string | Promise<string> | void;
+  onBuildTurnPrompt?: (ctx: HookContext, prompt: string) =>
+    string | Promise<string> | void;
   onUserMessage?: (ctx: HookContext, input: string, content?: Message["content"]) => void | Promise<void>;
-  onBeforeModelCall?: (ctx: HookContext, messages: Message[]) =>
-    Message[] | Promise<Message[]> | void;
+  onBeforeModelCall?: (ctx: HookContext, modelContext: ModelCallContext) =>
+    ModelCallContext | Promise<ModelCallContext> | void;
   onChatResponse?: (ctx: HookContext, response: ChatResponse) =>
     ChatResponse | Promise<ChatResponse> | void;
   onBeforeTool?: (ctx: HookContext, name: string, args: Record<string, unknown>) =>
@@ -86,15 +88,39 @@ export interface PluginHooks {
   onAfterTool?: (ctx: HookContext, name: string, result: string) =>
     string | Promise<string> | void;
   onAfterIteration?: (ctx: HookContext) => void | Promise<void>;
+  onTurnEnd?: (ctx: HookContext, reason: TurnEndReason) => void | Promise<void>;
   onError?: (ctx: HookContext, error: Error) => void | Promise<void>;
+}
+
+export type TurnEndReason = "completed" | "approval_required" | "iteration_limit";
+
+export interface ModelCallContext {
+  messages: Message[];
+  /** 当前用户轮次在 messages 中的起始位置。 */
+  turnStartIndex: number;
+  /** 扣除系统提示词、工具定义和最大输出后，可供 messages 使用的 token 预算。 */
+  messageTokenBudget: number;
+  /** 上报不写入历史的临时执行状态。 */
+  reportStatus?: (status: AgentStatusUpdate) => void;
+}
+
+export interface AgentStatusUpdate {
+  stage: string;
+  state: "started" | "completed" | "failed";
+  message: string;
+  beforeTokens?: number;
+  afterTokens?: number;
 }
 
 export interface HookContext {
   sessionId: string;
+  turnId?: string;
   iteration: number;
   config: Config;
   client: ModelClient;
   history: MessageHistory;
+  sessionContext: SessionContext;
+  executionMode: ExecutionMode;
   turnStartIndex: number;
   getToolDefinitions(): ToolDefinition[];
   getTool(name: string): Tool | undefined;

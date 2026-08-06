@@ -97,7 +97,7 @@ test("edits the global dangerous operation mode", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "配置" }).click();
 
-  const mode = page.getByLabel("全局危险操作模式");
+  const mode = page.getByLabel("全局危险操作模式", { exact: true });
   const apiKey = page.getByRole("textbox", { name: /^API Key/ });
   await expect(apiKey).toBeEditable();
   await expect(apiKey).toHaveAttribute("type", "password");
@@ -135,7 +135,7 @@ test("shows config save errors", async ({ page }) => {
 
   await page.goto("/");
   await page.getByRole("button", { name: "配置" }).click();
-  await page.getByLabel("全局危险操作模式").selectOption("deny");
+  await page.getByLabel("全局危险操作模式", { exact: true }).selectOption("deny");
   await page.getByRole("button", { name: "保存", exact: true }).click();
 
   await expect(page.getByText("invalid config")).toBeVisible();

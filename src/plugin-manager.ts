@@ -15,8 +15,10 @@ import type {
   ChatCommand,
   ChatCommandResult,
   ExecuteChatCommandOptions,
+  TurnEndReason,
+  ModelCallContext,
 } from "./plugins/types.js";
-import type { Config, Tool, ToolDefinition, Message, ChatResponse } from "./types.js";
+import type { Config, Tool, ToolDefinition, Message, ChatResponse, SessionContext, ExecutionMode } from "./types.js";
 import type { ModelClient } from "./model/index.js";
 import type { ModelDebugEvent } from "./model/types.js";
 import type { AgentSession } from "./agent.js";
@@ -44,7 +46,9 @@ export class PluginManager {
   private baseConfig?: Config;
   private client?: ModelClient;
   private history?: MessageHistory;
-  private runtimeDepsBySession = new Map<string, { config: Config; client: ModelClient; history: MessageHistory }>();
+  private runtimeDepsBySession = new Map<string, { config: Config; client: ModelClient; history: MessageHistory; sessionContext: SessionContext }>();
+  private executionModesBySession = new Map<string, ExecutionMode>();
+  private turnIdsBySession = new Map<string, string>();
   private sessionFactory?: {
     getOrCreateSession: (id: string, prefix?: string) => AgentSession;
     deleteSession: (id: string) => boolean;
@@ -65,12 +69,12 @@ export class PluginManager {
   }
 
   /** 设置运行时依赖（在 AgentSession 创建后调用） */
-  setRuntimeDeps(config: Config, client: ModelClient, history: MessageHistory, sessionId?: string): void {
+  setRuntimeDeps(config: Config, client: ModelClient, history: MessageHistory, sessionId?: string, sessionContext: SessionContext = { mode: "chat" }): void {
     this.config = config;
     this.client = client;
     this.history = history;
     if (sessionId) {
-      this.runtimeDepsBySession.set(sessionId, { config, client, history });
+      this.runtimeDepsBySession.set(sessionId, { config, client, history, sessionContext });
     }
   }
 
@@ -197,8 +201,32 @@ export class PluginManager {
 
   // ========== Tool Access ==========
 
-  getToolDefinitions(): ToolDefinition[] {
-    return this.registry.getDefinitions();
+  getToolDefinitions(context?: SessionContext, executionMode: ExecutionMode = "normal"): ToolDefinition[] {
+    return this.registry.getDefinitions(context, executionMode);
+  }
+
+  setExecutionMode(sessionId: string, mode: ExecutionMode): void {
+    this.executionModesBySession.set(sessionId, mode);
+  }
+
+  clearExecutionMode(sessionId: string): void {
+    this.executionModesBySession.delete(sessionId);
+  }
+
+  getExecutionMode(sessionId: string): ExecutionMode {
+    return this.executionModesBySession.get(sessionId) ?? "normal";
+  }
+
+  setTurnId(sessionId: string, turnId: string): void {
+    this.turnIdsBySession.set(sessionId, turnId);
+  }
+
+  clearTurnId(sessionId: string): void {
+    this.turnIdsBySession.delete(sessionId);
+  }
+
+  getTurnId(sessionId: string): string | undefined {
+    return this.turnIdsBySession.get(sessionId);
   }
 
   getTool(name: string): Tool | undefined {
@@ -252,7 +280,7 @@ export class PluginManager {
       rawArgs: parsed.rawArgs,
       rawInput: input,
       getChatCommands: () => this.getChatCommands(),
-      getToolDefinitions: () => this.getToolDefinitions(),
+      getToolDefinitions: () => this.getToolDefinitions(deps?.sessionContext, this.executionModesBySession.get(options.sessionId) ?? "normal"),
       getTool: (name) => this.getTool(name),
     });
   }
@@ -291,12 +319,15 @@ export class PluginManager {
     }
     return {
       sessionId,
+      turnId: this.turnIdsBySession.get(sessionId),
       iteration,
       turnStartIndex,
       config,
       client,
       history,
-      getToolDefinitions: () => this.getToolDefinitions(),
+      sessionContext: deps?.sessionContext ?? { mode: "chat" },
+      executionMode: this.executionModesBySession.get(sessionId) ?? "normal",
+      getToolDefinitions: () => this.getToolDefinitions(deps?.sessionContext, this.executionModesBySession.get(sessionId) ?? "normal"),
       getTool: (name) => this.getTool(name),
     };
   }
@@ -332,6 +363,17 @@ export class PluginManager {
     return result;
   }
 
+  async callOnBuildTurnPrompt(prompt: string, iteration: number, sessionId: string): Promise<string> {
+    let result = prompt;
+    for (const hooks of this.hooks) {
+      if (hooks.onBuildTurnPrompt) {
+        const updated = await hooks.onBuildTurnPrompt(this.buildHookContext(iteration, sessionId), result);
+        if (updated !== undefined) result = updated;
+      }
+    }
+    return result;
+  }
+
   async callOnUserMessage(input: string, sessionId: string, content?: Message["content"]): Promise<void> {
     for (const hooks of this.hooks) {
       if (hooks.onUserMessage) {
@@ -344,12 +386,12 @@ export class PluginManager {
     }
   }
 
-  async callOnBeforeModelCall(messages: Message[], turnStartIndex: number, iteration: number, sessionId: string): Promise<Message[]> {
-    let result = messages;
+  async callOnBeforeModelCall(modelContext: ModelCallContext, iteration: number, sessionId: string): Promise<ModelCallContext> {
+    let result = modelContext;
     for (const hooks of this.hooks) {
       if (hooks.onBeforeModelCall) {
         const r = await hooks.onBeforeModelCall(
-          this.buildHookContext(iteration, sessionId, turnStartIndex),
+          this.buildHookContext(iteration, sessionId, result.turnStartIndex),
           result,
         );
         if (r !== undefined) result = r;
@@ -411,6 +453,17 @@ export class PluginManager {
     }
   }
 
+  async callOnTurnEnd(reason: TurnEndReason, iteration: number, sessionId: string): Promise<void> {
+    for (const hooks of this.hooks) {
+      if (hooks.onTurnEnd) {
+        await hooks.onTurnEnd(
+          this.buildHookContext(iteration, sessionId),
+          reason,
+        );
+      }
+    }
+  }
+
   async callOnError(error: Error, iteration: number, sessionId: string): Promise<void> {
     for (const hooks of this.hooks) {
       if (hooks.onError) {
@@ -425,6 +478,8 @@ export class PluginManager {
   // ========== Cleanup ==========
 
   async destroy(): Promise<void> {
+    this.executionModesBySession.clear();
+    this.turnIdsBySession.clear();
     await destroyPlugins(this.loadedPlugins);
   }
 }

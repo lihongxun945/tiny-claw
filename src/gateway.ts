@@ -25,12 +25,15 @@ import {
   listApprovals,
   rejectRequest,
 } from "./tools/approval.js";
-import { deleteStoredSession, listSessionMetas, readSessionMessages } from "./session-store.js";
+import { createSessionMeta, deleteStoredSession, listSessionMetas, readSessionMessages, readSessionMeta, updateSessionExecutionMode } from "./session-store.js";
 import type { RegisteredRoute, RouteContext } from "./plugins/types.js";
 import { ensureWorkspace } from "./workspace/workspace.js";
 import { attachmentLimits, attachmentToImageBlock, readAttachment } from "./attachments.js";
 import type { ImageBlock, Message } from "./types.js";
 import { startSSEHeartbeat } from "./gateway-sse.js";
+import { inspectProject } from "./project.js";
+import type { ExecutionMode, SessionContext } from "./types.js";
+import { listSessionPlans, type SessionPlan } from "./plan-store.js";
 
 const SESSION_TIMEOUT = 30 * 60 * 1000;
 const DEFAULT_SSE_HEARTBEAT_INTERVAL_MS = 15_000;
@@ -190,19 +193,22 @@ type FormattedMessage = {
   toolCalls: FormattedToolCall[];
   attachments: FormattedAttachment[];
   timestamp: number;
+  turnId?: string;
+  plan?: SessionPlan;
 };
 
 function isSubAgentSessionId(id: string): boolean {
   return id.startsWith("sub:");
 }
 
-function buildMessageListFromMessages(msgs: Message[], sessionId: string): FormattedMessage[] {
+function buildMessageListFromMessages(msgs: Message[], sessionId: string, workspacePath: string): FormattedMessage[] {
+  const plansByTurn = new Map(listSessionPlans(workspacePath, sessionId).map((plan) => [plan.turnId, plan]));
   // 第一步：解析原始消息，将 tool_result 合并到前一条 assistant
   const parsed: FormattedMessage[] = [];
   for (const m of msgs) {
     if (typeof m.content === "string") {
       if (m.role === "assistant" || m.role === "user") {
-        parsed.push({ role: m.role, text: m.content, toolCalls: [], attachments: [], timestamp: m._timestamp ?? 0 });
+        parsed.push({ role: m.role, text: m.content, toolCalls: [], attachments: [], timestamp: m._timestamp ?? 0, turnId: m._turnId });
       }
       continue;
     }
@@ -237,20 +243,26 @@ function buildMessageListFromMessages(msgs: Message[], sessionId: string): Forma
       continue;
     }
     if (m.role === "assistant" || (m.role === "user" && (text || attachments.length > 0))) {
-      parsed.push({ role: m.role, text, toolCalls, attachments, timestamp: m._timestamp ?? 0 });
+      parsed.push({ role: m.role, text, toolCalls, attachments, timestamp: m._timestamp ?? 0, turnId: m._turnId });
     }
   }
 
   // 第二步：合并连续的 assistant 消息（Agent 多轮工具调用）
   const result: FormattedMessage[] = [];
   for (const m of parsed) {
-    if (m.role === "assistant" && result.length > 0 && result[result.length - 1].role === "assistant") {
+    if (m.role === "assistant" && result.length > 0 && result[result.length - 1].role === "assistant" && result[result.length - 1].turnId === m.turnId) {
       const prev = result[result.length - 1];
       prev.toolCalls.push(...m.toolCalls);
       prev.attachments.push(...m.attachments);
       if (m.text) prev.text += (prev.text ? "\n" : "") + m.text;
     } else {
       result.push({ ...m, toolCalls: [...m.toolCalls], attachments: [...m.attachments] });
+    }
+  }
+  for (const message of result) {
+    const plan = message.turnId ? plansByTurn.get(message.turnId) : undefined;
+    if (message.role === "assistant" && plan && (plan.status === "completed" || plan.status === "failed")) {
+      message.plan = plan;
     }
   }
   return result;
@@ -330,6 +342,15 @@ function sendSSE(res: ServerResponse, event: string, data: unknown): void {
 
 function sendAgentEventSSE(res: ServerResponse, event: AgentEvent, sessionId?: string): void {
   switch (event.type) {
+    case "status":
+      sendSSE(res, "status", {
+        stage: event.stage,
+        state: event.state,
+        message: event.message,
+        before_tokens: event.beforeTokens,
+        after_tokens: event.afterTokens,
+      });
+      break;
     case "text_delta":
       sendSSE(res, "text_delta", { text: event.text });
       break;
@@ -340,7 +361,7 @@ function sendAgentEventSSE(res: ServerResponse, event: AgentEvent, sessionId?: s
       sendSSE(res, "tool_result", { tool_call_id: event.toolCallId, name: event.name, result: event.result });
       break;
     case "done":
-      sendSSE(res, "done", { text: event.text, session_id: sessionId });
+      sendSSE(res, "done", { text: event.text, reason: event.reason, session_id: sessionId });
       break;
     case "error":
       sendSSE(res, "error", { message: event.message });
@@ -375,7 +396,9 @@ function getOrCreateSession(sessionId: string | undefined, wp?: string, pm?: Plu
     return session;
   }
   const id = sessionId || randomUUID();
-  const session = new AgentSession(id, wp_, pm || globalPluginManager!);
+  const context = readSessionMeta(wp_, id)?.context ?? { mode: "chat" };
+  createSessionMeta(wp_, id, context);
+  const session = new AgentSession(id, wp_, pm || globalPluginManager!, {}, undefined, context);
   sessions.set(id, session);
   return session;
 }
@@ -481,6 +504,14 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         const body = JSON.parse(await readBody(req));
         const message = body.message as string;
         const sessionId = body.session_id as string | undefined;
+        if (body.execution_mode !== undefined && body.execution_mode !== "normal" && body.execution_mode !== "plan") {
+          sendJSON(res, 400, { error: "execution_mode 仅支持 normal 或 plan" });
+          return;
+        }
+        const executionMode = body.execution_mode === "plan" ? "plan" : "normal";
+        const turnId = typeof body.turn_id === "string" && /^[0-9a-f-]{36}$/i.test(body.turn_id)
+          ? body.turn_id
+          : randomUUID();
         const attachmentIds = Array.isArray(body.attachments) ? body.attachments : [];
 
         if (typeof message !== "string" || (!message.trim() && attachmentIds.length === 0)) {
@@ -518,6 +549,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         }
 
         const session = commandSession ?? getOrCreateSession(sessionId, workspacePath, pm);
+        updateSessionExecutionMode(workspacePath, session.id, executionMode);
         const limits = attachmentLimits(config.attachments);
         if (attachmentIds.length > limits.maxFilesPerMessage) {
           sendSSE(res, "error", { message: `每条消息最多上传 ${limits.maxFilesPerMessage} 张图片` });
@@ -545,7 +577,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         };
         res.once("close", cancelOnDisconnect);
 
-        for await (const event of session.chat(message, undefined, userContent)) sendAgentEventSSE(res, event, session.id);
+        for await (const event of session.chat(message, undefined, userContent, executionMode, turnId)) sendAgentEventSSE(res, event, session.id);
 
         res.removeListener("close", cancelOnDisconnect);
         res.end();
@@ -567,6 +599,53 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
           busy: s.isBusy(),
         }));
       sendJSON(res, 200, { sessions: list });
+      return;
+    }
+
+    // POST /sessions — 创建并绑定普通或项目会话上下文
+    if (req.method === "POST" && url.pathname === "/sessions") {
+      try {
+        const body = JSON.parse(await readBody(req)) as { mode?: unknown; projectRoot?: unknown; reuseEmpty?: unknown };
+        let context: SessionContext = { mode: "chat" };
+        if (body.mode === "project") {
+          if (typeof body.projectRoot !== "string") throw new Error("项目会话缺少 projectRoot");
+          const project = await inspectProject(body.projectRoot);
+          context = { mode: "project", project: { root: project.root, name: project.name } };
+        } else if (body.mode !== undefined && body.mode !== "chat") {
+          throw new Error("不支持的会话模式");
+        }
+        if (body.mode === "project" && body.reuseEmpty === true && context.project) {
+          const reusable = listSessionMetas(workspacePath)
+            .filter((meta) => meta.context.mode === "project"
+              && meta.context.project?.root === context.project?.root
+              && readSessionMessages(workspacePath, meta.id).length === 0
+              && !sessions.get(meta.id)?.isBusy())
+            .sort((a, b) => b.lastActivity - a.lastActivity)[0];
+          if (reusable) {
+            sendJSON(res, 200, { session: { id: reusable.id, context: reusable.context, executionMode: reusable.preferences.executionMode, reused: true } });
+            return;
+          }
+        }
+        const id = randomUUID();
+        createSessionMeta(workspacePath, id, context);
+        sendJSON(res, 201, { session: { id, context, executionMode: "normal" } });
+      } catch (error) {
+        sendJSON(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const executionModeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/execution-mode$/);
+    if (req.method === "PUT" && executionModeMatch) {
+      try {
+        const sessionId = decodeURIComponent(executionModeMatch[1]);
+        const body = JSON.parse(await readBody(req)) as { executionMode?: unknown };
+        if (body.executionMode !== "normal" && body.executionMode !== "plan") throw new Error("executionMode 仅支持 normal 或 plan");
+        const meta = updateSessionExecutionMode(workspacePath, sessionId, body.executionMode);
+        sendJSON(res, 200, { executionMode: meta.preferences.executionMode });
+      } catch (error) {
+        sendJSON(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
       return;
     }
 
@@ -772,7 +851,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         sendJSON(res, 404, { error: "会话不存在" });
         return;
       }
-      const messages = buildMessageListFromMessages(session.getMessages(), id);
+      const messages = buildMessageListFromMessages(session.getMessages(), id, workspacePath);
       sendJSON(res, 200, { messages });
       return;
     }
@@ -847,18 +926,19 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 
     // GET /history/sessions — 从 session 元数据 + 活跃会话合并
     if (req.method === "GET" && url.pathname === "/history/sessions") {
-      const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string }>();
+      const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string; context: SessionContext; executionMode: ExecutionMode }>();
 
       for (const meta of listSessionMetas(workspacePath)) {
         if (isSubAgentSessionId(meta.id) || meta.archived) continue;
-        sessionMap.set(meta.id, { id: meta.id, lastActivity: meta.lastActivity, preview: meta.preview });
+        sessionMap.set(meta.id, { id: meta.id, lastActivity: meta.lastActivity, preview: meta.preview, context: meta.context, executionMode: meta.preferences.executionMode });
       }
 
       // 合并活跃会话（新创建的但还未写入历史文件的）
       for (const [id, session] of sessions) {
         if (isSubAgentSessionId(id)) continue;
         if (!sessionMap.has(id)) {
-          sessionMap.set(id, { id, lastActivity: session.lastActivity, preview: "" });
+          const meta = readSessionMeta(workspacePath, id);
+          sessionMap.set(id, { id, lastActivity: session.lastActivity, preview: "", context: meta?.context ?? { mode: "chat" }, executionMode: meta?.preferences.executionMode ?? "normal" });
         }
       }
 
@@ -870,7 +950,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     // GET /history/sessions/:id/messages — 读取指定会话的消息
     if (req.method === "GET" && url.pathname.startsWith("/history/sessions/") && url.pathname.endsWith("/messages")) {
       const id = decodeURIComponent(url.pathname.slice("/history/sessions/".length, -"/messages".length));
-      const messages = buildMessageListFromMessages(readSessionMessages(workspacePath, id), id);
+      const messages = buildMessageListFromMessages(readSessionMessages(workspacePath, id), id, workspacePath);
       sendJSON(res, 200, { messages });
       return;
     }
@@ -892,7 +972,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const url = new URL(req.url ?? "/", `http://localhost:${webPort}`);
 
       // 代理 API 请求到 gateway
-      if (url.pathname === "/chat" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname === "/local-models" || url.pathname === "/local-models/download" || url.pathname === "/models/test" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
+      if (url.pathname === "/chat" || url.pathname === "/plan" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname.startsWith("/projects/") || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname === "/local-models" || url.pathname === "/local-models/download" || url.pathname === "/models/test" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
         let proxyIsSSE = false;
         try {
           const hasRequestBody = req.method !== "GET" && req.method !== "HEAD"

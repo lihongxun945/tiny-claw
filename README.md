@@ -1,8 +1,25 @@
-## 关于本仓库
+# tiny-claw
+
 tiny-claw 是一个插件化、可扩展的个人 AI Agent 框架，用于研究Agent实现原理，实现了一个完整Agent的全部功能，支持工具调用、长期记忆、权限审批、Web UI 和飞书接入。
 这个项目的目的是研究Agent实现原理，并未经过严格测试，因此可能存在一些潜在的问题，不建议部署在生产环境中。
 
 ![tiny-claw WebUI](docs/images/tiny-claw-webui.png)
+
+## 核心功能
+
+- 自主 Agent Loop、流式输出和多轮工具调用
+- 远程模型与内置 Qwen、Gemma 本地模型
+- Web 搜索、网页读取、Shell、文件读写和项目开发工具
+- 普通模式与可持久化的计划执行模式
+- 会话历史、上下文压缩、滚动摘要和跨会话长期记忆
+- Skill、Sub-agent 和自定义插件扩展
+- 危险操作权限审批、单次授权与本轮授权
+- Web UI、macOS 客户端、Gateway API 和飞书机器人
+- 图片输入、模型调用调试和工具审计日志
+
+## 项目定位
+
+tiny-claw 更关注 Agent 核心机制的可读性和可扩展性，适合学习、个人使用和定制化实验。OpenClaw 面向更完整的产品与生态，具备更丰富的平台集成和生产能力。tiny-claw 尚未经过生产环境验证，不建议直接用于关键业务。
 
 ## 快速开始
 
@@ -78,7 +95,7 @@ SearXNG 示例：
 
 ### 启动 Gateway
 
-推荐使用 Gateway + WebUI 模式进行本地使用和开发：
+推荐使用 Gateway + WebUI 模式进行本地部署：
 
 ```bash
 npm run web:build
@@ -94,13 +111,6 @@ http://localhost:3001
 启动后即可在 WebUI 中创建会话并与 Agent 对话。
 
 注意：`npm run gateway` 会以 daemon 模式启动 Gateway。daemon 模式只有在 `web/dist/index.html` 已存在时才会启动 WebUI 静态服务；首次启动、刚拉代码或清理过构建产物后，需要先执行 `npm run web:build`，再启动或重启 Gateway。否则可能只启动了 Gateway API，`http://localhost:3001` 会提示无法访问。
-
-前端开发时也可以单独启动 Vite dev server：
-
-```bash
-npm run gateway -- --port 3000
-npm run web:dev
-```
 
 ### 使用 macOS 客户端
 
@@ -144,27 +154,6 @@ macOS 客户端的所有用户数据保存在：
 
 客户端 workspace 与源码仓库中的 `./workspace` 相互独立，客户端不会自动读取源码开发环境的数据。如需迁移，可以在客户端完全退出后，将需要的配置、会话、记忆、Skill 或插件复制到客户端 workspace。
 
-### 构建 macOS 应用
-
-在 Apple Silicon Mac 上构建 DMG：
-
-```bash
-npm run desktop:dist
-```
-
-如果登录钥匙串中存在有效的 `Developer ID Application` 证书及私钥，`electron-builder` 会自动签名应用；否则生成未签名的本地测试包。安装包输出到 `release/tiny-claw-<version>-arm64.dmg`。桌面版首次启动会在 `~/Library/Application Support/tiny-claw/workspace` 创建独立工作目录和完整默认配置；打开应用后，可在“配置”页面完成所有设置。
-
-### 通过 Tag 自动发布
-
-推送与 `package.json` 版本一致的 `v*` Tag 后，GitHub Actions 会自动运行测试、使用 Developer ID 签名 arm64 应用、提交 Apple 公证、装订公证票据并创建 GitHub Release：
-
-```bash
-npm version patch
-git push origin HEAD --follow-tags
-```
-
-例如 `package.json` 版本为 `0.2.0` 时，Tag 必须是 `v0.2.0`。发布产物包含已签名并公证的 DMG、blockmap 和 `SHA256SUMS.txt`。仓库需要预先配置 `MACOS_CERTIFICATE`、`MACOS_CERTIFICATE_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD` 和 `APPLE_TEAM_ID` 五个 Actions Secrets。
-
 ## 配置参考
 
 `workspace/config.json` 支持以下配置。`workspacePath` 和 `systemPrompt` 是运行时内部字段，不需要写入配置文件。
@@ -184,9 +173,10 @@ git push origin HEAD --follow-tags
 | `contextCompressionThreshold` | `0.7` | `0.7` | 超过 `maxContextTokens * threshold` 时触发上下文压缩 |
 | `contextCompressionMaxChars` | `5000` | `5000` | 上下文压缩摘要目标字数上限 |
 | `contextCompressionToolResultMaxChars` | `500` | `500` | 构建历史压缩摘要时每个 tool result 保留的字符数 |
+| `contextCompressionMaxOutputTokens` | `2048` | `2048` | 上下文压缩模型调用允许生成的最大 token 数 |
 | `toolResultInitialMaxChars` | `12000` | `12000` | 对话上下文超预算时 tool result 的初始截断字符数 |
 | `historyWindowSize` | `5` | `20` | 普通历史窗口轮数；会话摘要开启后仍会保留近期原文 |
-| `maxAgentIterations` | `20` | `20` | 单次任务最大 Agent Loop 次数；配置 `0` 表示不限 |
+| `maxAgentIterations` | `100` | `100` | 单次任务最大 Agent Loop 次数；达到上限时会明确提示，配置 `0` 表示不限 |
 | `searchProvider` | `"ollama"` | `"brave"` | 搜索服务：`ollama`、`searxng`、`brave`、`duckduckgo` |
 | `ollamaApiKey` | 无 | `"YOUR_OLLAMA_API_KEY"` | Ollama Web Search API Key，`searchProvider=ollama` 时使用 |
 | `searxngUrl` | 无 | `"http://localhost:8080"` | 自建 SearXNG 地址，`searchProvider=searxng` 时使用 |
@@ -200,6 +190,8 @@ git push origin HEAD --follow-tags
 | `memory` | 见下文 | `{ "maxTotalChars": 80000 }` | 长期记忆单条与总容量限制 |
 | `debug` | `false` | `{ "enabled": true, "modelIO": true }` | 模型输入输出调试日志 |
 | `security` | 见下文 | `{ "bash": { "mode": "allow" } }` | bash、Gateway、工具审计安全配置 |
+| `project` | 见下文 | `{ "security": { "mode": "ask" }, "openTimeoutMs": 30000, "gitTimeoutMs": 10000, "diffMaxChars": 200000, "treeMaxDepth": 4, "treeMaxEntries": 2000, "searchMaxResults": 200, "searchMaxChars": 50000, "searchTimeoutMs": 10000 }` | 项目会话权限、打开/Git/搜索超时和工具输出限制 |
+| `plan` | `{ "enabled": true, "maxSteps": 8 }` | 同默认值 | 计划执行模式开关与单个计划最大步骤数 |
 
 本地模型可直接在 WebUI“配置”页面下载和测试，无需安装 Ollama。模型文件保存在 `workspace/models/`；Qwen3.5 4B 更适合中文和 Agent 场景，Gemma 4 提供从 E2B 到 31B 的不同规模。选择模型不会自动下载，点击“下载并安装”后卡片会显示实时百分比和下载字节数；下载完成后才能测试本地模型。远程和本地模型使用独立卡片和测试按钮，测试不会写入会话历史或执行工具。Qwen3.5 和 Gemma 4 目录中的模型均采用 Apache-2.0；模型不会被打包进 tiny-claw 安装包。
 
@@ -383,46 +375,7 @@ WebUI 支持选择图片或直接粘贴截图，可在发送前预览和移除�
 
 ### Gateway API
 
-Gateway 默认只监听 `127.0.0.1`。如需暴露到其他机器，请同时配置 Bearer token：
-
-```json
-{
-  "security": {
-    "gateway": {
-      "host": "0.0.0.0",
-      "token": "YOUR_GATEWAY_TOKEN"
-    }
-  }
-}
-```
-
-外部 API 请求需携带 `Authorization: Bearer YOUR_GATEWAY_TOKEN`。Web UI 仍只监听本机回环地址。
-
-启动 HTTP API 服务，支持外部客户端通过 SSE 流式调用 Agent：
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | /chat | 发送消息（SSE 流式响应） |
-| GET | /sessions | 列出活跃会话 |
-| DELETE | /sessions/:id | 销毁会话 |
-| POST | /sessions/:id/cancel | 取消会话中正在运行的任务 |
-| GET | /approvals | 列出命令审批记录 |
-| POST | /approvals/:id/approve | 允许相同命令执行一次 |
-| POST | /approvals/:id/approve-turn-and-resume | 允许本轮后续 `ask` 权限并继续原任务（SSE） |
-| POST | /approvals/:id/reject | 拒绝命令执行 |
-| GET | /memory | 列出长期记忆 |
-| PUT | /memory/:name | 更新长期记忆 |
-| DELETE | /memory/:name | 删除长期记忆 |
-
-POST /chat 请求示例：
-
-```json
-{ "message": "你好", "session_id": "optional" }
-```
-
-聊天输入支持插件注册的斜杠命令。输入 `/help` 可查看当前可用命令；输入 `/new` 可开启新会话；输入 `/context` 可查看当前上下文长度估算；输入 `/dream` 可立即触发 workspace 级 auto-memory 整理。
-
-同一 session 同一时间只允许执行一个任务。客户端断开 SSE 连接时，Gateway 会自动取消后台任务；已知 session 也可以通过 `/sessions/:id/cancel` 主动取消。默认最多执行 20 次 Agent Loop 迭代，可通过 `maxAgentIterations` 调整，显式配置 `0` 表示不限。
+Gateway 支持通过 HTTP + SSE 集成外部客户端，默认只监听 `127.0.0.1`。接口、鉴权、请求格式和取消规则参见 [Gateway API 文档](docs/gateway-api.md)。
 
 ### 飞书机器人配置
 
@@ -477,86 +430,10 @@ POST /chat 请求示例：
 
 飞书审批绑定发起用户和会话。批准后会继续原会话中暂停的工具调用；其他用户无法查看、批准或拒绝该审批。
 
-## 插件开发
+## 文档
 
-tiny-claw 采用插件化架构，所有业务逻辑由插件实现。框架通过 `PluginManager` 统一调度插件生命周期和钩子。
-
-用户自定义插件只需放在 `workspace/plugins/<name>/index.ts`，启动时自动加载，无需修改配置。
-
-插件开发详细文档请参考 [docs/plugin-development.md](docs/plugin-development.md)，包含：
-
-- `Plugin` / `PluginContext` 接口说明
-- 8 个生命周期钩子的触发时机和用途
-- 快速创建插件的完整示例
-- 自定义工具和斜杠聊天命令注册示例
-- 注册工具、HTTP 路由的代码示例
-- 配置读写方式
-- 核心插件和飞书插件作为实战参考
-
-## 技术栈
-- 主要编程语言：**TypeScript**（项目涉及大量消息格式、工具 schema、API 响应等结构化数据，类型安全能显著减少 bug）
-
-## 功能
-
-### 基础能力（主链路）
-
-1. [x] **Main Loop** — 规划-执行-观察循环，直到任务完成
-   - 终止条件：任务完成、模型判断无法继续、用户中断
-   - 异常处理：执行失败时重试或换策略，单次循环最大步数限制
-2. [x] **Model IO + Prompt** — 调用大模型，管理提示词
-   - Prompt 管理：使用模板和上下文构造提示词
-   - Model 调用：发送 prompt，获取响应
-   - 流式输出：支持 streaming
-3. [x] **工具调用** — 脚本执行、文件读写等
-   - 声明式工具注册：使用 JSON Schema 定义工具的参数和描述（类似 OpenAI function calling）
-   - 工具发现：自动发现和注册可用工具
-   - 内置工具：web_search、web_fetch、bash、file_read、file_write、file_edit、memory_save、memory_append、memory_list、memory_read、memory_delete、skill_use、skill_list、sub_agent_run
-4. [x] **History** — 历史消息管理
-5. [x] **日志** — 方便排查问题
-6. [x] **上下文压缩** — 长任务导致上下文溢出时自动压缩
-7. [x] **配置管理** — 模型选择、API key、工具权限等配置的统一管理
-8. [x] **聊天指令** 通过输入 /xxxx 执行指令，比如 /new_session 开启新session
-
-### 高级能力
-
-1. [x] **Memory** — 持久化记忆（工具驱动，读写 memory/*.md）
-2. [x] **Skill** — 技能系统，支持可插拔的专项能力（skills/<name>/SKILL.md）
-3. [x] **网关** — HTTP Gateway（SSE 流式 API、会话管理）
-4. [x] **插件系统** — 内置/外部插件加载，路由注册，生命周期管理
-5. [x] **基础权限边界** — 文件工具支持 workspace 外路径；bash 支持 `allow`/`ask`/`deny` 权限模式；Gateway 默认仅本机监听并支持 token 鉴权
-6. [x] **模式切换** — 可以以不同模式执行任务，比如 询问模式、自动模式、计划模式等。
-7. [x] **飞书接入** — 飞书机器人（WebSocket 长连接模式）
-8. [ ] **心跳** — 定时启动，执行定期任务
-9. [x] **Web UI** — 基于 Gateway 的前端界面
-10. [ ] **多Agent** - 多agent，互相隔离，不同的工作目录和上下文
-11. [x] **SubAgent** - 并行执行子任务的临时 sub-agent，默认只读权限，可配置工具白名单/黑名单
-12. [ ] **RAG** — 检索增强生成
-13. [ ] **进程沙箱** — 通过容器或受限进程执行脚本
-
-
-## 与 Open-Claw 的对比
-
-| 功能模块 | tiny-claw | open-claw |
-|---------|-----------|-----------|
-| **Agent Loop** | 自实现规划-执行-观察循环，`AgentSession` 管理多会话 | 内置 Loop 引擎，架构相似 |
-| **Prompt 管理** | 手动构造 system prompt + `identity.md` 注入 | 内置 prompt 模板系统 |
-| **工具系统** | `ToolRegistry` + JSON Schema 声明式注册，15 个内置工具 | Plugin SDK 驱动，工具通过插件注册 |
-| **上下文压缩** | 模型摘要压缩，滑动窗口历史 | 有类似机制 |
-| **Memory** | 工具驱动，文件存储 `memory/*.md` | 独立的 Memory 模块 |
-| **Skill 系统** | `workspace/skills/<name>/SKILL.md` + frontmatter | 插件形式的技能系统 |
-| **HTTP Gateway** | 自定义实现，SSE 流式 + 会话管理 | 内置 Gateway 模块 |
-| **飞书接入** | 简化实现，直接使用 `@larksuiteoapi/node-sdk` WSClient | 官方 `@larksuite/openclaw-lark` 插件 |
-| **插件系统** | 自定义 Plugin 接口 + 路由注册表，~100 行 | 完整 Plugin SDK，18 个子模块 |
-| **权限沙箱** | 未实现 | 有 sandbox 模块 |
-| **Web UI** | React + Vite 前端，基于 Gateway SSE | 有 Web UI |
-| **RAG** | 未实现 | RAG 模块 |
-| **代码规模** | ~20 个源文件，轻量聚焦 | 企业级，功能全面 |
-| **外部依赖** | 极少（仅 `@larksuiteoapi/node-sdk`） | 重型（Plugin SDK 等） |
-| **模型支持** | 兼容 Anthropic Messages API（可对接火山方舟等） | Anthropic Messages API |
-| **多租户** | `AgentSession` + `session_id` 隔离 | Session 管理 |
-
-### 设计哲学差异
-
-- **tiny-claw** 追求极简——零运行时依赖、核心逻辑自实现、代码量小、易于理解和修改。适合学习、个人项目或定制化场景。
-- **open-claw** 追求企业级完备性——丰富的插件生态、完善的权限管理、开箱即用的多平台支持。适合团队协作、生产环境部署。
-- **插件兼容**：当前插件系统为简化自实现，后续计划逐步兼容 open-claw 的插件规范，最终能复用其插件生态。
+- [架构说明](docs/architecture.md)
+- [Gateway API](docs/gateway-api.md)
+- [插件开发指南](docs/plugin-development.md)
+- [本地开发与测试](docs/development.md)
+- [macOS 构建与发布](docs/release.md)

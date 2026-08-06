@@ -1,4 +1,4 @@
-import type { Session, Message, MemoryRecord, ApprovalRequest, ChatCommand, Attachment, ModelCallSummary, ModelCallTrace } from "../types.js";
+import type { Session, Message, MemoryRecord, ApprovalRequest, ChatCommand, Attachment, ModelCallSummary, ModelCallTrace, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionContext, SessionPlan, ExecutionMode } from "../types.js";
 
 export { streamChat, streamApprovalResume } from "./sse-client.js";
 
@@ -27,7 +27,7 @@ export async function fetchMessages(id: string): Promise<Message[]> {
   return data.messages ?? [];
 }
 
-export async function fetchHistorySessions(): Promise<Array<{ id: string; lastActivity: number; preview: string }>> {
+export async function fetchHistorySessions(): Promise<Session[]> {
   const res = await fetch("/history/sessions");
   const data = await res.json();
   return data.sessions ?? [];
@@ -37,6 +37,12 @@ export async function fetchHistoryMessages(id: string): Promise<Message[]> {
   const res = await fetch(`/history/sessions/${encodeURIComponent(id)}/messages`);
   const data = await res.json();
   return data.messages ?? [];
+}
+
+export async function fetchSessionPlans(id: string): Promise<SessionPlan[]> {
+  const res = await fetch(`/plan?session_id=${encodeURIComponent(id)}`);
+  const data = await parseJSON<{ plans: SessionPlan[] }>(res);
+  return data.plans ?? [];
 }
 
 export async function fetchChatCommands(): Promise<ChatCommand[]> {
@@ -191,5 +197,54 @@ export async function approveCommand(id: string): Promise<ApprovalRequest> {
 
 export async function rejectCommand(id: string): Promise<void> {
   const res = await fetch(`/approvals/${encodeURIComponent(id)}/reject`, { method: "POST" });
+  await parseJSON(res);
+}
+
+export async function fetchProjectInfo(projectPath: string, signal?: AbortSignal): Promise<ProjectInfo> {
+  const res = await fetch("/projects/inspect", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: projectPath }),
+    signal,
+  });
+  const data = await parseJSON<{ project: ProjectInfo }>(res);
+  return data.project;
+}
+
+export async function fetchProjectStatus(projectPath: string): Promise<ProjectGitStatus> {
+  const res = await fetch("/projects/status", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: projectPath }),
+  });
+  return (await parseJSON<{ status: ProjectGitStatus }>(res)).status;
+}
+
+export async function fetchProjectDiff(projectPath: string, file: string): Promise<ProjectDiff> {
+  const res = await fetch("/projects/diff", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: projectPath, file }),
+  });
+  return (await parseJSON<{ diff: ProjectDiff }>(res)).diff;
+}
+
+export async function createSession(mode: "chat" | "project", projectRoot?: string, reuseEmpty = false, signal?: AbortSignal): Promise<{ id: string; context: SessionContext; executionMode: ExecutionMode; reused?: boolean }> {
+  const res = await fetch("/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ mode, projectRoot, reuseEmpty }),
+    signal,
+  });
+  const data = await parseJSON<{ session: { id: string; context: SessionContext; executionMode: ExecutionMode; reused?: boolean } }>(res);
+  return data.session;
+}
+
+export async function updateSessionExecutionMode(id: string, executionMode: ExecutionMode): Promise<void> {
+  const res = await fetch(`/sessions/${encodeURIComponent(id)}/execution-mode`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ executionMode }),
+  });
   await parseJSON(res);
 }

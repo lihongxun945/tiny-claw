@@ -1,15 +1,16 @@
-import type { Plugin, HookContext } from "../types.js";
+import type { Plugin, HookContext, ModelCallContext } from "../types.js";
 import type { Message, Config } from "../../types.js";
 import { estimateTokens } from "../../estimate-tokens.js";
-import { getLocalContextSize } from "../../model/local-catalog.js";
+import { getEffectiveMaxContextTokens } from "../../context-budget.js";
+import { loadSessionState, updateSessionState } from "../../session-state.js";
+
+export { getEffectiveMaxContextTokens } from "../../context-budget.js";
 
 const SESSION_SUMMARY_MARKER = "[当前会话摘要]";
-const HISTORY_SUMMARY_MARKER = "[以下是对话历史的摘要]";
-const SYNTHETIC_SUMMARY_MARKERS = [SESSION_SUMMARY_MARKER, HISTORY_SUMMARY_MARKER];
+const LEGACY_HISTORY_SUMMARY_MARKER = "[以下是对话历史的摘要]";
 const MIN_TOOL_RESULT_CHAR_LIMIT = 1_000;
 const DEFAULT_CONTEXT_COMPRESSION_MAX_CHARS = 5000;
 const DEFAULT_CONTEXT_COMPRESSION_TOOL_RESULT_MAX_CHARS = 500;
-// 压缩摘要的输出 token 上限：压缩结果将替代整个历史，需要足够的输出预算
 const DEFAULT_CONTEXT_COMPRESSION_MAX_OUTPUT_TOKENS = 2048;
 const DEFAULT_TOOL_RESULT_INITIAL_MAX_CHARS = 12_000;
 
@@ -31,70 +32,65 @@ function getCompressionToolResultMaxChars(config: Config): number {
   return Math.floor(value);
 }
 
+function getCompressionMaxOutputTokens(config: Config): number {
+  const value = config.contextCompressionMaxOutputTokens;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 256) return DEFAULT_CONTEXT_COMPRESSION_MAX_OUTPUT_TOKENS;
+  return Math.floor(value);
+}
+
 function getToolResultInitialMaxChars(config: Config): number {
   const value = config.toolResultInitialMaxChars;
   if (!Number.isFinite(value) || value < MIN_TOOL_RESULT_CHAR_LIMIT) return DEFAULT_TOOL_RESULT_INITIAL_MAX_CHARS;
   return Math.floor(value);
 }
 
-export function getEffectiveMaxContextTokens(config: Config): number {
-  if (config.remoteModel?.enabled === false && config.localModel?.enabled) {
-    return Math.min(
-      config.maxContextTokens,
-      getLocalContextSize(config.localModel.modelId, config.localModel.contextSize),
-    );
-  }
-  return config.maxContextTokens;
-}
-
 function compressPrompt(maxChars: number): string {
-  return `请将以下对话历史压缩为一段简洁的摘要，保留关键信息（事实、决策、结论），省略细节和中间过程。用中文输出，不超过 ${maxChars} 字。`;
+  return `请更新以下会话摘要，保留关键事实、决策、结论、文件/API 和未完成事项，省略重复过程。用中文输出，不超过 ${maxChars} 字。只输出摘要。`;
 }
 
-function isSyntheticSummaryMessage(message: Message): boolean {
-  if (typeof message.content === "string") {
-    const content = message.content;
-    return SYNTHETIC_SUMMARY_MARKERS.some((marker) => content.startsWith(marker));
-  }
-  const first = message.content[0];
-  return first?.type === "text"
-    && typeof first.text === "string"
-    && SYNTHETIC_SUMMARY_MARKERS.some((marker) => first.text.startsWith(marker));
+function markerFor(message: Message): string | undefined {
+  const text = typeof message.content === "string"
+    ? message.content
+    : message.content[0]?.type === "text" ? message.content[0].text : "";
+  if (text.startsWith(SESSION_SUMMARY_MARKER)) return SESSION_SUMMARY_MARKER;
+  if (text.startsWith(LEGACY_HISTORY_SUMMARY_MARKER)) return LEGACY_HISTORY_SUMMARY_MARKER;
+  return undefined;
 }
 
-function summaryMarker(message: Message): string | undefined {
-  if (typeof message.content === "string") {
-    const content = message.content;
-    return SYNTHETIC_SUMMARY_MARKERS.find((marker) => content.startsWith(marker));
-  }
-  const first = message.content[0];
-  if (first?.type !== "text" || typeof first.text !== "string") return undefined;
-  return SYNTHETIC_SUMMARY_MARKERS.find((marker) => first.text.startsWith(marker));
+function summaryContent(message: Message): string {
+  const text = typeof message.content === "string"
+    ? message.content
+    : message.content[0]?.type === "text" ? message.content[0].text : "";
+  const marker = markerFor(message);
+  return marker ? text.slice(marker.length).trim() : "";
 }
 
-function normalizePreviousSyntheticSummaries(
-  previousMessages: Message[],
-): Message[] {
-  let sessionSummary: Message | undefined;
-  let historySummary: Message | undefined;
+function normalizePreviousMessages(previousMessages: Message[]): { summary: string; rawMessages: Message[] } {
+  let sessionSummary = "";
+  let legacySummary = "";
   const rawMessages: Message[] = [];
-
   for (const message of previousMessages) {
-    const marker = summaryMarker(message);
-    if (marker === SESSION_SUMMARY_MARKER) {
-      sessionSummary = message;
-    } else if (marker === HISTORY_SUMMARY_MARKER) {
-      historySummary = message;
-    } else {
-      rawMessages.push(message);
-    }
+    const marker = markerFor(message);
+    if (marker === SESSION_SUMMARY_MARKER) sessionSummary = summaryContent(message);
+    else if (marker === LEGACY_HISTORY_SUMMARY_MARKER) legacySummary = summaryContent(message);
+    else rawMessages.push(message);
   }
+  return { summary: sessionSummary || legacySummary, rawMessages };
+}
 
-  return [
-    ...(sessionSummary ? [sessionSummary] : []),
-    ...(historySummary ? [historySummary] : []),
-    ...rawMessages,
-  ];
+function summaryMessage(summary: string): Message[] {
+  return summary.trim()
+    ? [{ role: "user", content: `${SESSION_SUMMARY_MARKER}\n${summary.trim()}` }]
+    : [];
+}
+
+function truncateSummary(summary: string, maxChars: number): string {
+  if (summary.length <= maxChars) return summary;
+  const omission = "\n...[摘要已截断]...\n";
+  if (maxChars <= omission.length) return summary.slice(0, maxChars);
+  const tailChars = Math.min(Math.floor(maxChars * 0.4), maxChars - omission.length);
+  const headChars = maxChars - tailChars - omission.length;
+  return `${summary.slice(0, headChars)}${omission}${summary.slice(-tailChars)}`;
 }
 
 function truncateToolResultContent(content: string, maxChars: number): string {
@@ -104,119 +100,190 @@ function truncateToolResultContent(content: string, maxChars: number): string {
 
 function clampToolResults(messages: Message[], budgetTokens: number, initialMaxChars: number): Message[] {
   if (estimateTokens(messages) <= budgetTokens) return messages;
-
   let limit = initialMaxChars;
   let clamped = messages;
-
   while (limit >= MIN_TOOL_RESULT_CHAR_LIMIT) {
-    clamped = messages.map((message) => {
-      if (typeof message.content === "string") return message;
-      return {
-        ...message,
-        content: message.content.map((block) => block.type === "tool_result"
-          ? { ...block, content: truncateToolResultContent(block.content, limit) }
-          : block),
-      };
+    clamped = messages.map((message) => typeof message.content === "string" ? message : {
+      ...message,
+      content: message.content.map((block) => block.type === "tool_result"
+        ? { ...block, content: truncateToolResultContent(block.content, limit) }
+        : block),
     });
-
     if (estimateTokens(clamped) <= budgetTokens) return clamped;
     limit = Math.floor(limit / 2);
   }
-
   return clamped;
+}
+
+function messageToCompressionText(message: Message, toolResultMaxChars: number): string {
+  if (typeof message.content === "string") return `[${message.role}]: ${message.content}`;
+  const parts = message.content.map((block) => {
+    if (block.type === "text") return `[文本]: ${block.text}`;
+    if (block.type === "tool_use") return `[工具调用 ${block.name}]: ${JSON.stringify(block.input)}`;
+    if (block.type === "tool_result") return `[工具结果]: ${block.content.slice(0, toolResultMaxChars)}`;
+    if (block.type === "image") return `[图片]: ${block.name}`;
+    return "";
+  });
+  return `[${message.role}]: ${parts.filter(Boolean).join(" | ")}`;
 }
 
 export async function compressMessages(
   messages: Message[],
   ctx: HookContext,
+  existingSummary = "",
 ): Promise<Message[]> {
+  const maxChars = getCompressionMaxChars(ctx.config);
   const toolResultMaxChars = getCompressionToolResultMaxChars(ctx.config);
-  const text = messages
-    .map((msg) => {
-      if (typeof msg.content === "string") {
-        return `[${msg.role}]: ${msg.content}`;
-      }
-      const parts = msg.content.map((block) => {
-        if (block.type === "text") return `[文本]: ${block.text}`;
-        if (block.type === "tool_use") return `[工具调用 ${block.name}]: ${JSON.stringify(block.input)}`;
-        if (block.type === "tool_result") return `[工具结果]: ${block.content.slice(0, toolResultMaxChars)}`;
-        return "";
-      });
-      return `[${msg.role}]: ${parts.join(" | ")}`;
-    })
-    .join("\n");
-
+  const text = messages.map((message) => messageToCompressionText(message, toolResultMaxChars)).join("\n");
+  const prompt = `${compressPrompt(maxChars)}\n\n已有会话摘要：\n${existingSummary || "暂无"}\n\n新增上下文：\n${text}`;
   try {
     const summary = await ctx.client.complete(
-      [{ role: "user", content: `${compressPrompt(getCompressionMaxChars(ctx.config))}\n\n---\n${text}` }],
+      [{ role: "user", content: prompt }],
       "你是一个对话摘要助手，只输出摘要，不要有任何额外说明。",
-      { maxTokens: DEFAULT_CONTEXT_COMPRESSION_MAX_OUTPUT_TOKENS },
+      { maxTokens: getCompressionMaxOutputTokens(ctx.config) },
     );
-
-    return [
-      {
-        role: "user",
-        content: `[以下是对话历史的摘要]\n${summary}`,
-      },
-    ];
+    return summaryMessage(truncateSummary(summary.trim(), maxChars));
   } catch {
-    return messages.slice(-2);
+    return [];
   }
+}
+
+function takeRecentUserTurns(messages: Message[], count: number): Message[] {
+  if (count <= 0) return [];
+  let turns = 0;
+  let startIndex = messages.length;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index].role !== "user") continue;
+    turns++;
+    startIndex = index;
+    if (turns >= count) break;
+  }
+  return messages.slice(startIndex);
+}
+
+function latestTimestamp(messages: Message[]): number | undefined {
+  const timestamps = messages
+    .map((message) => message._timestamp)
+    .filter((value): value is number => typeof value === "number");
+  return timestamps.length > 0 ? Math.max(...timestamps) : undefined;
 }
 
 export const coreCompressPlugin: Plugin = {
   name: "core-compress",
-  async init(ctx) {
-    const config = ctx.config as unknown as Config;
+  async init(pluginCtx) {
+    pluginCtx.registerHooks({
+      onBeforeModelCall: async (hookCtx: HookContext, modelContext: ModelCallContext) => {
+        const previousMessages = modelContext.messages.slice(0, modelContext.turnStartIndex);
+        const currentMessages = modelContext.messages.slice(modelContext.turnStartIndex);
+        const normalized = normalizePreviousMessages(previousMessages);
+        const persisted = loadSessionState(pluginCtx.workspacePath, hookCtx.sessionId);
+        let summary = persisted.summary || normalized.summary;
+        let rawPrevious = normalized.rawMessages;
+        const initialMaxChars = getToolResultInitialMaxChars(hookCtx.config);
+        const beforeTokens = estimateTokens([...summaryMessage(summary), ...rawPrevious, ...currentMessages]);
+        let compressionStarted = false;
 
-    ctx.registerHooks({
-      onBeforeModelCall: async (hookCtx: HookContext, messages: Message[]) => {
-        const normalizedPreviousMessages = normalizePreviousSyntheticSummaries(
-          messages.slice(0, hookCtx.turnStartIndex),
+        let candidate = clampToolResults(
+          [...summaryMessage(summary), ...rawPrevious, ...currentMessages],
+          modelContext.messageTokenBudget,
+          initialMaxChars,
         );
-        const currentMessages = messages.slice(hookCtx.turnStartIndex);
-        const normalizedMessages = [...normalizedPreviousMessages, ...currentMessages];
-        const tokens = estimateTokens(normalizedMessages);
-        const threshold = getEffectiveMaxContextTokens(config) * config.contextCompressionThreshold;
-
-        const toolResultInitialMaxChars = getToolResultInitialMaxChars(hookCtx.config);
-
-        if (tokens < threshold) return clampToolResults(normalizedMessages, threshold, toolResultInitialMaxChars);
-
-        const turnStartIdx = normalizedPreviousMessages.length;
-
-        // 优先压缩历史对话（turnStartIdx 之前）
-        const previousMessages = normalizedMessages.slice(0, turnStartIdx);
-
-        if (previousMessages.length > 2) {
-          const summaryMessages = previousMessages.filter(isSyntheticSummaryMessage);
-          const rawPreviousMessages = previousMessages.filter((message) => !isSyntheticSummaryMessage(message));
-          const keepCount = Math.min(rawPreviousMessages.length, Math.max(2, getRecentTurns(config) * 2));
-          const toCompress = rawPreviousMessages.slice(0, -keepCount);
-          let recentPrevious = rawPreviousMessages.slice(-keepCount);
-
-          if (recentPrevious.length > 0 && recentPrevious[0].role === "assistant") {
-            recentPrevious = recentPrevious.slice(1);
-          }
-
-          if (toCompress.length > 0) {
-            const compressed = await compressMessages(toCompress, hookCtx);
-            return clampToolResults([...summaryMessages, ...compressed, ...recentPrevious, ...currentMessages], threshold, toolResultInitialMaxChars);
-          }
-
-          return clampToolResults([...summaryMessages, ...recentPrevious, ...currentMessages], threshold, toolResultInitialMaxChars);
+        if (estimateTokens(candidate) <= modelContext.messageTokenBudget) {
+          return {
+            ...modelContext,
+            messages: candidate,
+            turnStartIndex: candidate.length - currentMessages.length,
+          };
         }
 
-        // 历史不足，压缩当前轮前半部分
-        if (currentMessages.length > 4) {
-          const splitIdx = Math.ceil(currentMessages.length / 2);
-          const toCompress = currentMessages.slice(0, splitIdx);
-          const toKeep = currentMessages.slice(splitIdx);
-          const compressed = await compressMessages(toCompress, hookCtx);
-          return clampToolResults([...compressed, ...toKeep], threshold, toolResultInitialMaxChars);
+        const through = persisted.summaryThroughTimestamp ?? 0;
+        const unsummarized = rawPrevious.filter((message) => (
+          typeof message._timestamp !== "number" || message._timestamp > through
+        ));
+        if (unsummarized.length > 0) {
+          compressionStarted = true;
+          modelContext.reportStatus?.({
+            stage: "context_compression",
+            state: "started",
+            message: "正在压缩上下文…",
+            beforeTokens,
+          });
+          const compressed = await compressMessages(unsummarized, hookCtx, summary);
+          if (compressed.length > 0) {
+            summary = summaryContent(compressed[0]);
+            const summarizedThroughTimestamp = latestTimestamp(unsummarized) ?? through;
+            updateSessionState(pluginCtx.workspacePath, hookCtx.sessionId, (state) => ({
+              sessionId: hookCtx.sessionId,
+              summary,
+              summaryThroughTimestamp: summarizedThroughTimestamp,
+              pendingMessages: state.pendingMessages.filter((message) => (
+                typeof message._timestamp !== "number" || message._timestamp > summarizedThroughTimestamp
+              )),
+              turnsSinceSummary: 0,
+              autoMemory: state.autoMemory,
+            }));
+          } else {
+            modelContext.reportStatus?.({
+              stage: "context_compression",
+              state: "failed",
+              message: "上下文压缩失败，正在检查请求是否仍可继续",
+              beforeTokens,
+            });
+            pluginCtx.log("WARN", "上下文压缩模型调用失败，保留原始合法消息并执行预算检查", hookCtx.sessionId);
+            return {
+              ...modelContext,
+              messages: candidate,
+              turnStartIndex: candidate.length - currentMessages.length,
+            };
+          }
         }
 
-        return clampToolResults(messages, threshold, toolResultInitialMaxChars);
+        for (let recentTurns = getRecentTurns(hookCtx.config); recentTurns >= 0; recentTurns--) {
+          const recentPrevious = takeRecentUserTurns(rawPrevious, recentTurns);
+          candidate = clampToolResults(
+            [...summaryMessage(summary), ...recentPrevious, ...currentMessages],
+            modelContext.messageTokenBudget,
+            initialMaxChars,
+          );
+          if (estimateTokens(candidate) <= modelContext.messageTokenBudget) {
+            if (compressionStarted) {
+              modelContext.reportStatus?.({
+                stage: "context_compression",
+                state: "completed",
+                message: "上下文压缩完成，正在调用模型…",
+                beforeTokens,
+                afterTokens: estimateTokens(candidate),
+              });
+            }
+            return {
+              ...modelContext,
+              messages: candidate,
+              turnStartIndex: candidate.length - currentMessages.length,
+            };
+          }
+        }
+
+        // 当前轮始终完整保留；若仍超限，由 Agent 的最终预算检查明确终止本轮。
+        rawPrevious = [];
+        candidate = clampToolResults(
+          [...summaryMessage(summary), ...currentMessages],
+          modelContext.messageTokenBudget,
+          initialMaxChars,
+        );
+        if (compressionStarted) {
+          modelContext.reportStatus?.({
+            stage: "context_compression",
+            state: "completed",
+            message: "上下文压缩完成，正在调用模型…",
+            beforeTokens,
+            afterTokens: estimateTokens(candidate),
+          });
+        }
+        return {
+          ...modelContext,
+          messages: candidate,
+          turnStartIndex: candidate.length - currentMessages.length,
+        };
       },
     });
   },

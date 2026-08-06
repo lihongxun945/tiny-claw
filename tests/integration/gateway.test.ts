@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 import { startTestGateway, type TestGateway } from "../helpers/start-gateway.js";
 import { loadSessionState, saveSessionState } from "../../src/session-state.js";
-import { appendSessionMessage } from "../../src/session-store.js";
+import { appendSessionMessage, readSessionMeta } from "../../src/session-store.js";
 import { attachmentToImageBlock, readAttachment } from "../../src/attachments.js";
+import { createSessionPlan, updateSessionPlanStep } from "../../src/plan-store.js";
 
 async function json(url: string, init?: RequestInit): Promise<{ status: number; body: any }> {
   const response = await fetch(url, init);
@@ -94,6 +95,119 @@ describe("Gateway HTTP API", () => {
       enabledPlugins: [],
       plugins: {},
     });
+  });
+
+  it("inspects projects through the production web proxy", async () => {
+    writeFileSync(resolve(workspacePath, "package.json"), "{}", "utf-8");
+    writeFileSync(resolve(workspacePath, "AGENTS.md"), "gateway project rule", "utf-8");
+    const inspected = await json(`${gateway.webUrl}/projects/inspect`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: workspacePath }),
+    });
+    expect(inspected).toEqual({
+      status: 200,
+      body: {
+        project: expect.objectContaining({
+          root: realpathSync(workspacePath),
+          stack: ["Node.js / npm"],
+          rules: expect.stringContaining("gateway project rule"),
+        }),
+      },
+    });
+  });
+
+  it("creates project sessions with a persistent immutable context", async () => {
+    const created = await json(`${gateway.apiUrl}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "project", projectRoot: workspacePath }),
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.session).toMatchObject({
+      id: expect.any(String),
+      context: { mode: "project", project: { root: realpathSync(workspacePath) } },
+    });
+
+    const sessions = await json(`${gateway.apiUrl}/history/sessions`);
+    expect(sessions.body.sessions).toContainEqual(expect.objectContaining({
+      id: created.body.session.id,
+      context: expect.objectContaining({ mode: "project" }),
+    }));
+  });
+
+  it("reuses the latest empty session for the same project when requested", async () => {
+    const first = await json(`${gateway.apiUrl}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "project", projectRoot: workspacePath, reuseEmpty: true }),
+    });
+    const second = await json(`${gateway.apiUrl}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "project", projectRoot: workspacePath, reuseEmpty: true }),
+    });
+
+    expect(second.status).toBe(200);
+    expect(second.body.session).toMatchObject({ id: first.body.session.id, reused: true });
+  });
+
+  it("serves persisted session plans through the WebUI proxy", async () => {
+    const created = await json(`${gateway.apiUrl}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "chat" }),
+    });
+    const firstTurnId = "11111111-1111-4111-8111-111111111111";
+    const secondTurnId = "22222222-2222-4222-8222-222222222222";
+    createSessionPlan(workspacePath, created.body.session.id, firstTurnId, ["分析", "实现"]);
+    updateSessionPlanStep(workspacePath, created.body.session.id, firstTurnId, "step-1", "in_progress");
+    updateSessionPlanStep(workspacePath, created.body.session.id, firstTurnId, "step-1", "completed");
+    updateSessionPlanStep(workspacePath, created.body.session.id, firstTurnId, "step-2", "in_progress");
+    const firstPlan = updateSessionPlanStep(workspacePath, created.body.session.id, firstTurnId, "step-2", "completed");
+    createSessionPlan(workspacePath, created.body.session.id, secondTurnId, ["检查", "输出"]);
+    updateSessionPlanStep(workspacePath, created.body.session.id, secondTurnId, "step-1", "in_progress");
+    const secondPlan = updateSessionPlanStep(workspacePath, created.body.session.id, secondTurnId, "step-1", "failed", "检查失败");
+    appendSessionMessage(workspacePath, created.body.session.id, { role: "user", content: "第一轮", _timestamp: 1, _turnId: firstTurnId });
+    appendSessionMessage(workspacePath, created.body.session.id, { role: "assistant", content: "第一轮结果", _timestamp: 2, _turnId: firstTurnId });
+    appendSessionMessage(workspacePath, created.body.session.id, { role: "user", content: "第二轮", _timestamp: 3, _turnId: secondTurnId });
+    appendSessionMessage(workspacePath, created.body.session.id, { role: "assistant", content: "第二轮结果", _timestamp: 4, _turnId: secondTurnId });
+    const response = await json(`${gateway.webUrl}/plan?session_id=${encodeURIComponent(created.body.session.id)}`);
+    expect(response).toEqual({ status: 200, body: { plans: [firstPlan, secondPlan] } });
+    const history = await json(`${gateway.webUrl}/history/sessions/${encodeURIComponent(created.body.session.id)}/messages`);
+    expect(history.body.messages).toEqual([
+      expect.objectContaining({ role: "user", turnId: firstTurnId }),
+      expect.objectContaining({ role: "assistant", turnId: firstTurnId, plan: firstPlan }),
+      expect.objectContaining({ role: "user", turnId: secondTurnId }),
+      expect.objectContaining({ role: "assistant", turnId: secondTurnId, plan: secondPlan }),
+    ]);
+  });
+
+  it("persists each session execution mode and rejects invalid values", async () => {
+    const created = await json(`${gateway.apiUrl}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "chat" }),
+    });
+    const sessionId = created.body.session.id as string;
+    expect(created.body.session.executionMode).toBe("normal");
+
+    expect(await json(`${gateway.apiUrl}/sessions/${sessionId}/execution-mode`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ executionMode: "plan" }),
+    })).toEqual({ status: 200, body: { executionMode: "plan" } });
+
+    const sessions = await json(`${gateway.apiUrl}/history/sessions`);
+    expect(sessions.body.sessions).toContainEqual(expect.objectContaining({ id: sessionId, executionMode: "plan" }));
+    expect(readSessionMeta(workspacePath, sessionId)?.preferences.executionMode).toBe("plan");
+
+    const invalid = await json(`${gateway.apiUrl}/sessions/${sessionId}/execution-mode`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ executionMode: "invalid" }),
+    });
+    expect(invalid).toEqual({ status: 400, body: { error: "executionMode 仅支持 normal 或 plan" } });
   });
 
   it("reloads an idle session after model configuration changes", async () => {

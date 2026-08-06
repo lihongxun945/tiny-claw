@@ -93,6 +93,7 @@ export function createSubAgentTool(workspacePath: string): Tool {
         workspacePath,
         parentSessionId: context?.sessionId,
         actor: context?.actor,
+        sessionContext: context?.sessionContext,
         tasks,
         maxIterations: args.max_iterations as number | undefined,
         maxConcurrency: args.max_concurrency as number | undefined,

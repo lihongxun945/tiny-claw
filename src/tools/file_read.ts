@@ -1,10 +1,12 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Tool } from "../types.js";
+import type { Config, Tool } from "../types.js";
+import { resolveRootFile } from "./workspace-path.js";
+import { checkDangerousToolPermission } from "./permission.js";
 
 const MAX_READ = 50000;
 
-export function createFileReadTool(workspacePath: string): Tool {
+export function createFileReadTool(workspacePath: string, getConfig: () => Config): Tool {
   return {
     name: "file_read",
     description: "读取文件内容，返回带行号的文本。支持按行号范围读取。",
@@ -26,10 +28,29 @@ export function createFileReadTool(workspacePath: string): Tool {
       },
       required: ["path"],
     },
-    execute: async (args) => {
-      const filePath = resolve(workspacePath, args.path as string);
+    execute: async (args, context) => {
+      const root = context?.rootPath ?? workspacePath;
+      let filePath: string;
+      try {
+        filePath = context?.restrictToRoot
+          ? resolveRootFile(root, args.path as string)
+          : resolve(root, args.path as string);
+      } catch (error) {
+        return JSON.stringify({ error: error instanceof Error ? error.message : String(error) });
+      }
       const offset = (args.offset as number) ?? 1;
       const limit = args.limit as number | undefined;
+
+      const permission = checkDangerousToolPermission({
+        workspacePath,
+        config: context?.config ?? getConfig(),
+        toolName: "file_read",
+        args,
+        context,
+        command: `read ${filePath}`,
+        cwd: root,
+      });
+      if (!permission.allowed) return permission.result;
 
       if (!existsSync(filePath)) {
         return JSON.stringify({ error: `文件不存在: ${filePath}` });

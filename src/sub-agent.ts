@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { AgentSession } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { PluginManager } from "./plugin-manager.js";
-import type { AgentActor, Config } from "./types.js";
+import type { AgentActor, Config, SessionContext } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -38,6 +38,7 @@ export interface SubAgentRunOptions {
   tasks: SubAgentTask[];
   maxIterations?: number;
   maxConcurrency?: number;
+  sessionContext?: SessionContext;
 }
 
 export interface SubAgentTaskResult {
@@ -98,6 +99,7 @@ async function runOneSubAgent(
   actor: AgentActor | undefined,
   task: SubAgentTask,
   maxIterations: number,
+  sessionContext?: SessionContext,
 ): Promise<SubAgentTaskResult> {
   const id = task.id?.trim() || randomUUID();
   const sessionId = parentSessionId
@@ -114,7 +116,7 @@ async function runOneSubAgent(
 
     const session = new AgentSession(sessionId, workspacePath, pm, {
       maxAgentIterations: maxIterations,
-    });
+    }, undefined, sessionContext);
 
     let finalText = "";
     let sawDone = false;
@@ -204,6 +206,7 @@ export async function runSubAgents(options: SubAgentRunOptions): Promise<SubAgen
       options.actor,
       task,
       maxIterations,
+      options.sessionContext,
     ),
   );
 

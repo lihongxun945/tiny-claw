@@ -33,7 +33,7 @@ function estimateMessageTokens(msg: Message): number {
   return tokens;
 }
 
-function estimateTextTokens(text: string): number {
+export function estimateTextTokens(text: string): number {
   let tokens = 0;
   for (const ch of text) {
     const code = ch.codePointAt(0)!;

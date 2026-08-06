@@ -2,6 +2,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { Config, Tool } from "../types.js";
 import { checkDangerousToolPermission } from "./permission.js";
+import { resolveRootFile } from "./workspace-path.js";
 
 export function createFileWriteTool(workspacePath: string, getConfig: () => Config): Tool {
   return {
@@ -25,10 +26,13 @@ export function createFileWriteTool(workspacePath: string, getConfig: () => Conf
       const content = args.content as string;
 
       try {
-        const filePath = resolve(workspacePath, args.path as string);
+        const root = context?.rootPath ?? workspacePath;
+        const filePath = context?.restrictToRoot
+          ? resolveRootFile(root, args.path as string)
+          : resolve(root, args.path as string);
         const permission = checkDangerousToolPermission({
           workspacePath,
-          config: getConfig(),
+          config: context?.config ?? getConfig(),
           toolName: "file_write",
           args,
           context,

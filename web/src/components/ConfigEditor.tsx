@@ -92,7 +92,7 @@ const FIELD_GROUPS: FieldGroup[] = [
       { key: "contextCompressionToolResultMaxChars", label: "压缩工具结果字符上限", type: "number", defaultValue: 500 },
       { key: "toolResultInitialMaxChars", label: "工具结果初始字符上限", type: "number", defaultValue: 12000 },
       { key: "historyWindowSize", label: "历史窗口轮数", type: "number", defaultValue: 5 },
-      { key: "maxAgentIterations", label: "最大 Agent 迭代", type: "number", defaultValue: 20, description: "设置为 0 表示不限制。" },
+      { key: "maxAgentIterations", label: "最大 Agent 迭代", type: "number", defaultValue: 100, description: "达到上限时任务会停止并明确提示；设置为 0 表示不限制。" },
     ],
   },
   {
@@ -148,12 +148,36 @@ const FIELD_GROUPS: FieldGroup[] = [
     ],
   },
   {
+    title: "项目开发模式",
+    fields: [
+      { key: "project.security.mode", label: "项目危险操作模式", type: "select", options: ["deny", "ask", "allow"], defaultValue: "ask", description: "项目会话默认使用 ask，并覆盖全局危险操作模式。" },
+      { key: "project.security.tools", label: "项目工具权限覆盖", type: "json", defaultValue: { file_read: { mode: "allow" }, file_write: { mode: "ask" }, file_edit: { mode: "ask" }, bash: { mode: "ask" }, project_tree: { mode: "allow" }, project_search: { mode: "allow" }, git_status: { mode: "allow" }, git_diff: { mode: "allow" } } },
+      { key: "project.historyWindowSize", label: "项目历史窗口轮数", type: "number", defaultValue: 8 },
+      { key: "project.maxAgentIterations", label: "项目最大 Agent 迭代", type: "number", defaultValue: 100 },
+      { key: "project.gitTimeoutMs", label: "Git 操作超时（毫秒）", type: "number", defaultValue: 10000 },
+      { key: "project.diffMaxChars", label: "Diff 最大字符数", type: "number", defaultValue: 200000 },
+      { key: "project.openTimeoutMs", label: "打开项目超时（毫秒）", type: "number", defaultValue: 30000 },
+      { key: "project.treeMaxDepth", label: "目录树最大深度", type: "number", defaultValue: 4 },
+      { key: "project.treeMaxEntries", label: "目录树最大条目数", type: "number", defaultValue: 2000 },
+      { key: "project.searchMaxResults", label: "项目搜索最大结果数", type: "number", defaultValue: 200 },
+      { key: "project.searchMaxChars", label: "项目搜索最大字符数", type: "number", defaultValue: 50000 },
+      { key: "project.searchTimeoutMs", label: "项目搜索超时（毫秒）", type: "number", defaultValue: 10000 },
+    ],
+  },
+  {
     title: "Sub-agent",
     fields: [
       { key: "subAgent.allowedTools", label: "允许工具", type: "list", defaultValue: [] },
       { key: "subAgent.disabledTools", label: "禁用工具", type: "list", defaultValue: [] },
       { key: "subAgent.maxIterations", label: "最大迭代次数", type: "number", defaultValue: 3 },
       { key: "subAgent.maxConcurrency", label: "最大并发数", type: "number", defaultValue: 3 },
+    ],
+  },
+  {
+    title: "计划执行模式",
+    fields: [
+      { key: "plan.enabled", label: "启用计划模式", type: "checkbox", defaultValue: true },
+      { key: "plan.maxSteps", label: "最大计划步骤数", type: "number", defaultValue: 8 },
     ],
   },
   {
