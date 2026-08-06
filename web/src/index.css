@@ -1254,6 +1254,10 @@ summary:focus-visible {
   box-shadow: 0 8px 24px rgba(26, 26, 26, .05);
 }
 
+.chat-view .plan-progress {
+  margin: 0 0 28px;
+}
+
 .plan-progress-header {
   display: flex;
   align-items: center;
@@ -1323,13 +1327,15 @@ summary:focus-visible {
 }
 
 .plan-step-in_progress,
-.plan-step-waiting_approval {
+.plan-step-waiting_approval,
+.plan-step-waiting_user {
   color: var(--text);
   font-weight: 600;
 }
 
 .plan-step-in_progress .plan-step-marker { color: var(--accent); }
 .plan-step-waiting_approval .plan-step-marker { color: #d99000; }
+.plan-step-waiting_user .plan-step-marker { color: #d99000; }
 .plan-step-completed .plan-step-marker { color: #279554; }
 .plan-step-failed .plan-step-marker,
 .plan-step-failed .plan-step-status { color: var(--danger); }
@@ -2590,6 +2596,31 @@ summary:focus-visible {
   font-size: 10px;
 }
 
+.project-file-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-file-additions {
+  flex-shrink: 0;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  color: #28a745;
+  white-space: nowrap;
+  margin-left: 4px;
+}
+
+.project-file-deletions {
+  flex-shrink: 0;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  color: #cb2431;
+  white-space: nowrap;
+  margin-left: 4px;
+}
+
 .project-diff-view {
   padding: 14px 16px;
   color: var(--text-secondary);
@@ -2611,6 +2642,25 @@ summary:focus-visible {
   color: #e8e8ea;
   font: 11px/1.55 "SFMono-Regular", Consolas, monospace;
   white-space: pre;
+}
+
+.diff-view {
+  display: block;
+}
+
+.diff-line {
+  display: block;
+  min-height: 1.55em;
+}
+
+/* Override highlight.js backgrounds in diff view — diff lines have their own colors */
+.diff-view .hljs {
+  background: transparent;
+}
+
+.diff-view .hljs-addition,
+.diff-view .hljs-deletion {
+  background: transparent;
 }
 
 .project-toolbar-badge {
@@ -2640,6 +2690,76 @@ summary:focus-visible {
   border-color: var(--danger);
   background: #fff0f0;
   color: var(--danger);
+}
+
+/* 醒目变更概览横条 */
+.project-changes-bar {
+  min-height: 42px;
+  padding: 0 28px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  border-bottom: 1px solid #e6d58a;
+  background: linear-gradient(135deg, #fff8e1 0%, #ffecb3 100%);
+  color: #5d4037;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 160ms ease, border-color 160ms ease;
+  animation: changes-bar-enter 200ms ease-out both;
+}
+
+.project-changes-bar:hover {
+  background: linear-gradient(135deg, #ffecb3 0%, #ffe082 100%);
+  border-bottom-color: #d4a835;
+}
+
+.project-changes-bar.active {
+  border-bottom-color: #d4a835;
+  background: linear-gradient(135deg, #ffecb3 0%, #ffe082 100%);
+}
+
+.project-changes-bar-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.project-changes-bar-count {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: #4e342e;
+}
+
+.project-changes-bar-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: #795548;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-changes-bar-toggle {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border-radius: 6px;
+  background: rgba(141, 110, 50, 0.12);
+  color: #5d4037;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 160ms ease;
+}
+
+.project-changes-bar:hover .project-changes-bar-toggle {
+  background: rgba(141, 110, 50, 0.2);
+}
+
+@keyframes changes-bar-enter {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @media (max-width: 680px) {

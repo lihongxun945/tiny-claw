@@ -9,12 +9,13 @@ import {
 } from "../../tools/approval.js";
 import { deleteStoredSession } from "../../session-store.js";
 import type { ChatCommand, ChatCommandContext, Plugin } from "../types.js";
-import { runWorkspaceAutoMemoryAnalysis } from "./auto-memory.js";
+import { createAutoMemoryLogger, runWorkspaceAutoMemoryAnalysis, type AutoMemoryLogger } from "./auto-memory.js";
 
 export const coreChatCommandsPlugin: Plugin = {
   name: "core-chat-commands",
 
   async init(ctx): Promise<void> {
+    const autoMemoryLog = createAutoMemoryLogger(ctx.workspacePath, ctx.log);
     const commands: ChatCommand[] = [
       {
         name: "help",
@@ -46,7 +47,7 @@ export const coreChatCommandsPlugin: Plugin = {
         name: "dream",
         description: "立即触发工作区长期记忆整理",
         usage: "/dream",
-        execute: (commandCtx) => dreamCommand(commandCtx),
+        execute: (commandCtx) => dreamCommand(commandCtx, autoMemoryLog),
       },
       {
         name: "approve",
@@ -139,7 +140,7 @@ function contextLengthText(ctx: ChatCommandContext): string {
   ].join("\n");
 }
 
-async function dreamCommand(ctx: ChatCommandContext): Promise<{ text: string }> {
+async function dreamCommand(ctx: ChatCommandContext, log: AutoMemoryLogger): Promise<{ text: string }> {
   if (!ctx.config || !ctx.client || !ctx.history) {
     return { text: "当前会话尚未初始化，无法触发记忆整理。" };
   }
@@ -155,6 +156,8 @@ async function dreamCommand(ctx: ChatCommandContext): Promise<{ text: string }> 
     getToolDefinitions: ctx.getToolDefinitions,
     getTool: ctx.getTool,
     actor: ctx.actor,
+    trigger: "dream",
+    log,
   });
 
   return {

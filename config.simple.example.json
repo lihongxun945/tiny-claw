@@ -7,6 +7,7 @@
   "model": "deepseek-v4-pro",
   "modelProvider": "openai-chat",
   "maxTokens": 16384,
+  "emptyResponseRetries": 1,
   "historyWindowSize": 10,
   "maxContextTokens": 128000,
   "debug": {

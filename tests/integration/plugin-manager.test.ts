@@ -318,6 +318,20 @@ describe("PluginManager hook lifecycle", () => {
     await filteredManager.destroy();
   });
 
+  it("lets plugins filter tool definitions for a specific session", () => {
+    const registry = (manager as unknown as {
+      registry: { register(tool: { name: string; description: string; inputSchema: { type: "object"; properties: Record<string, never> } }): void };
+    }).registry;
+    registry.register({ name: "first", description: "first", inputSchema: { type: "object", properties: {} } });
+    registry.register({ name: "second", description: "second", inputSchema: { type: "object", properties: {} } });
+    addHooks(manager, {
+      onFilterToolDefinitions: (_ctx, definitions) => definitions.filter((definition) => definition.name === "second"),
+    });
+
+    expect(manager.getToolDefinitions(undefined, "normal").map((tool) => tool.name)).toEqual(["first", "second"]);
+    expect(manager.getToolDefinitions(undefined, "normal", "main").map((tool) => tool.name)).toEqual(["second"]);
+  });
+
   it("persists model debug events, sanitizes image data, and exposes trace routes", async () => {
     await manager.loadCorePlugins();
     const requestId = "11111111-1111-4111-8111-111111111111";

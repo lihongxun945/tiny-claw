@@ -9,6 +9,8 @@ import ToolCallGroup from "./ToolCallGroup.js";
 interface Props {
   message: Message;
   isStreaming?: boolean;
+  toolGroupExpanded?: boolean;
+  onToolGroupExpandedChange?: (expanded: boolean) => void;
   onApproveAndResume?: (approvalId: string) => Promise<void>;
   onApproveTurnAndResume?: (approvalId: string) => Promise<void>;
 }
@@ -20,7 +22,7 @@ function formatTime(ts: number): string {
   return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function MessageBubble({ message, isStreaming, onApproveAndResume, onApproveTurnAndResume }: Props) {
+export default function MessageBubble({ message, isStreaming, toolGroupExpanded, onToolGroupExpandedChange, onApproveAndResume, onApproveTurnAndResume }: Props) {
   const isUser = message.role === "user";
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const attachments = message.attachments ?? [];
@@ -51,6 +53,8 @@ export default function MessageBubble({ message, isStreaming, onApproveAndResume
               {message.toolCalls.length > 1 ? (
                 <ToolCallGroup
                   toolCalls={message.toolCalls}
+                  expanded={toolGroupExpanded}
+                  onExpandedChange={onToolGroupExpandedChange}
                   onApproveAndResume={onApproveAndResume}
                   onApproveTurnAndResume={onApproveTurnAndResume}
                 />

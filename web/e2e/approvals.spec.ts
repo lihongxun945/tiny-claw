@@ -78,6 +78,68 @@ test("approves a pending command from the chat tool block", async ({ page }) => 
   await expect(page.locator(".tool-block")).toHaveCount(1);
 });
 
+test("refreshes a waiting plan as soon as approved tool execution resumes", async ({ page }) => {
+  const result = JSON.stringify({
+    error: "bash 执行需要用户确认。",
+    requiresConfirmation: true,
+    approvalId: "approval-plan-1",
+    command: "npm test",
+    cwd: "/tmp/workspace",
+  });
+  const waitingPlan = {
+    id: "plan-approval",
+    turnId: "turn-approval",
+    status: "executing",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    currentStepId: "step-1",
+    steps: [{ id: "step-1", title: "运行测试", status: "waiting_approval" }],
+  };
+  let planReads = 0;
+
+  await page.route("**/history/sessions", async (route) => route.fulfill({
+    json: { sessions: [{ id: "approval-plan", lastActivity: Date.now(), preview: "approval plan", context: { mode: "chat" }, executionMode: "plan" }] },
+  }));
+  await page.route("**/history/sessions/approval-plan/messages", async (route) => route.fulfill({
+    json: { messages: [{
+      role: "assistant",
+      text: "",
+      toolCalls: [{ id: "call-plan-1", name: "bash", input: { command: "npm test" }, result }],
+      timestamp: Date.now(),
+      turnId: "turn-approval",
+    }] },
+  }));
+  await page.route("**/plan?*", async (route) => {
+    planReads += 1;
+    const plan = planReads === 1
+      ? waitingPlan
+      : { ...waitingPlan, steps: [{ ...waitingPlan.steps[0], status: "in_progress" }] };
+    await route.fulfill({ json: { plans: [plan] } });
+  });
+  await page.route("**/approvals/approval-plan-1/approve-and-resume", async (route) => route.fulfill({
+    headers: { "content-type": "text/event-stream" },
+    body: [
+      "event: tool_call",
+      "data: {\"tool_call_id\":\"call-plan-1\",\"name\":\"bash\",\"input\":{\"command\":\"npm test\"}}",
+      "",
+      "event: tool_result",
+      "data: {\"tool_call_id\":\"call-plan-1\",\"name\":\"bash\",\"result\":\"running\"}",
+      "",
+      "event: done",
+      "data: {\"text\":\"仍在执行后续步骤\",\"session_id\":\"approval-plan\"}",
+      "",
+      "",
+    ].join("\n"),
+  }));
+
+  await page.goto("/");
+  await page.locator(".session-item", { hasText: "approval plan" }).click();
+  await expect(page.getByLabel("任务计划进度")).toContainText("等待审批");
+  await page.getByRole("button", { name: "批准本次" }).click();
+  await expect(page.getByLabel("任务计划进度")).toContainText("执行中");
+  expect(planReads).toBeGreaterThan(1);
+});
+
 test("allows every approval in the current turn from the chat tool block", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 560 });
   const longCommand = Array.from({ length: 12 }, (_, index) => `echo approval-${index}`).join(" && ");

@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { sessionDir } from "./session-store.js";
 
-export type PlanStepStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped" | "waiting_approval";
+export type PlanStepStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped" | "waiting_approval" | "waiting_user";
 export type PlanStatus = "planning" | "executing" | "completed" | "failed";
 
 export interface PlanStep {
@@ -20,6 +20,7 @@ export interface SessionPlan {
   createdAt: string;
   updatedAt: string;
   currentStepId?: string;
+  revision?: number;
   steps: PlanStep[];
 }
 
@@ -49,6 +50,13 @@ export function listSessionPlans(workspacePath: string, sessionId: string): Sess
     .map((name) => readSessionPlan(workspacePath, sessionId, name.slice(0, -5)))
     .filter((plan): plan is SessionPlan => plan !== undefined)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export function findActiveSessionPlan(workspacePath: string, sessionId: string, turnId: string): SessionPlan | undefined {
+  return readSessionPlan(workspacePath, sessionId, turnId)
+    ?? listSessionPlans(workspacePath, sessionId).reverse().find((plan) => (
+      plan.status === "planning" || plan.status === "executing"
+    ));
 }
 
 export function createSessionPlan(workspacePath: string, sessionId: string, turnId: string, titles: string[]): SessionPlan {
@@ -81,12 +89,44 @@ export function updateSessionPlanStep(
   validateTransition(plan, index, status);
   step.status = status;
   if (summary !== undefined) step.summary = summary;
-  plan.currentStepId = status === "in_progress" || status === "waiting_approval" ? step.id : undefined;
+  plan.currentStepId = status === "in_progress" || status === "waiting_approval" || status === "waiting_user" ? step.id : undefined;
   plan.status = plan.steps.every((item) => item.status === "completed" || item.status === "skipped")
     ? "completed"
     : plan.steps.some((item) => item.status === "failed")
       ? "failed"
       : plan.steps.some((item) => item.status !== "pending") ? "executing" : "planning";
+  plan.updatedAt = new Date().toISOString();
+  writeSessionPlan(workspacePath, sessionId, plan);
+  return plan;
+}
+
+export function revisePendingPlanSteps(
+  workspacePath: string,
+  sessionId: string,
+  turnId: string,
+  titles: string[],
+  maxSteps: number,
+): SessionPlan {
+  const plan = readSessionPlan(workspacePath, sessionId, turnId);
+  if (!plan) throw new Error("当前会话还没有计划，请先调用 plan_create");
+  const firstPendingIndex = plan.steps.findIndex((step) => step.status === "pending");
+  if (firstPendingIndex < 0) throw new Error("当前计划没有可调整的待执行步骤");
+  if (plan.steps.slice(firstPendingIndex).some((step) => step.status !== "pending")) {
+    throw new Error("只能调整计划末尾连续的待执行步骤");
+  }
+  const retained = plan.steps.slice(0, firstPendingIndex);
+  if (retained.length + titles.length < 2 || retained.length + titles.length > maxSteps) {
+    throw new Error(`调整后计划步骤数必须在 2 到 ${maxSteps} 之间`);
+  }
+  const nextStepNumber = plan.steps.reduce((max, step) => {
+    const match = /^step-(\d+)$/.exec(step.id);
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0) + 1;
+  plan.steps = [
+    ...retained,
+    ...titles.map((title, index) => ({ id: `step-${nextStepNumber + index}`, title, status: "pending" as const })),
+  ];
+  plan.revision = (plan.revision ?? 0) + 1;
   plan.updatedAt = new Date().toISOString();
   writeSessionPlan(workspacePath, sessionId, plan);
   return plan;
@@ -144,15 +184,16 @@ function validateTransition(plan: SessionPlan, index: number, next: PlanStepStat
   if (current === next) return;
   const allowed: Record<PlanStepStatus, PlanStepStatus[]> = {
     pending: ["in_progress", "skipped"],
-    in_progress: ["completed", "failed", "waiting_approval"],
+    in_progress: ["completed", "failed", "waiting_approval", "waiting_user"],
     waiting_approval: ["in_progress", "failed"],
+    waiting_user: ["in_progress", "failed"],
     completed: [],
     failed: [],
     skipped: [],
   };
   if (!allowed[current].includes(next)) throw new Error(`不允许将步骤从 ${current} 更新为 ${next}`);
   if (next === "in_progress") {
-    if (plan.steps.some((step, stepIndex) => stepIndex !== index && (step.status === "in_progress" || step.status === "waiting_approval"))) {
+    if (plan.steps.some((step, stepIndex) => stepIndex !== index && (step.status === "in_progress" || step.status === "waiting_approval" || step.status === "waiting_user"))) {
       throw new Error("同一时间只能执行一个计划步骤");
     }
     if (plan.steps.slice(0, index).some((step) => step.status !== "completed" && step.status !== "skipped")) {

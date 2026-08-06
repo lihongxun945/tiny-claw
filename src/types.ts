@@ -58,6 +58,7 @@ export interface Config {
   toolResultInitialMaxChars: number;
   historyWindowSize: number;
   maxAgentIterations: number;
+  emptyResponseRetries?: number;
   searchProvider: "ollama" | "searxng" | "brave" | "duckduckgo";
   ollamaApiKey?: string;
   searxngUrl?: string;

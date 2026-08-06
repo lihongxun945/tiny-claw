@@ -14,6 +14,7 @@ const DEFAULTS: Partial<Config> = {
   toolResultInitialMaxChars: 12_000,
   historyWindowSize: 5,
   maxAgentIterations: 100,
+  emptyResponseRetries: 1,
   searchProvider: "ollama",
 };
 
@@ -38,6 +39,7 @@ export function createDefaultConfig(): Record<string, unknown> {
     toolResultInitialMaxChars: DEFAULTS.toolResultInitialMaxChars,
     historyWindowSize: DEFAULTS.historyWindowSize,
     maxAgentIterations: DEFAULTS.maxAgentIterations,
+    emptyResponseRetries: DEFAULTS.emptyResponseRetries,
     sessionSummary: {
       enabled: true,
       persistent: true,
@@ -203,6 +205,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
   assertNumber(raw.toolResultInitialMaxChars ?? DEFAULTS.toolResultInitialMaxChars, "toolResultInitialMaxChars", { min: 1000, max: 10_000_000, integer: true });
   assertNumber(raw.historyWindowSize ?? DEFAULTS.historyWindowSize, "historyWindowSize", { min: 0, max: 10_000, integer: true });
   assertNumber(raw.maxAgentIterations ?? DEFAULTS.maxAgentIterations, "maxAgentIterations", { min: 0, max: 1_000, integer: true });
+  assertNumber(raw.emptyResponseRetries ?? DEFAULTS.emptyResponseRetries, "emptyResponseRetries", { min: 0, max: 5, integer: true });
 
   const searchProvider = raw.searchProvider ?? DEFAULTS.searchProvider;
   if (!["ollama", "searxng", "brave", "duckduckgo"].includes(String(searchProvider))) {
@@ -392,6 +395,7 @@ export function loadConfig(workspacePath: string): Config {
     toolResultInitialMaxChars: (raw.toolResultInitialMaxChars as number) ?? DEFAULTS.toolResultInitialMaxChars!,
     historyWindowSize: (raw.historyWindowSize as number) ?? DEFAULTS.historyWindowSize!,
     maxAgentIterations: (raw.maxAgentIterations as number) ?? DEFAULTS.maxAgentIterations!,
+    emptyResponseRetries: (raw.emptyResponseRetries as number) ?? DEFAULTS.emptyResponseRetries!,
     searchProvider: (raw.searchProvider as Config["searchProvider"]) ?? DEFAULTS.searchProvider!,
     ollamaApiKey: raw.ollamaApiKey as string | undefined,
     searxngUrl: raw.searxngUrl as string | undefined,

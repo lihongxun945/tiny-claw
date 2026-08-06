@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { Message, ToolCallInfo } from "../types.js";
 import MessageBubble from "./MessageBubble.js";
 import PlanProgress from "./PlanProgress.js";
@@ -32,9 +32,21 @@ export default function ChatView({
   onApproveTurnAndResume,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [expandedToolGroups, setExpandedToolGroups] = useState<Record<string, boolean>>({});
   const displayedMessages = streamingApprovalId
     ? mergeApprovalResume(messages, streamingApprovalId, streamingText, streamingToolCalls)
     : messages;
+
+  const toolGroupProps = (message: Message) => {
+    if (message.toolCalls.length <= 1) return {};
+    const key = message.toolCalls[0].id ?? `${message.turnId ?? message.timestamp}:tools`;
+    return {
+      toolGroupExpanded: expandedToolGroups[key],
+      onToolGroupExpandedChange: (expanded: boolean) => {
+        setExpandedToolGroups((previous) => ({ ...previous, [key]: expanded }));
+      },
+    };
+  };
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -67,6 +79,7 @@ export default function ChatView({
           <Fragment key={`${msg.turnId ?? "message"}-${i}`}>
             <MessageBubble
               message={msg}
+              {...toolGroupProps(msg)}
               onApproveAndResume={onApproveAndResume}
               onApproveTurnAndResume={onApproveTurnAndResume}
             />
@@ -75,17 +88,23 @@ export default function ChatView({
         ))}
         {isStreaming && !streamingApprovalId && (
           streamingText || streamingToolCalls.length > 0 ? (
-            <MessageBubble
-              message={{
+            (() => {
+              const message: Message = {
                 role: "assistant",
                 text: streamingText,
                 toolCalls: streamingToolCalls,
                 timestamp: Date.now(),
-              }}
-              isStreaming
-              onApproveAndResume={onApproveAndResume}
-              onApproveTurnAndResume={onApproveTurnAndResume}
-            />
+              };
+              return (
+                <MessageBubble
+                  message={message}
+                  {...toolGroupProps(message)}
+                  isStreaming
+                  onApproveAndResume={onApproveAndResume}
+                  onApproveTurnAndResume={onApproveTurnAndResume}
+                />
+              );
+            })()
           ) : (
             <div className="message assistant">
               <div className="message-content processing-indicator" aria-live="polite">

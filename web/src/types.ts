@@ -118,6 +118,8 @@ export interface ProjectChangedFile {
   staged: boolean;
   unstaged: boolean;
   untracked: boolean;
+  additions?: number;
+  deletions?: number;
 }
 
 export interface ProjectGitStatus {
@@ -136,7 +138,7 @@ export interface ProjectDiff {
 }
 
 export type ExecutionMode = "normal" | "plan";
-export type PlanStepStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped" | "waiting_approval";
+export type PlanStepStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped" | "waiting_approval" | "waiting_user";
 
 export interface SessionPlan {
   id: string;
@@ -145,5 +147,6 @@ export interface SessionPlan {
   createdAt: string;
   updatedAt: string;
   currentStepId?: string;
+  revision?: number;
   steps: Array<{ id: string; title: string; status: PlanStepStatus; summary?: string }>;
 }

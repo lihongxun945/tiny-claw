@@ -504,6 +504,44 @@ test("sends plan execution mode and restores structured progress", async ({ page
   await expect(page.getByLabel("任务计划进度")).toContainText("执行中");
 });
 
+test("keeps spacing between a historical plan and the next message", async ({ page }) => {
+  const now = Date.now();
+  await page.route("**/history/sessions", async (route) => route.fulfill({
+    json: { sessions: [{ id: "plan-spacing", lastActivity: now, preview: "下一轮消息", context: { mode: "chat" } }] },
+  }));
+  await page.route("**/history/sessions/plan-spacing/messages", async (route) => route.fulfill({
+    json: {
+      messages: [
+        {
+          role: "assistant",
+          text: "上一轮完成",
+          toolCalls: [],
+          timestamp: now - 2,
+          turnId: "turn-1",
+          plan: {
+            id: "plan-1",
+            turnId: "turn-1",
+            status: "completed",
+            createdAt: new Date(now - 3).toISOString(),
+            updatedAt: new Date(now - 2).toISOString(),
+            steps: [{ id: "step-1", title: "完成任务", status: "completed" }],
+          },
+        },
+        { role: "user", text: "下一轮消息", toolCalls: [], timestamp: now - 1, turnId: "turn-2" },
+      ],
+    },
+  }));
+  await page.route("**/plan?*", async (route) => route.fulfill({ json: { plans: [] } }));
+  await page.route("**/commands", async (route) => route.fulfill({ json: { commands: [] } }));
+
+  await page.goto("/#sid=plan-spacing");
+
+  const historicalPlan = page.locator(".chat-view .plan-progress");
+  await expect(historicalPlan).toBeVisible();
+  await expect(page.getByText("下一轮消息", { exact: true }).last()).toBeVisible();
+  await expect.poll(() => historicalPlan.evaluate((element) => getComputedStyle(element).marginBottom)).toBe("28px");
+});
+
 test("restores and persists the execution mode for each session", async ({ page }) => {
   const modes = new Map([
     ["session-plan", "plan"],

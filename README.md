@@ -10,7 +10,7 @@ tiny-claw 是一个插件化、可扩展的个人 AI Agent 框架，用于研究
 - 自主 Agent Loop、流式输出和多轮工具调用
 - 远程模型与内置 Qwen、Gemma 本地模型
 - Web 搜索、网页读取、Shell、文件读写和项目开发工具
-- 普通模式与可持久化的计划执行模式
+- 普通模式与可持久化、支持调研后动态细化的计划执行模式
 - 会话历史、上下文压缩、滚动摘要和跨会话长期记忆
 - Skill、Sub-agent 和自定义插件扩展
 - 危险操作权限审批、单次授权与本轮授权
@@ -169,6 +169,7 @@ macOS 客户端的所有用户数据保存在：
 | `model` | 必填 | `"deepseek-v4-flash"` | 模型名称 |
 | `modelProvider` | `"anthropic-messages"` | `"openai-chat"` | 模型协议适配器：`anthropic-messages`、`openai-chat`、`chatgpt` |
 | `maxTokens` | `16384` | `16384` | 单次模型回复最大 token |
+| `emptyResponseRetries` | `1` | `1` | 模型成功返回空文本且无工具调用时的重试次数 |
 | `maxContextTokens` | `128000` | `128000` | 上下文窗口 token 估算上限 |
 | `contextCompressionThreshold` | `0.7` | `0.7` | 超过 `maxContextTokens * threshold` 时触发上下文压缩 |
 | `contextCompressionMaxChars` | `5000` | `5000` | 上下文压缩摘要目标字数上限 |
@@ -191,7 +192,7 @@ macOS 客户端的所有用户数据保存在：
 | `debug` | `false` | `{ "enabled": true, "modelIO": true }` | 模型输入输出调试日志 |
 | `security` | 见下文 | `{ "bash": { "mode": "allow" } }` | bash、Gateway、工具审计安全配置 |
 | `project` | 见下文 | `{ "security": { "mode": "ask" }, "openTimeoutMs": 30000, "gitTimeoutMs": 10000, "diffMaxChars": 200000, "treeMaxDepth": 4, "treeMaxEntries": 2000, "searchMaxResults": 200, "searchMaxChars": 50000, "searchTimeoutMs": 10000 }` | 项目会话权限、打开/Git/搜索超时和工具输出限制 |
-| `plan` | `{ "enabled": true, "maxSteps": 8 }` | 同默认值 | 计划执行模式开关与单个计划最大步骤数 |
+| `plan` | `{ "enabled": true, "maxSteps": 8 }` | 同默认值 | 计划执行模式开关与单个计划最大步骤数；支持调研后细化计划及等待用户确认后继续 |
 
 本地模型可直接在 WebUI“配置”页面下载和测试，无需安装 Ollama。模型文件保存在 `workspace/models/`；Qwen3.5 4B 更适合中文和 Agent 场景，Gemma 4 提供从 E2B 到 31B 的不同规模。选择模型不会自动下载，点击“下载并安装”后卡片会显示实时百分比和下载字节数；下载完成后才能测试本地模型。远程和本地模型使用独立卡片和测试按钮，测试不会写入会话历史或执行工具。Qwen3.5 和 Gemma 4 目录中的模型均采用 Apache-2.0；模型不会被打包进 tiny-claw 安装包。
 
@@ -212,7 +213,7 @@ macOS 客户端的所有用户数据保存在：
 
 如果需要让子 agent 具备更多能力，可以把工具名加入 `allowedTools`，再确保不在 `disabledTools` 中。`sub_agent_run` 会始终被禁用，避免递归派生。
 
-Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作目录放置 `workspace/sub_agent_prompt.md` 覆盖。支持占位符：`{{task}}`、`{{context}}`、`{{allowed_tools}}`、`{{current_date}}`。
+Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作目录放置 `workspace/sub_agent_prompt.md` 覆盖。支持占位符：`{{task}}`、`{{context}}`、`{{allowed_tools}}`、`{{current_date}}`。临时 sub-agent 不独立续跑权限审批；遇到需要审批的工具时会把工具与参数返回给主 Agent，由主 Agent 重新调用并完成审批，避免产生无法恢复的子会话审批。
 
 | 配置项 | 默认值 | 示例 | 说明 |
 |---|---:|---|---|
@@ -279,7 +280,7 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 | `memory.maxItemChars` | `20000` | `20000` | 单条记忆正文最大字符数 |
 | `memory.maxTotalChars` | `80000` | `80000` | 所有启用记忆正文的总字符上限 |
 
-自动记忆整理会把“已保存长期记忆全文 + workspace 内上次成功整理后累计的用户问题和最终回答 + 配置的长度限制”一起交给整理模型，不包含中间工具调用、工具结果或调试日志。每条待整理对话有唯一 ID；整理成功后只清除本次快照包含的 ID，因此整理期间新增的对话会保留到下一次。workspace 整理锁避免多个 Gateway 或桌面实例同时修改记忆。整理模型直接调用已有 `memory_*` 工具；写入超过单条或总容量限制时工具会要求模型压缩重试，不会截断内容后保存。
+自动记忆整理会把“已保存长期记忆全文 + workspace 内上次成功整理后累计的用户问题和最终回答 + 配置的长度限制”一起交给整理模型，不包含中间工具调用、工具结果或调试日志。达到阈值后的自动整理在后台运行，不会阻塞当前回复完成；`/dream` 会同步等待整理结果。每条待整理对话有唯一 ID；整理成功后只清除本次快照包含的 ID，因此整理期间新增的对话会保留到下一次。workspace 整理锁避免多个 Gateway 或桌面实例同时修改记忆。排队、开始、工具操作、完成、跳过和失败状态会写入 `[AUTO_MEMORY]` 日志，但不会记录对话或记忆正文。整理模型直接调用已有 `memory_*` 工具；写入超过单条或总容量限制时工具会要求模型压缩重试，不会截断内容后保存。
 
 ### 聊天命令
 

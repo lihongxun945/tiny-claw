@@ -136,7 +136,7 @@ export default function App() {
           ));
           if (tc) tc.result = (d.result as string) ?? "";
           updateSessionState(sourceSessionId, (state) => ({ ...state, streamingToolCalls: [...toolCalls] }));
-          if (name === "plan_create" || name === "plan_update") await refreshSessionPlan(sourceSessionId);
+          if (name === "plan_create" || name === "plan_update" || name === "plan_revise" || approvalId) await refreshSessionPlan(sourceSessionId);
           break;
         }
         case "done": {

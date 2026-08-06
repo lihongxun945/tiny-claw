@@ -12,6 +12,7 @@ import {
 } from "../../session-state.js";
 import { listSessionMetas } from "../../session-store.js";
 import { loadAllMemories } from "../../tools/memory.js";
+import { appendLog } from "../../workspace/logger.js";
 
 const DEFAULT_TURN_THRESHOLD = 10;
 const DEFAULT_MAX_CANDIDATES = 5;
@@ -77,6 +78,20 @@ export interface AutoMemoryAnalysisResult {
   finalText: string;
   requiresConfirmation: boolean;
   affectedSessions?: string[];
+}
+
+export type AutoMemoryTrigger = "threshold" | "dream";
+export type AutoMemoryLogger = (
+  level: "INFO" | "WARN" | "ERROR",
+  message: string,
+  sessionId?: string,
+) => void;
+
+export function createAutoMemoryLogger(workspacePath: string, fallback?: AutoMemoryLogger): AutoMemoryLogger {
+  return (level, message, sessionId) => {
+    appendLog(workspacePath, level, message, sessionId);
+    fallback?.(level, message, sessionId);
+  };
 }
 
 type AutoMemoryMode = "auto" | "hybrid" | "suggest";
@@ -364,6 +379,7 @@ export async function runAutoMemoryAnalysis(options: {
   getToolDefinitions: () => ToolDefinition[];
   getTool: (name: string) => Tool | undefined;
   actor?: AgentActor;
+  onToolCall?: (toolCall: ToolUseBlock, input: Record<string, unknown>) => void;
 }): Promise<AutoMemoryAnalysisResult> {
   const turnsToAnalyze = options.turns.filter((turn) => turn.user.trim() && turn.assistant.trim());
   const empty = {
@@ -412,6 +428,7 @@ export async function runAutoMemoryAnalysis(options: {
       if (!tool) {
         result = `工具不可用或不允许自动记忆调用：${toolCall.name}`;
       } else {
+        options.onToolCall?.(toolCall, normalizeToolInput(toolCall, options.config));
         result = await executeMemoryTool({
           toolCall,
           tool,
@@ -467,14 +484,24 @@ export async function runWorkspaceAutoMemoryAnalysis(options: {
   getToolDefinitions: () => ToolDefinition[];
   getTool: (name: string) => Tool | undefined;
   actor?: AgentActor;
+  trigger?: AutoMemoryTrigger;
+  log?: AutoMemoryLogger;
 }): Promise<AutoMemoryAnalysisResult> {
+  const trigger = options.trigger ?? "threshold";
+  const startedAt = Date.now();
   const lock = acquireAutoMemoryLock(options.workspacePath, getLockTimeoutSeconds(options.config));
   if (!lock) {
+    const pending = countWorkspacePendingTurns(options.workspacePath, [options.triggerSessionId]);
+    options.log?.(
+      "INFO",
+      `[AUTO_MEMORY] 跳过整理 trigger=${trigger} reason=workspace_lock_held pendingTurns=${pending}`,
+      options.triggerSessionId,
+    );
     return {
       saved: 0,
       updated: 0,
       deleted: 0,
-      pending: countWorkspacePendingTurns(options.workspacePath, [options.triggerSessionId]),
+      pending,
       toolCalls: 0,
       analyzedTurns: 0,
       finalText: "已有记忆整理任务正在运行，本次已跳过。",
@@ -485,6 +512,11 @@ export async function runWorkspaceAutoMemoryAnalysis(options: {
 
   try {
     const { turns, snapshots } = collectWorkspaceAutoMemoryTurns(options.workspacePath, [options.triggerSessionId]);
+    options.log?.(
+      "INFO",
+      `[AUTO_MEMORY] 开始整理 trigger=${trigger} sessions=${snapshots.length} turns=${turns.length} maxMemoryChars=${getMaxMemoryChars(options.config)} maxTotalChars=${options.config.memory?.maxTotalChars ?? 80000}`,
+      options.triggerSessionId,
+    );
     const result = await runAutoMemoryAnalysis({
       workspacePath: options.workspacePath,
       config: options.config,
@@ -494,17 +526,39 @@ export async function runWorkspaceAutoMemoryAnalysis(options: {
       getToolDefinitions: options.getToolDefinitions,
       getTool: options.getTool,
       actor: options.actor,
+      onToolCall: (toolCall, input) => {
+        const name = typeof input.name === "string" ? input.name : "-";
+        options.log?.(
+          "INFO",
+          `[AUTO_MEMORY] 调用工具 trigger=${trigger} tool=${toolCall.name} name=${name}`,
+          options.triggerSessionId,
+        );
+      },
     });
 
     if (!result.requiresConfirmation) {
       markWorkspaceAutoMemoryAnalyzed(options.workspacePath, snapshots, result);
     }
 
-    return {
+    const finalResult = {
       ...result,
       pending: countWorkspacePendingTurns(options.workspacePath, [options.triggerSessionId]),
       affectedSessions: snapshots.map((snapshot) => snapshot.sessionId),
     };
+    options.log?.(
+      "INFO",
+      `[AUTO_MEMORY] 整理完成 trigger=${trigger} durationMs=${Date.now() - startedAt} analyzedTurns=${finalResult.analyzedTurns} sessions=${finalResult.affectedSessions.length} toolCalls=${finalResult.toolCalls} saved=${finalResult.saved} deleted=${finalResult.deleted} pending=${finalResult.pending} requiresConfirmation=${finalResult.requiresConfirmation}`,
+      options.triggerSessionId,
+    );
+    return finalResult;
+  } catch (error) {
+    const pending = countWorkspacePendingTurns(options.workspacePath, [options.triggerSessionId]);
+    options.log?.(
+      "WARN",
+      `[AUTO_MEMORY] 整理失败 trigger=${trigger} durationMs=${Date.now() - startedAt} pendingTurnsRetained=${pending} error=${error instanceof Error ? error.message : String(error)}`,
+      options.triggerSessionId,
+    );
+    throw error;
   } finally {
     lock.release();
   }
@@ -600,6 +654,7 @@ export const coreAutoMemoryPlugin: Plugin = {
   name: "core-auto-memory",
   async init(ctx) {
     let analyzing = false;
+    const log = createAutoMemoryLogger(ctx.workspacePath, ctx.log);
 
     ctx.registerHooks({
       onChatResponse: async (hookCtx: HookContext, response: ChatResponse) => {
@@ -625,34 +680,47 @@ export const coreAutoMemoryPlugin: Plugin = {
         });
 
         const workspacePendingTurns = countWorkspacePendingTurns(hookCtx.config.workspacePath, [hookCtx.sessionId]);
-        if (analyzing || workspacePendingTurns < getTurnThreshold(hookCtx)) {
+        const threshold = getTurnThreshold(hookCtx);
+        if (analyzing) {
+          log(
+            "INFO",
+            `[AUTO_MEMORY] 跳过整理 trigger=threshold reason=already_running pendingTurns=${workspacePendingTurns}`,
+            hookCtx.sessionId,
+          );
+          return response;
+        }
+        if (workspacePendingTurns < threshold) {
+          log(
+            "INFO",
+            `[AUTO_MEMORY] 跳过整理 trigger=threshold reason=below_threshold pendingTurns=${workspacePendingTurns} threshold=${threshold}`,
+            hookCtx.sessionId,
+          );
           return response;
         }
 
         analyzing = true;
+        log(
+          "INFO",
+          `[AUTO_MEMORY] 后台整理已排队 trigger=threshold pendingTurns=${workspacePendingTurns} threshold=${threshold}`,
+          hookCtx.sessionId,
+        );
 
-        try {
-          const result = await runWorkspaceAutoMemoryAnalysis({
+        void runWorkspaceAutoMemoryAnalysis({
             workspacePath: hookCtx.config.workspacePath,
             config: hookCtx.config,
             client: hookCtx.client,
             triggerSessionId: hookCtx.sessionId,
             getToolDefinitions: hookCtx.getToolDefinitions,
             getTool: hookCtx.getTool,
+            trigger: "threshold",
+            log,
+          })
+          .catch(() => {
+            // runWorkspaceAutoMemoryAnalysis records the failure and retains pending turns.
+          })
+          .finally(() => {
+            analyzing = false;
           });
-
-          if (result.toolCalls > 0 || result.requiresConfirmation) {
-            ctx.log("INFO", `自动记忆整理完成: toolCalls=${result.toolCalls}, savedOrUpdated=${result.saved}, deleted=${result.deleted}, requiresConfirmation=${result.requiresConfirmation}`, hookCtx.sessionId);
-          }
-        } catch (err) {
-          ctx.log(
-            "WARN",
-            `自动记忆整理失败: ${err instanceof Error ? err.message : String(err)}`,
-            hookCtx.sessionId,
-          );
-        } finally {
-          analyzing = false;
-        }
 
         return response;
       },

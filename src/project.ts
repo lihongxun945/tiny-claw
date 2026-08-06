@@ -38,6 +38,8 @@ export interface ProjectChangedFile {
   staged: boolean;
   unstaged: boolean;
   untracked: boolean;
+  additions?: number;
+  deletions?: number;
 }
 
 export interface ProjectGitStatus {
@@ -82,11 +84,30 @@ export async function inspectProject(requestedPath: string): Promise<ProjectInfo
 export async function readProjectGitStatus(requestedPath: string, timeoutMs = DEFAULT_GIT_TIMEOUT_MS): Promise<ProjectGitStatus> {
   const root = resolveProjectRoot(requestedPath);
   try {
-    const [{ stdout: branchOutput }, { stdout: statusOutput }] = await Promise.all([
+    const [{ stdout: branchOutput }, { stdout: statusOutput }, { stdout: stagedNumstat }, { stdout: unstagedNumstat }] = await Promise.all([
       runGit(root, ["branch", "--show-current"], timeoutMs),
       runGit(root, ["status", "--porcelain=v1", "-z"], timeoutMs),
+      runGit(root, ["diff", "--staged", "--numstat"], timeoutMs).catch(() => ({ stdout: "" })),
+      runGit(root, ["diff", "--numstat"], timeoutMs).catch(() => ({ stdout: "" })),
     ]);
     const files = parseGitStatus(statusOutput);
+    const stats = mergeNumstat(stagedNumstat, unstagedNumstat);
+    for (const file of files) {
+      const s = stats.get(file.path);
+      if (s) {
+        file.additions = s.additions;
+        file.deletions = s.deletions;
+      } else if (file.untracked) {
+        // untracked files are all additions; count lines
+        try {
+          const content = readFileSync(resolve(root, file.path), "utf-8");
+          file.additions = content.split("\n").length;
+          file.deletions = 0;
+        } catch {
+          // binary / unreadable → leave undefined
+        }
+      }
+    }
     return {
       isRepository: true,
       branch: branchOutput.trim() || "(未命名)",
@@ -119,13 +140,25 @@ export async function readProjectDiff(
     remaining -= result.length;
     return result;
   };
-  const stagedResult = take(staged);
-  const unstagedResult = take(unstaged);
+  let stagedResult = take(staged);
+  let unstagedRaw = unstaged;
+  // 对于 git diff 不会输出的新增文件（untracked），读取文件内容模拟为 diff
+  if (!staged && !unstaged && filePath) {
+    const fullPath = resolve(root, filePath);
+    try {
+      const raw = readFileSync(fullPath, "utf-8");
+      const lines = raw.split("\n");
+      unstagedRaw = `@@ -0,0 +1,${lines.length} @@\n` + lines.map((l) => `+${l}`).join("\n");
+    } catch {
+      // 文件可能不存在或为二进制，忽略
+    }
+  }
+  const unstagedResult = take(unstagedRaw);
   return {
     path: filePath ?? ".",
     staged: stagedResult,
     unstaged: unstagedResult,
-    truncated: stagedResult.length < staged.length || unstagedResult.length < unstaged.length,
+    truncated: stagedResult.length < staged.length || unstagedResult.length < unstagedRaw.length,
   };
 }
 
@@ -151,6 +184,41 @@ export function parseGitStatus(output: string): ProjectChangedFile[] {
     });
   }
   return files;
+}
+
+interface FileDelta {
+  additions: number;
+  deletions: number;
+}
+
+function mergeNumstat(staged: string, unstaged: string): Map<string, FileDelta> {
+  const result = new Map<string, FileDelta>();
+  const add = (path: string, additions: number, deletions: number) => {
+    const existing = result.get(path);
+    if (existing) {
+      existing.additions += additions;
+      existing.deletions += deletions;
+    } else {
+      result.set(path, { additions, deletions });
+    }
+  };
+  for (const output of [staged, unstaged]) {
+    for (const line of output.split("\n")) {
+      if (!line.trim()) continue;
+      const columns = line.split("\t");
+      if (columns.length < 3) continue;
+      const additions = parseInt(columns[0], 10);
+      const deletions = parseInt(columns[1], 10);
+      if (isNaN(additions) || isNaN(deletions)) continue;
+      const rawPath = columns.slice(2).join("\t");
+      // handle renamed files: "old => new"
+      const arrowIndex = rawPath.indexOf(" => ");
+      const resolvedPath = arrowIndex >= 0 ? rawPath.slice(arrowIndex + 4) : rawPath;
+      if (additions === 0 && deletions === 0) continue; // binary / no change
+      add(resolvedPath, additions, deletions);
+    }
+  }
+  return result;
 }
 
 function resolveProjectRoot(requestedPath: string): string {

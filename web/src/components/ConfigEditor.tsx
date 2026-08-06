@@ -86,6 +86,7 @@ const FIELD_GROUPS: FieldGroup[] = [
     title: "上下文与执行",
     fields: [
       { key: "maxTokens", label: "单次回复 Token", type: "number", defaultValue: 4096 },
+      { key: "emptyResponseRetries", label: "空响应重试次数", type: "number", defaultValue: 1 },
       { key: "maxContextTokens", label: "上下文 Token 上限", type: "number", defaultValue: 128000 },
       { key: "contextCompressionThreshold", label: "上下文压缩阈值", type: "number", defaultValue: 0.7 },
       { key: "contextCompressionMaxChars", label: "压缩摘要字符上限", type: "number", defaultValue: 5000 },

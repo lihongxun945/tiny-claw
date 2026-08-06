@@ -9,7 +9,7 @@ import { readSessionMessages } from "./session-store.js";
 import { clearTurnApproval } from "./tools/approval.js";
 import { applySessionConfig } from "./project.js";
 import { readSessionMeta } from "./session-store.js";
-import type { AgentActor, Config, ContentBlock, Message, ToolUseBlock, ToolResultBlock, SessionContext, ExecutionMode } from "./types.js";
+import type { AgentActor, ChatResponse, Config, ContentBlock, Message, ToolUseBlock, ToolResultBlock, SessionContext, ExecutionMode } from "./types.js";
 import { randomUUID } from "node:crypto";
 import { calculateMessageTokenBudget } from "./context-budget.js";
 import { estimateTokens } from "./estimate-tokens.js";
@@ -261,7 +261,7 @@ export class AgentSession {
       agentIteration++;
 
       const executionMode = this.pluginManager.getExecutionMode(this.id);
-      const toolDefs = this.pluginManager.getToolDefinitions(this.sessionContext, executionMode);
+      const toolDefs = this.pluginManager.getToolDefinitions(this.sessionContext, executionMode, this.id, agentIteration);
       const turnPrompt = await this.pluginManager.callOnBuildTurnPrompt(this.systemPrompt, agentIteration, this.id);
 
       // 4. 获取上下文和完整请求预算
@@ -308,43 +308,54 @@ export class AgentSession {
         return;
       }
 
-      // 6. 流式调用模型
-      const eventQueue = new EventQueue();
-      let chatError: string | null = null;
+      // 6. 流式调用模型。成功但没有文本和工具调用时按配置重试。
+      const emptyResponseRetries = this.config.emptyResponseRetries ?? 1;
+      let response: ChatResponse | null = null;
+      for (let attempt = 0; attempt <= emptyResponseRetries; attempt++) {
+        const eventQueue = new EventQueue();
+        let chatError: string | null = null;
+        const retryPrompt = attempt === 0
+          ? turnPrompt
+          : `${turnPrompt}\n\n上一次模型响应为空。请继续完成当前任务，必须返回可见文本或有效工具调用。`;
+        const chatPromise = this.client.chat(
+          modifiedContext.messages.map(({ _turnId: _ignoredTurnId, ...message }) => message),
+          (delta) => {
+            fullText += delta;
+            eventQueue.push({ type: "text_delta", text: delta });
+          },
+          toolDefs.length > 0 ? toolDefs : undefined,
+          retryPrompt,
+          controller.signal,
+        ).then(
+          (value) => {
+            eventQueue.close();
+            return value;
+          },
+          (err) => {
+            chatError = err instanceof Error ? err.message : String(err);
+            eventQueue.close();
+            return null;
+          },
+        );
 
-      const chatPromise = this.client.chat(
-        modifiedContext.messages.map(({ _turnId: _ignoredTurnId, ...message }) => message),
-        (delta) => {
-          fullText += delta;
-          eventQueue.push({ type: "text_delta", text: delta });
-        },
-        toolDefs.length > 0 ? toolDefs : undefined,
-        turnPrompt,
-        controller.signal,
-      ).then(
-        (response) => {
-          eventQueue.close();
-          return response;
-        },
-        (err) => {
-          chatError = err instanceof Error ? err.message : String(err);
-          eventQueue.close();
-          return null;
-        },
-      );
-
-      // 实时消费 text_delta
-      let item = await eventQueue.next();
-      while (!item.done) {
-        yield item.value;
-        item = await eventQueue.next();
+        let item = await eventQueue.next();
+        while (!item.done) {
+          yield item.value;
+          item = await eventQueue.next();
+        }
+        response = await chatPromise;
+        if (chatError || !response) {
+          const error = new Error(controller.signal.aborted ? "会话已取消" : chatError || "未知错误");
+          await this.notifyError(error, agentIteration);
+          yield { type: "error", message: error.message };
+          return;
+        }
+        if (response.text.trim() || response.toolCalls.length > 0) break;
+        response = null;
       }
 
-      // 等待 chat 完成
-      const response = await chatPromise;
-
-      if (chatError || !response) {
-        const error = new Error(controller.signal.aborted ? "会话已取消" : chatError || "未知错误");
+      if (!response) {
+        const error = new Error(`模型连续 ${emptyResponseRetries + 1} 次返回空响应，任务已停止，请重试或更换模型。`);
         await this.notifyError(error, agentIteration);
         yield { type: "error", message: error.message };
         return;

@@ -136,15 +136,23 @@ WebUI 先调用 `/projects/inspect` 检查目录，选择成功后立即通过 `
 
 ## 计划执行模式
 
-计划模式在执行层仍是每轮请求的临时 `ExecutionMode`，不修改 Session 的普通/项目上下文绑定；用户选择则作为 `meta.json` 中可变的 `preferences.executionMode` 持久化。WebUI 切换模式时立即更新 Session 偏好，发送 `POST /chat` 时再次携带并兜底保存；刷新、切换会话和 Gateway 重启后从 Session 元数据恢复各自选择。AgentSession 在本轮开始时把模式注册到 PluginManager，审批暂停时将模式写入待恢复状态，恢复执行后继续沿用，最终在本轮结束时清理。工具注册支持同时按 `SessionContext` 和 `ExecutionMode` 过滤，因此 `plan_create`、`plan_update` 只在计划模式下发送给模型。
+计划模式在执行层仍是每轮请求的临时 `ExecutionMode`，不修改 Session 的普通/项目上下文绑定；用户选择则作为 `meta.json` 中可变的 `preferences.executionMode` 持久化。WebUI 切换模式时立即更新 Session 偏好，发送 `POST /chat` 时再次携带并兜底保存；刷新、切换会话和 Gateway 重启后从 Session 元数据恢复各自选择。AgentSession 在本轮开始时把模式注册到 PluginManager，审批暂停时将模式写入待恢复状态，恢复执行后继续沿用，最终在本轮结束时清理。工具注册支持同时按 `SessionContext` 和 `ExecutionMode` 过滤，因此 `plan_create`、`plan_update`、`plan_revise`、`plan_pause` 只在计划模式下发送给模型。
 
-`core-plan` 插件通过 `onBuildTurnPrompt` 注入不进入历史记录的本轮计划规则，并负责计划工具、状态机及 `GET /plan?session_id=...` 恢复接口。每轮消息生成独立 `turnId`，消息和 Hook 只把该标识作为内部元数据使用，调用模型前会将其剥离。计划原子写入 `sessions/<session>/plans/<turnId>.json`，步骤状态为 pending、in_progress、completed、failed、skipped、waiting_approval；同一时间只能有一个执行中步骤且必须按顺序推进。需要审批时插件把当前步骤切换到 waiting_approval，恢复工具执行前切回 in_progress；迭代上限和执行错误会明确标记当前步骤失败。
+`core-plan` 插件通过 `onBuildTurnPrompt` 注入不进入历史记录的本轮计划规则，并负责计划工具、状态机及 `GET /plan?session_id=...` 恢复接口。每轮消息生成独立 `turnId`，消息和 Hook 只把该标识作为内部元数据使用，调用模型前会将其剥离。计划原子写入 `sessions/<session>/plans/<turnId>.json`，步骤状态为 pending、in_progress、completed、failed、skipped、waiting_approval、waiting_user；同一时间只能有一个执行中步骤且必须按顺序推进。需要审批时插件把当前步骤切换到 waiting_approval，恢复工具执行前切回 in_progress；需要用户确认或补充信息时，模型通过 `plan_pause` 将步骤持久化为 waiting_user，下一轮用户回复后继续原计划，Gateway 重启不会丢失暂停状态。迭代上限和执行错误会明确标记当前步骤失败。
+
+计划模式不强制纯文本问答创建空计划。初次模型调用可以在“直接回答”和“调用 `plan_create`”之间选择：不需要任何工具时直接返回文本，不写入计划文件也不显示进度；需要工具执行时仍必须先创建计划。一旦本轮创建或继承了计划，完成、暂停和失败校验继续强制执行。
+
+计划插件通过通用 `onFilterToolDefinitions` 钩子按持久化状态限制模型可见工具：创建计划前只暴露 `plan_create`；计划存在但当前步骤尚未开始时只暴露 `plan_update` 和 `plan_revise`；步骤进入 `in_progress` 后才开放普通执行工具及其余计划控制工具。`onBeforeTool` 仍保留相同状态校验，防止绕过模型工具定义直接执行。插件还通过 `onBeforeModelCall.reportStatus` 推送“生成计划、准备步骤、执行步骤、整理结果”等临时状态，状态不写入会话历史。
+
+复杂任务允许渐进式计划：模型先创建包含调研步骤的粗粒度计划，在明确现状和约束后调用 `plan_revise` 整体替换末尾连续的 pending 步骤。已经开始或结束的步骤原样保留，新步骤使用不复用的递增 ID，计划 `revision` 随每次调整递增；调整后的总步骤数继续受 `plan.maxSteps` 限制。WebUI 收到 `plan_revise` 工具结果后立即重新读取持久化计划。
+
+Agent Loop 对“请求成功但文本和工具调用同时为空”的模型响应执行有限重试，重试次数由 `emptyResponseRetries` 配置；耗尽后返回明确错误，不再把空响应视为任务正常完成。
 
 模型输出无工具调用的最终回复时，如果当前步骤是唯一未结束的执行中步骤，插件会通过计划状态机自动将其标记为 completed，避免模型遗漏最后一次 `plan_update` 而把已经完成的任务误判为失败。只要仍有其他 pending 或执行中步骤，就不会自动收尾，仍按计划提前结束处理。
 
 WebUI 收到计划工具结果或终止事件后重新读取持久化计划，避免解析模型自然语言或依赖单条 SSE 连接。执行中或等待审批的计划显示在输入框上方；完成或失败后，历史消息接口按 `turnId` 将计划挂到对应轮次的最终助手消息下。切换 Session、刷新页面和 Gateway 重启后均能恢复每轮计划，后续对话不会覆盖或全局展示旧计划。
 
-WebUI 以单条助手消息作为工具调用的展示边界。同一轮出现多个工具调用时聚合为一个可展开面板，完成后显示成功和失败数量并默认折叠，展开后的列表限制高度并独立滚动。仍在执行的调用默认展开；只要存在待审批调用，聚合面板就强制展开且不能折叠，确保审批入口持续可见。单个工具调用继续使用原有工具卡片，不增加额外层级。
+WebUI 以单条助手消息作为工具调用的展示边界。同一轮出现多个工具调用时聚合为一个可展开面板，完成后显示成功和失败数量并默认折叠，展开后的列表限制高度并独立滚动。仍在执行的调用默认展开；用户手动选择的展开状态以首个工具调用 ID 为稳定键保存，工具结果更新、消息刷新以及流式临时消息替换为最终消息时不会自动收起。只要存在待审批调用，聚合面板就强制展开且不能折叠，确保审批入口持续可见。单个工具调用继续使用原有工具卡片，不增加额外层级。
 
 ### config.json
 
@@ -168,6 +176,7 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 | contextCompressionMaxOutputTokens | 压缩摘要模型输出 token 上限 | 2048 |
 | historyWindowSize | 历史窗口（轮） | 5 |
 | maxAgentIterations | Agent Loop 最大迭代次数；达到上限时明确提示，显式配置 0 表示不限 | 100 |
+| emptyResponseRetries | 模型成功返回空文本且无工具调用时的重试次数 | 1 |
 | sessionSummary | 会话滚动摘要配置 | enabled=true, persistent=true, turnThreshold=5, recentTurns=3 |
 | autoMemory | 自动记忆配置 | enabled=true, turnThreshold=10 |
 | memory | 长期记忆容量限制 | maxItemChars=20000, maxTotalChars=80000 |
@@ -275,7 +284,7 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 
 ### autoMemory 配置
 
-`core-auto-memory` 插件在主会话最终回复后记录完整对话轮数，默认 workspace 内累计 10 轮后触发一次模型整理。它不会每轮额外调用模型；每轮最终问答会先按 session 持久化到 `workspace/sessions/<session>/state.json` 的 `autoMemory.pendingTurns`。达到阈值或用户执行 `/dream` 时，插件会聚合所有主会话的待整理增量，把已保存长期记忆全文、增量对话和配置的长度限制交给模型，并通过受限的 memory 工具调用链路整理长期记忆。
+`core-auto-memory` 插件在主会话最终回复后记录完整对话轮数，默认 workspace 内累计 10 轮后触发一次模型整理。它不会每轮额外调用模型；每轮最终问答会先按 session 持久化到 `workspace/sessions/<session>/state.json` 的 `autoMemory.pendingTurns`。达到阈值时，整理任务在后台运行，不阻塞当前回复完成和下一轮用户输入；用户执行 `/dream` 时则同步等待整理结果。两种入口都会聚合所有主会话的待整理增量，把已保存长期记忆全文、增量对话和配置的长度限制交给模型，并通过受限的 memory 工具调用链路整理长期记忆。
 
 ```json
 {
@@ -303,7 +312,7 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 - `memory.maxItemChars`：单条记忆正文最大字符数，默认 20000
 - `memory.maxTotalChars`：所有启用记忆正文的总字符上限，默认 80000
 
-自动记忆会跳过 `sub:` 开头的 sub-agent 会话，也会跳过模型中间工具调用，只在最终回复时计入一轮。每条 pending turn 持有稳定 ID；整理开始时冻结待处理 ID 快照，成功后通过 Session 状态原子更新只删除本次处理的 ID，整理期间新增的轮次不会丢失。workspace 级文件锁避免多进程并发整理，Session 状态锁避免会话摘要和自动记忆整文件覆盖。整理失败或触发权限审批时保留 pending。即使没有新增对话，`/dream` 也会运行一次 workspace 级整理。记忆写入统一校验 `memory.maxItemChars` 和 `memory.maxTotalChars`，超限时返回可重试错误，不会静默截断后落盘。
+自动记忆会跳过 `sub:` 开头的 sub-agent 会话，也会跳过模型中间工具调用，只在最终回复时计入一轮。每条 pending turn 持有稳定 ID；整理开始时冻结待处理 ID 快照，成功后通过 Session 状态原子更新只删除本次处理的 ID，整理期间新增的轮次不会丢失。workspace 级文件锁避免多进程并发整理，Session 状态锁避免会话摘要和自动记忆整文件覆盖。整理失败或触发权限审批时保留 pending。即使没有新增对话，`/dream` 也会运行一次 workspace 级整理。后台整理和 `/dream` 都通过 `[AUTO_MEMORY]` 日志记录排队、开始、工具操作、完成、跳过和失败状态；日志只记录 memory 名称和计数，不记录对话或记忆正文。记忆写入统一校验 `memory.maxItemChars` 和 `memory.maxTotalChars`，超限时返回可重试错误，不会静默截断后落盘。
 
 ### 图片附件
 
@@ -591,6 +600,9 @@ Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prom
 - Sub-agent 的历史不会直接合并进主 agent 历史
 - 主 agent 只接收 sub-agent 的结构化汇报结果
 - Sub-agent 当前不支持运行中双向对话，也不支持 sub-agent 之间通信
+- Sub-agent 不持有可交互审批续跑状态。子任务工具触发 `ask` 时，执行器会清理该 `sub:*` 审批并返回 `approval_required`，由主 agent 使用结果中的同一工具参数重新发起调用；这样审批归属主 Session，可由 Gateway 正常恢复
+- 审批去重键包含 Session ID，主 agent 与 sub-agent 即使调用相同工具和参数也不会复用审批记录
+- 每个临时 sub-agent 结束后都会销毁其专用 `PluginManager`，释放插件及运行时状态
 
 ### 持久化记忆
 

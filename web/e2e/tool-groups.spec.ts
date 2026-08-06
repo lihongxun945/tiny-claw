@@ -32,6 +32,10 @@ test("collapses completed tool calls into a scrollable summary", async ({ page }
   await expect(page.locator(".tool-block")).toHaveCount(12);
   const list = page.locator(".tool-call-group-list");
   expect(await list.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+
+  await page.getByRole("button", { name: /刷新/ }).click();
+  await expect(header).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(".tool-block")).toHaveCount(12);
 });
 
 test("keeps a tool group expanded while an approval is pending", async ({ page }) => {

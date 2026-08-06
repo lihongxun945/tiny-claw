@@ -134,6 +134,44 @@ describe("AgentSession loop", () => {
     ]);
   });
 
+  it("retries a successful empty model response before completing", async () => {
+    const client = new FakeModelClient([
+      { text: "", toolCalls: [] },
+      { text: "重试后回复", toolCalls: [] },
+    ]);
+    const session = new AgentSession("empty-response-retry", workspacePath, manager, {}, client);
+
+    expect(await collect(session.chat("hi"))).toEqual([
+      { type: "text_delta", text: "重试后回复" },
+      { type: "done", text: "重试后回复", reason: "completed" },
+    ]);
+    expect(client.calls).toHaveLength(2);
+    expect(client.calls[1].systemPrompt).toContain("上一次模型响应为空");
+  });
+
+  it("reports an error after empty model response retries are exhausted", async () => {
+    const emptyWorkspace = createTempWorkspace({
+      autoMemory: { enabled: false },
+      sessionSummary: { enabled: false },
+      emptyResponseRetries: 1,
+    });
+    const emptyManager = new PluginManager(emptyWorkspace);
+    await emptyManager.loadCorePlugins();
+    try {
+      const client = new FakeModelClient([
+        { text: "", toolCalls: [] },
+        { text: "", toolCalls: [] },
+      ]);
+      const session = new AgentSession("empty-response-error", emptyWorkspace, emptyManager, {}, client);
+      expect(await collect(session.chat("hi"))).toEqual([
+        { type: "error", message: "模型连续 2 次返回空响应，任务已停止，请重试或更换模型。" },
+      ]);
+    } finally {
+      await emptyManager.destroy();
+      removeTempWorkspace(emptyWorkspace);
+    }
+  });
+
   it("persists image blocks from user messages and restores them after session reload", async () => {
     const png = Buffer.from([
       137, 80, 78, 71, 13, 10, 26, 10,
@@ -261,7 +299,15 @@ describe("AgentSession loop", () => {
     const planTurnId = "11111111-1111-4111-8111-111111111111";
     const events = await collect(session.chat("执行任务", undefined, undefined, "plan", planTurnId));
     expect(events.at(-1)).toEqual({ type: "done", text: "全部完成", reason: "completed" });
-    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["plan_create", "plan_update"]));
+    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(["plan_create"]);
+    expect(client.calls[1].tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["plan_update", "plan_revise"]));
+    expect(client.calls[1].tools?.map((tool) => tool.name)).not.toContain("echo");
+    expect(client.calls[2].tools?.map((tool) => tool.name)).toContain("echo");
+    expect(events).toEqual(expect.arrayContaining([
+      { type: "status", stage: "plan", state: "started", message: "正在生成执行计划…" },
+      { type: "status", stage: "plan", state: "started", message: "正在执行第 1/2 步：分析" },
+      { type: "status", stage: "plan", state: "started", message: "计划已完成，正在整理最终结果…" },
+    ]));
     expect(client.calls[0].systemPrompt).toContain("计划执行模式");
     const persistedPlan = readSessionPlan(workspacePath, "plan-loop", planTurnId);
     expect(persistedPlan?.status).toBe("completed");
@@ -272,6 +318,91 @@ describe("AgentSession loop", () => {
     await collect(normalSession.chat("普通任务"));
     expect(normalClient.calls[0].tools?.some((tool) => tool.name === "plan_create")).toBe(false);
     expect(normalClient.calls[0].systemPrompt).not.toContain("计划执行模式");
+  });
+
+  it("answers directly in plan mode when no tool execution is needed", async () => {
+    const client = new FakeModelClient([{ text: "RAG 更适合语义检索。", toolCalls: [] }]);
+    const session = new AgentSession("plan-direct-answer", workspacePath, manager, {}, client);
+    const turnId = "22222222-2222-4222-8222-222222222222";
+
+    expect((await collect(session.chat("关键词检索和 RAG 如何选择？", undefined, undefined, "plan", turnId))).at(-1)).toEqual({
+      type: "done",
+      text: "RAG 更适合语义检索。",
+      reason: "completed",
+    });
+    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(["plan_create"]);
+    expect(client.calls[0].systemPrompt).toContain("无需调用任何工具");
+    expect(readSessionPlan(workspacePath, "plan-direct-answer", turnId)).toBeUndefined();
+  });
+
+  it("pauses a plan for user input and resumes it in a later turn", async () => {
+    const toolCall = (id: string, name: string, input: Record<string, unknown>): ChatResponse => ({
+      text: "",
+      toolCalls: [{ type: "tool_use", id, name, input }],
+    });
+    const firstTurnId = "33333333-3333-4333-8333-333333333333";
+    const secondTurnId = "44444444-4444-4444-8444-444444444444";
+    const client = new FakeModelClient([
+      toolCall("create", "plan_create", { steps: ["给出方案", "实施"] }),
+      toolCall("start-1", "plan_update", { step_id: "step-1", status: "in_progress" }),
+      toolCall("pause", "plan_pause", { summary: "等待用户确认方案" }),
+      { text: "请确认方案", toolCalls: [] },
+      toolCall("resume-1", "plan_update", { step_id: "step-1", status: "in_progress" }),
+      toolCall("complete-1", "plan_update", { step_id: "step-1", status: "completed", summary: "用户已确认" }),
+      toolCall("start-2", "plan_update", { step_id: "step-2", status: "in_progress" }),
+      toolCall("complete-2", "plan_update", { step_id: "step-2", status: "completed", summary: "实施完成" }),
+      { text: "任务完成", toolCalls: [] },
+    ]);
+    const session = new AgentSession("plan-user-pause", workspacePath, manager, {}, client);
+
+    expect((await collect(session.chat("先给方案", undefined, undefined, "plan", firstTurnId))).at(-1)).toEqual({
+      type: "done", text: "请确认方案", reason: "completed",
+    });
+    expect(readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)?.steps[0].status).toBe("waiting_user");
+
+    expect((await collect(session.chat("确认", undefined, undefined, "plan", secondTurnId))).at(-1)).toEqual({
+      type: "done", text: "任务完成", reason: "completed",
+    });
+    expect(readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)?.status).toBe("completed");
+    expect(readSessionPlan(workspacePath, "plan-user-pause", secondTurnId)).toBeUndefined();
+    expect(client.calls[4].systemPrompt).toContain("不要调用 plan_create");
+  });
+
+  it("revises pending steps after a research step", async () => {
+    registerTool(manager, {
+      name: "echo",
+      description: "echo",
+      inputSchema: { type: "object", properties: {} },
+      execute: async () => "调研结果",
+    });
+    const toolCall = (id: string, name: string, input: Record<string, unknown>): ChatResponse => ({
+      text: "",
+      toolCalls: [{ type: "tool_use", id, name, input }],
+    });
+    const client = new FakeModelClient([
+      toolCall("create", "plan_create", { steps: ["调研现状", "根据调研细化计划"] }),
+      toolCall("start-research", "plan_update", { step_id: "step-1", status: "in_progress" }),
+      toolCall("research", "echo", {}),
+      toolCall("complete-research", "plan_update", { step_id: "step-1", status: "completed", summary: "调研完成" }),
+      toolCall("revise", "plan_revise", { steps: ["修改实现", "运行测试"] }),
+      toolCall("start-code", "plan_update", { step_id: "step-3", status: "in_progress" }),
+      toolCall("complete-code", "plan_update", { step_id: "step-3", status: "completed" }),
+      toolCall("start-test", "plan_update", { step_id: "step-4", status: "in_progress" }),
+      toolCall("complete-test", "plan_update", { step_id: "step-4", status: "completed" }),
+      { text: "完成", toolCalls: [] },
+    ]);
+    const session = new AgentSession("plan-revise", workspacePath, manager, {}, client);
+    const reviseTurnId = "55555555-5555-4555-8555-555555555555";
+
+    expect((await collect(session.chat("复杂任务", undefined, undefined, "plan", reviseTurnId))).at(-1)).toEqual({
+      type: "done", text: "完成", reason: "completed",
+    });
+    const plan = readSessionPlan(workspacePath, "plan-revise", reviseTurnId);
+    expect(plan?.revision).toBe(1);
+    expect(plan?.steps.map((step) => step.title)).toEqual(["调研现状", "修改实现", "运行测试"]);
+    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(["plan_create"]);
+    expect(client.calls[4].tools?.map((tool) => tool.name)).toContain("plan_revise");
+    expect(client.calls[0].systemPrompt).toContain("调研完成后调用 plan_revise");
   });
 
   it("auto-memory analyzes only user questions and final answers", async () => {
@@ -325,6 +456,60 @@ describe("AgentSession loop", () => {
         "memory_save",
       ]);
     } finally {
+      await autoManager.destroy();
+      removeTempWorkspace(autoWorkspace);
+    }
+  });
+
+  it("finishes the chat before background auto-memory completes and logs its lifecycle", async () => {
+    const autoWorkspace = createTempWorkspace({
+      autoMemory: { enabled: true, mode: "suggest", turnThreshold: 1 },
+      sessionSummary: { enabled: false },
+    });
+    const autoManager = new PluginManager(autoWorkspace);
+    let releaseAnalysis!: () => void;
+    let analysisStarted!: () => void;
+    const started = new Promise<void>((resolveStarted) => {
+      analysisStarted = resolveStarted;
+    });
+    const release = new Promise<void>((resolveRelease) => {
+      releaseAnalysis = resolveRelease;
+    });
+    let calls = 0;
+    const client: ModelClient = {
+      complete: async () => "",
+      chat: async (_messages, onDelta) => {
+        calls += 1;
+        if (calls === 1) {
+          onDelta("最终回答");
+          return { text: "最终回答", toolCalls: [] };
+        }
+        analysisStarted();
+        await release;
+        return { text: "无需更新", toolCalls: [] };
+      },
+    };
+
+    try {
+      await autoManager.loadCorePlugins();
+      const session = new AgentSession("auto-memory-background", autoWorkspace, autoManager, {}, client);
+
+      const events = await collect(session.chat("需要记住的问题"));
+      expect(events.at(-1)).toEqual({ type: "done", text: "最终回答", reason: "completed" });
+      await started;
+      expect(loadSessionState(autoWorkspace, "auto-memory-background").autoMemory.pendingTurns).toHaveLength(1);
+
+      const logPath = resolve(autoWorkspace, "logs", `${new Date().toISOString().slice(0, 10)}.log`);
+      expect(readFileSync(logPath, "utf-8")).toContain("[AUTO_MEMORY] 后台整理已排队");
+      expect(readFileSync(logPath, "utf-8")).toContain("[AUTO_MEMORY] 开始整理 trigger=threshold");
+
+      releaseAnalysis();
+      await vi.waitFor(() => {
+        expect(loadSessionState(autoWorkspace, "auto-memory-background").autoMemory.pendingTurns).toHaveLength(0);
+        expect(readFileSync(logPath, "utf-8")).toContain("[AUTO_MEMORY] 整理完成 trigger=threshold");
+      });
+    } finally {
+      releaseAnalysis?.();
       await autoManager.destroy();
       removeTempWorkspace(autoWorkspace);
     }

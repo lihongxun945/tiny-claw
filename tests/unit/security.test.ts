@@ -185,6 +185,17 @@ describe("security boundary", () => {
     expect(listApprovals(workspacePath)).toEqual([]);
   });
 
+  it("does not deduplicate identical approvals across sessions", () => {
+    const workspacePath = createTempWorkspace();
+    paths.push(workspacePath);
+    const actor = { channel: "web" as const, requesterId: "user-a" };
+    const first = requestApproval(workspacePath, "file_read", { path: "same.ts" }, undefined, actor, "main");
+    const second = requestApproval(workspacePath, "file_read", { path: "same.ts" }, undefined, actor, "sub:main:worker");
+
+    expect(first.approval?.id).not.toBe(second.approval?.id);
+    expect(listApprovals(workspacePath)).toHaveLength(2);
+  });
+
   it("scopes turn approvals to the current session and actor until cleared", () => {
     const workspacePath = createTempWorkspace();
     paths.push(workspacePath);

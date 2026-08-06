@@ -156,6 +156,7 @@ describe("loadConfig", () => {
     [{ contextCompressionMaxOutputTokens: 255 }, "配置字段 contextCompressionMaxOutputTokens 超出允许范围"],
     [{ toolResultInitialMaxChars: 999 }, "配置字段 toolResultInitialMaxChars 超出允许范围"],
     [{ maxAgentIterations: -1 }, "配置字段 maxAgentIterations 超出允许范围"],
+    [{ emptyResponseRetries: 6 }, "配置字段 emptyResponseRetries 超出允许范围"],
     [{ searchProvider: "unknown" }, "配置字段 searchProvider 不受支持"],
     [{ security: { mode: "unknown" } }, "配置字段 security.mode 不受支持"],
     [{ security: { tools: [] } }, "配置字段 security.tools 必须是对象"],

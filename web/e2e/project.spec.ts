@@ -19,7 +19,7 @@ test("creates and restores a project session as soon as a directory is selected"
     await route.fulfill({ json: { status: { isRepository: true, branch: "main", clean: false, changedCount: 1, files: [{ path: "src/app.ts", indexStatus: " ", workTreeStatus: "M", staged: false, unstaged: true, untracked: false }] } } });
   });
   await page.route("**/projects/diff", async (route) => {
-    await route.fulfill({ json: { diff: { path: "src/app.ts", staged: "", unstaged: "diff --git a/src/app.ts b/src/app.ts", truncated: false } } });
+    await route.fulfill({ json: { diff: { path: "src/app.ts", staged: "", unstaged: "diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-const value = 1;\n+const value = 2;", truncated: false } } });
   });
   await page.route(/\/sessions$/, async (route) => {
     if (route.request().method() !== "POST") return route.continue();
@@ -50,7 +50,7 @@ test("creates and restores a project session as soon as a directory is selected"
   await expect(page.locator(".project-toolbar-meta")).toContainText("main · 1 个变更");
   await page.getByRole("button", { name: "变更 1" }).click();
   await page.getByRole("button", { name: /src\/app\.ts/ }).click();
-  await expect(page.locator(".project-diff-view")).toContainText("diff --git");
+  await expect(page.locator(".project-diff-view")).toContainText("const value = 2;");
 
   await page.getByRole("button", { name: "对话", exact: true }).click();
   await page.getByRole("button", { name: "项目", exact: true }).click();

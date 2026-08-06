@@ -4,6 +4,7 @@ import { fetchConfig, fetchProjectDiff, fetchProjectInfo, fetchProjectStatus } f
 import ChatView from "./ChatView.js";
 import ChatInput from "./ChatInput.js";
 import PlanProgress from "./PlanProgress.js";
+import DiffView from "./DiffView.js";
 
 interface Props {
   messages: Message[];
@@ -245,11 +246,7 @@ export default function ProjectView({
               <button className="project-toolbar-action" onClick={() => void refreshStatus()} disabled={statusLoading}>
                 {statusLoading ? "刷新中…" : "刷新"}
               </button>
-              {gitStatus?.isRepository && (
-                <button className="project-toolbar-action" onClick={() => setChangesOpen((open) => !open)}>
-                  变更 {gitStatus.changedCount}
-                </button>
-              )}
+              {/* 变更入口已移至下方醒目横条 */}
               {info && info.rules !== "(无)" && (
                 <span className="project-toolbar-badge" title="已加载项目规则">
                   规则 ✓
@@ -265,13 +262,38 @@ export default function ProjectView({
             </div>
           </div>
 
+          {/* 醒目变更概览横条 */}
+          {gitStatus?.isRepository && gitStatus.changedCount > 0 && (
+            <button
+              className={`project-changes-bar${changesOpen ? " active" : ""}`}
+              onClick={() => setChangesOpen((open) => !open)}
+            >
+              <span className="project-changes-bar-icon">⚡</span>
+              <span className="project-changes-bar-count">
+                {gitStatus.changedCount} 个文件变更
+              </span>
+              <span className="project-changes-bar-preview">
+                {gitStatus.files.slice(0, 3).map((f) => f.path).join("  ·  ")}
+              </span>
+              <span className="project-changes-bar-toggle">
+                {changesOpen ? "收起 ▴" : "查看全部变更 ▾"}
+              </span>
+            </button>
+          )}
+
           {changesOpen && gitStatus && (
             <div className="project-changes-panel">
               <div className="project-changes-files">
                 {gitStatus.files.length === 0 ? <p>工作区没有变更</p> : gitStatus.files.map((file) => (
                   <button key={`${file.path}:${file.previousPath ?? ""}`} onClick={() => void handleSelectDiff(file.path)}>
                     <span className="project-file-status">{file.untracked ? "??" : `${file.indexStatus}${file.workTreeStatus}`}</span>
-                    <span>{file.path}</span>
+                    <span className="project-file-path">{file.path}</span>
+                    {file.additions !== undefined && (
+                      <span className="project-file-additions">+{file.additions}</span>
+                    )}
+                    {file.deletions !== undefined && (
+                      <span className="project-file-deletions">-{file.deletions}</span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -279,8 +301,8 @@ export default function ProjectView({
                 {diffLoading ? "正在读取 diff…" : diffError ? diffError : selectedDiff ? (
                   <>
                     <strong>{selectedDiff.path}</strong>
-                    {selectedDiff.staged && <pre>{selectedDiff.staged}</pre>}
-                    {selectedDiff.unstaged && <pre>{selectedDiff.unstaged}</pre>}
+                    {selectedDiff.staged && <DiffView text={selectedDiff.staged} />}
+                    {selectedDiff.unstaged && <DiffView text={selectedDiff.unstaged} />}
                     {!selectedDiff.staged && !selectedDiff.unstaged && <p>该文件暂无可显示的文本 diff。</p>}
                     {selectedDiff.truncated && <p>Diff 已按配置截断。</p>}
                   </>

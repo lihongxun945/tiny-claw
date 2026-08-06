@@ -11,6 +11,7 @@
   "model": "deepseek-v4-flash",
   "modelProvider": "anthropic-messages",
   "maxTokens": 16384,
+  "emptyResponseRetries": 1,
   "maxContextTokens": 128000,
   "contextCompressionThreshold": 0.7,
   "contextCompressionMaxChars": 5000,

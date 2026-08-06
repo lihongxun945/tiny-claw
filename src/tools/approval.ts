@@ -44,13 +44,13 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function keyOf(toolName: string, args: Record<string, unknown>, actor?: AgentActor): string {
-  return `${toolName}\0${stableStringify(args)}\0${actor?.channel ?? ""}\0${actor?.requesterId ?? ""}\0${actor?.chatId ?? ""}`;
+function keyOf(toolName: string, args: Record<string, unknown>, actor?: AgentActor, sessionId?: string): string {
+  return `${toolName}\0${stableStringify(args)}\0${actor?.channel ?? ""}\0${actor?.requesterId ?? ""}\0${actor?.chatId ?? ""}\0${sessionId ?? ""}`;
 }
 
 function remove(scope: ApprovalScope, approval: ApprovalRequest): void {
   scope.byId.delete(approval.id);
-  scope.byKey.delete(keyOf(approval.toolName, approval.args, approval.actor));
+  scope.byKey.delete(keyOf(approval.toolName, approval.args, approval.actor, approval.sessionId));
 }
 
 function cleanup(scope: ApprovalScope): void {
@@ -78,7 +78,7 @@ export function requestApproval(
 ): { approved: boolean; approval?: ApprovalRequest; source?: "single" | "turn" } {
   const scope = getScope(workspacePath);
   cleanup(scope);
-  const key = keyOf(toolName, args, actor);
+  const key = keyOf(toolName, args, actor, sessionId);
   const existingId = scope.byKey.get(key);
   const existing = existingId ? scope.byId.get(existingId) : undefined;
 

@@ -201,8 +201,22 @@ export class PluginManager {
 
   // ========== Tool Access ==========
 
-  getToolDefinitions(context?: SessionContext, executionMode: ExecutionMode = "normal"): ToolDefinition[] {
-    return this.registry.getDefinitions(context, executionMode);
+  getToolDefinitions(
+    context?: SessionContext,
+    executionMode: ExecutionMode = "normal",
+    sessionId?: string,
+    iteration = 0,
+  ): ToolDefinition[] {
+    let definitions = this.registry.getDefinitions(context, executionMode);
+    if (!sessionId) return definitions;
+    for (const hooks of this.hooks) {
+      const filtered = hooks.onFilterToolDefinitions?.(
+        this.buildHookContext(iteration, sessionId),
+        definitions,
+      );
+      if (filtered !== undefined) definitions = filtered;
+    }
+    return definitions;
   }
 
   setExecutionMode(sessionId: string, mode: ExecutionMode): void {
@@ -280,7 +294,7 @@ export class PluginManager {
       rawArgs: parsed.rawArgs,
       rawInput: input,
       getChatCommands: () => this.getChatCommands(),
-      getToolDefinitions: () => this.getToolDefinitions(deps?.sessionContext, this.executionModesBySession.get(options.sessionId) ?? "normal"),
+      getToolDefinitions: () => this.getToolDefinitions(deps?.sessionContext, this.executionModesBySession.get(options.sessionId) ?? "normal", options.sessionId),
       getTool: (name) => this.getTool(name),
     });
   }
@@ -327,7 +341,7 @@ export class PluginManager {
       history,
       sessionContext: deps?.sessionContext ?? { mode: "chat" },
       executionMode: this.executionModesBySession.get(sessionId) ?? "normal",
-      getToolDefinitions: () => this.getToolDefinitions(deps?.sessionContext, this.executionModesBySession.get(sessionId) ?? "normal"),
+      getToolDefinitions: () => this.registry.getDefinitions(deps?.sessionContext, this.executionModesBySession.get(sessionId) ?? "normal"),
       getTool: (name) => this.getTool(name),
     };
   }

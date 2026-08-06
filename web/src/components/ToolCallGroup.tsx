@@ -4,11 +4,13 @@ import ToolCallBlock, { isToolCallFailure, parseApprovalResult } from "./ToolCal
 
 interface Props {
   toolCalls: ToolCallInfo[];
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
   onApproveAndResume?: (approvalId: string) => Promise<void>;
   onApproveTurnAndResume?: (approvalId: string) => Promise<void>;
 }
 
-export default function ToolCallGroup({ toolCalls, onApproveAndResume, onApproveTurnAndResume }: Props) {
+export default function ToolCallGroup({ toolCalls, expanded: controlledExpanded, onExpandedChange, onApproveAndResume, onApproveTurnAndResume }: Props) {
   const stats = useMemo(() => {
     const pending = toolCalls.filter((toolCall) => parseApprovalResult(toolCall.result)).length;
     const running = toolCalls.filter((toolCall) => toolCall.result === undefined).length;
@@ -16,13 +18,14 @@ export default function ToolCallGroup({ toolCalls, onApproveAndResume, onApprove
     return { pending, running, failed, completed: toolCalls.length - pending - running - failed };
   }, [toolCalls]);
   const mustExpand = stats.pending > 0;
-  const [expanded, setExpanded] = useState(mustExpand || stats.running > 0);
+  const [automaticExpanded, setAutomaticExpanded] = useState(mustExpand || stats.running > 0);
   const wasActiveRef = useRef(mustExpand || stats.running > 0);
+  const expanded = mustExpand || (controlledExpanded ?? automaticExpanded);
 
   useEffect(() => {
     const isActive = mustExpand || stats.running > 0;
-    if (mustExpand) setExpanded(true);
-    else if (wasActiveRef.current && !isActive) setExpanded(false);
+    if (mustExpand) setAutomaticExpanded(true);
+    else if (wasActiveRef.current && !isActive) setAutomaticExpanded(false);
     wasActiveRef.current = isActive;
   }, [mustExpand, stats.running]);
 
@@ -41,7 +44,10 @@ export default function ToolCallGroup({ toolCalls, onApproveAndResume, onApprove
         className="tool-call-group-header"
         aria-expanded={expanded}
         onClick={() => {
-          if (!mustExpand) setExpanded((value) => !value);
+          if (mustExpand) return;
+          const nextExpanded = !expanded;
+          setAutomaticExpanded(nextExpanded);
+          onExpandedChange?.(nextExpanded);
         }}
       >
         <span className="tool-call-group-title">工具调用</span>

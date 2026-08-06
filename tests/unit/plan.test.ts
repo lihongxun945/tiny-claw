@@ -4,10 +4,12 @@ import { createSessionMeta } from "../../src/session-store.js";
 import {
   completeFinalPlanStep,
   createSessionPlan,
+  findActiveSessionPlan,
   readSessionPlan,
+  revisePendingPlanSteps,
   updateSessionPlanStep,
 } from "../../src/plan-store.js";
-import { createPlanCreateTool } from "../../src/tools/plan.js";
+import { createPlanCreateTool, createPlanPauseTool, createPlanReviseTool } from "../../src/tools/plan.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 import { createTempWorkspace } from "../helpers/temp-workspace.js";
 
@@ -77,5 +79,50 @@ describe("session plans", () => {
     registry.register(createPlanCreateTool(workspace, () => ({ plan: { maxSteps: 4 } }) as never));
     expect(registry.getDefinitions({ mode: "chat" }, "normal")).toEqual([]);
     expect(registry.getDefinitions({ mode: "chat" }, "plan")).toEqual([expect.objectContaining({ name: "plan_create" })]);
+  });
+
+  it("persists a user pause and resolves it from a later turn", async () => {
+    const workspace = setup();
+    createSessionPlan(workspace, "plan-session", turnId, ["设计方案", "实现"]);
+    updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
+    const pauseTool = createPlanPauseTool(workspace);
+    const result = JSON.parse(await pauseTool.execute(
+      { summary: "方案已给出，等待用户确认" },
+      { executionMode: "plan", sessionId: "plan-session", turnId, config: {} as never },
+    ));
+
+    expect(result.plan.steps[0].status).toBe("waiting_user");
+    expect(findActiveSessionPlan(workspace, "plan-session", "22222222-2222-4222-8222-222222222222")?.turnId).toBe(turnId);
+  });
+
+  it("replaces only pending plan steps and increments the revision", () => {
+    const workspace = setup();
+    createSessionPlan(workspace, "plan-session", turnId, ["调研", "制定方案", "实施"]);
+    updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
+    updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "completed", "调研完成");
+
+    const revised = revisePendingPlanSteps(workspace, "plan-session", turnId, ["修改状态机", "增加测试"], 4);
+
+    expect(revised.revision).toBe(1);
+    expect(revised.steps).toEqual([
+      expect.objectContaining({ id: "step-1", title: "调研", status: "completed", summary: "调研完成" }),
+      { id: "step-4", title: "修改状态机", status: "pending" },
+      { id: "step-5", title: "增加测试", status: "pending" },
+    ]);
+  });
+
+  it("rejects revising a plan without pending steps or beyond the configured limit", async () => {
+    const workspace = setup();
+    createSessionPlan(workspace, "plan-session", turnId, ["调研", "实施"]);
+    expect(revisePendingPlanSteps(workspace, "plan-session", turnId, ["一", "二", "三", "四"], 4)).toBeDefined();
+
+    const secondTurn = "22222222-2222-4222-8222-222222222222";
+    createSessionPlan(workspace, "plan-session", secondTurn, ["调研", "实施"]);
+    const reviseTool = createPlanReviseTool(workspace, () => ({ plan: { maxSteps: 2 } }) as never);
+    const result = JSON.parse(await reviseTool.execute(
+      { steps: ["一", "二", "三"] },
+      { executionMode: "plan", sessionId: "plan-session", turnId: secondTurn, config: { plan: { maxSteps: 2 } } as never },
+    ));
+    expect(result.error).toContain("2 到 2");
   });
 });

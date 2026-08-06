@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { AgentSession } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { PluginManager } from "./plugin-manager.js";
+import { rejectRequest } from "./tools/approval.js";
+import type { AgentEvent } from "./agent.js";
 import type { AgentActor, Config, SessionContext } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -43,10 +45,67 @@ export interface SubAgentRunOptions {
 
 export interface SubAgentTaskResult {
   id: string;
-  status: "completed" | "max_iterations_reached" | "error";
+  status: "completed" | "max_iterations_reached" | "approval_required" | "error";
   summary: string;
   toolCalls: Array<{ name: string; input: Record<string, unknown> }>;
   error?: string;
+}
+
+function parseApprovalResult(result: string): { approvalId: string } | undefined {
+  try {
+    const parsed = JSON.parse(result) as { requiresConfirmation?: unknown; approvalId?: unknown };
+    if (parsed.requiresConfirmation === true && typeof parsed.approvalId === "string") {
+      return { approvalId: parsed.approvalId };
+    }
+  } catch {
+    // Non-JSON tool results cannot represent an approval request.
+  }
+  return undefined;
+}
+
+export async function collectSubAgentResult(options: {
+  workspacePath: string;
+  actor?: AgentActor;
+  id: string;
+  events: AsyncIterable<AgentEvent>;
+}): Promise<SubAgentTaskResult> {
+  let finalText = "";
+  let doneReason: Extract<AgentEvent, { type: "done" }>["reason"] | undefined;
+  let blockedTool: string | undefined;
+  const toolCalls: SubAgentTaskResult["toolCalls"] = [];
+
+  for await (const event of options.events) {
+    if (event.type === "tool_call") {
+      toolCalls.push({ name: event.name, input: event.input });
+    } else if (event.type === "tool_result") {
+      const approval = parseApprovalResult(event.result);
+      if (approval) {
+        rejectRequest(options.workspacePath, approval.approvalId, options.actor);
+        blockedTool = event.name;
+      }
+    } else if (event.type === "done") {
+      finalText = event.text;
+      doneReason = event.reason;
+    } else if (event.type === "error") {
+      return { id: options.id, status: "error", summary: "", toolCalls, error: event.message };
+    }
+  }
+
+  if (doneReason === "approval_required" || blockedTool) {
+    return {
+      id: options.id,
+      status: "approval_required",
+      summary: "",
+      toolCalls,
+      error: `sub-agent 调用 ${blockedTool ?? "工具"} 时需要用户审批。子会话不能独立恢复审批，请由主 Agent 使用相同参数重新调用该工具。`,
+    };
+  }
+  return {
+    id: options.id,
+    status: doneReason ? "completed" : "max_iterations_reached",
+    summary: finalText.trim(),
+    toolCalls,
+  };
 }
 
 export interface SubAgentRunResult {
@@ -106,9 +165,10 @@ async function runOneSubAgent(
     ? `sub:${parentSessionId}:${id}`
     : `sub:${id}`;
 
+  let pm: PluginManager | undefined;
   try {
     const allowedTools = resolveSubAgentTools(config);
-    const pm = new PluginManager(workspacePath, {
+    pm = new PluginManager(workspacePath, {
       allowedTools,
       disabledTools: ALWAYS_DISABLED_TOOLS,
     });
@@ -118,33 +178,12 @@ async function runOneSubAgent(
       maxAgentIterations: maxIterations,
     }, undefined, sessionContext);
 
-    let finalText = "";
-    let sawDone = false;
-    const toolCalls: SubAgentTaskResult["toolCalls"] = [];
-
-    for await (const event of session.chat(buildSubAgentPrompt(workspacePath, task, allowedTools), actor)) {
-      if (event.type === "tool_call") {
-        toolCalls.push({ name: event.name, input: event.input });
-      } else if (event.type === "done") {
-        finalText = event.text;
-        sawDone = true;
-      } else if (event.type === "error") {
-        return {
-          id,
-          status: "error",
-          summary: "",
-          toolCalls,
-          error: event.message,
-        };
-      }
-    }
-
-    return {
+    return collectSubAgentResult({
+      workspacePath,
+      actor,
       id,
-      status: sawDone ? "completed" : "max_iterations_reached",
-      summary: finalText.trim(),
-      toolCalls,
-    };
+      events: session.chat(buildSubAgentPrompt(workspacePath, task, allowedTools), actor),
+    });
   } catch (err) {
     return {
       id,
@@ -153,6 +192,8 @@ async function runOneSubAgent(
       toolCalls: [],
       error: err instanceof Error ? err.message : String(err),
     };
+  } finally {
+    await pm?.destroy();
   }
 }
 
@@ -210,7 +251,7 @@ export async function runSubAgents(options: SubAgentRunOptions): Promise<SubAgen
     ),
   );
 
-  const hasError = results.some((r) => r.status === "error");
+  const hasError = results.some((r) => r.status === "error" || r.status === "approval_required");
   return {
     status: hasError ? "partial_error" : "completed",
     results,

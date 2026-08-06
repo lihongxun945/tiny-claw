@@ -78,6 +78,7 @@ export interface PluginHooks {
     string | Promise<string> | void;
   onBuildTurnPrompt?: (ctx: HookContext, prompt: string) =>
     string | Promise<string> | void;
+  onFilterToolDefinitions?: (ctx: HookContext, definitions: ToolDefinition[]) => ToolDefinition[] | void;
   onUserMessage?: (ctx: HookContext, input: string, content?: Message["content"]) => void | Promise<void>;
   onBeforeModelCall?: (ctx: HookContext, modelContext: ModelCallContext) =>
     ModelCallContext | Promise<ModelCallContext> | void;

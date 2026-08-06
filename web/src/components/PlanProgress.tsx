@@ -7,6 +7,7 @@ const STATUS_LABELS = {
   failed: "失败",
   skipped: "已跳过",
   waiting_approval: "等待审批",
+  waiting_user: "等待用户",
 } as const;
 
 export default function PlanProgress({ plan }: { plan: SessionPlan | null | undefined }) {
@@ -23,7 +24,7 @@ export default function PlanProgress({ plan }: { plan: SessionPlan | null | unde
       <div className="plan-step-list">
         {plan.steps.map((step, index) => (
           <div className={`plan-step plan-step-${step.status}`} key={step.id}>
-            <span className="plan-step-marker">{step.status === "completed" ? "✓" : step.status === "failed" ? "!" : step.status === "in_progress" || step.status === "waiting_approval" ? "●" : "○"}</span>
+            <span className="plan-step-marker">{step.status === "completed" ? "✓" : step.status === "failed" ? "!" : step.status === "in_progress" || step.status === "waiting_approval" || step.status === "waiting_user" ? "●" : "○"}</span>
             <span className="plan-step-title">{index + 1}. {step.title}</span>
             <span className="plan-step-status">{STATUS_LABELS[step.status]}</span>
             {step.summary && <span className="plan-step-summary">{step.summary}</span>}
