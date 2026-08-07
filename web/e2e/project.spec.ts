@@ -48,8 +48,8 @@ test("creates and restores a project session as soon as a directory is selected"
   await expect(page.locator(".project-conversation-item .session-id")).toHaveText("新对话");
   await expect(page.locator(".project-toolbar-path")).toHaveText("/Users/test/tiny-claw");
   await expect(page.locator(".project-toolbar-meta")).toContainText("main · 1 个变更");
-  await page.getByRole("button", { name: "变更 1" }).click();
-  await page.getByRole("button", { name: /src\/app\.ts/ }).click();
+  await page.getByRole("button", { name: /1 个文件变更/ }).click();
+  await page.locator(".project-changes-files").getByRole("button", { name: /src\/app\.ts/ }).click();
   await expect(page.locator(".project-diff-view")).toContainText("const value = 2;");
 
   await page.getByRole("button", { name: "对话", exact: true }).click();
