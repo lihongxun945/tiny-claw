@@ -142,6 +142,12 @@ http://localhost:3001
 - 在“配置”页面修改模型、上下文、搜索、权限、Sub-agent、插件和调试设置。
 - 当工具需要审批时，在聊天消息的工具块中点击“批准”或“拒绝”；批准后原任务会自动继续执行。
 
+#### Skill
+
+个人 Skill 放在 runtime workspace 的 `skills/<name>/SKILL.md`，会在所有会话中可用。项目模式会额外自动发现项目根目录下的 `.agents/skills/<name>/SKILL.md`，并兼容 `.claude/skills/<name>/SKILL.md`。系统提示词只注入 Skill 名称和描述，完整正文由模型在需要时通过 `skill_use` 按需加载。
+
+项目会话中，同名裸名优先匹配项目 Skill；也可以用 `project/<name>` 或 `workspace/<name>` 精确指定来源。`.agents/skills` 是推荐的跨 Agent 项目路径，`.claude/skills` 用于兼容 Claude Code 生态。
+
 #### 数据与升级
 
 macOS 客户端的所有用户数据保存在：

@@ -1,10 +1,10 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ToolDefinition } from "../types.js";
+import type { SessionContext, ToolDefinition } from "../types.js";
 import { loadIdentity } from "../workspace/workspace.js";
 import { loadAllMemories } from "../tools/memory.js";
-import { listSkills } from "../tools/skill.js";
+import { formatSkillName, listAvailableSkills } from "../tools/skill.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -24,15 +24,15 @@ function buildSearchGuidance(provider: string): string {
   return "使用 web_search 时，根据用户问题构造清晰、具体的搜索 query；当前搜索 provider 支持常规搜索查询，不要求压缩成 1-3 个英文实体关键词。搜索结果由你负责总结回答。";
 }
 
-export function buildSystemPrompt(workspacePath: string, tools: ToolDefinition[], searchProvider = "ollama"): string {
+export function buildSystemPrompt(workspacePath: string, tools: ToolDefinition[], searchProvider = "ollama", sessionContext?: SessionContext): string {
   const template = loadTemplate(workspacePath);
 
   const identity = loadIdentity(workspacePath);
 
   const memories = loadAllMemories(workspacePath);
 
-  const skills = listSkills(workspacePath);
-  const skillsText = skills.map((s) => `- ${s.name}: ${s.description}`).join("\n");
+  const skills = listAvailableSkills(workspacePath, sessionContext);
+  const skillsText = skills.map((s) => `- ${formatSkillName(s)}: ${s.description}`).join("\n");
 
   const toolsText = tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
 

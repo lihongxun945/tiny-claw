@@ -124,7 +124,7 @@ workspace/
 
 项目开发模式建立在持久化的 `SessionContext` 上。普通会话使用 `{ mode: "chat" }`；项目会话在创建时绑定规范化后的项目真实路径，并把 `{ mode: "project", project: { root, name } }` 写入 `sessions/<session>/meta.json`。绑定创建后不可修改，后续 `/chat` 只接收 `session_id`，不会从请求中临时切换项目。
 
-`core-project` 插件负责 `/projects/inspect`、`/projects/status`、`/projects/diff` 路由和项目提示词注入。静态项目检查只识别技术栈与规则文件，并按文件签名缓存；动态 Git 状态与 diff 通过异步子进程按需读取，不阻塞 Gateway 事件循环，也不重复注入模型上下文。Git 参数使用数组传递而不拼接 shell 字符串，超时和 diff 最大字符数由 `project.gitTimeoutMs`、`project.diffMaxChars` 控制。读取 `.tiny-claw/rules.md` 和根目录 `AGENTS.md` 时应用单文件与总字符上限。Gateway 只维护一个 `PluginManager`，项目根目录和有效配置通过 session 运行时上下文传递给插件及工具。
+`core-project` 插件负责 `/projects/inspect`、`/projects/status`、`/projects/diff` 路由和项目提示词注入。静态项目检查只识别技术栈与规则文件，并按文件签名缓存；动态 Git 状态与 diff 通过异步子进程按需读取，不阻塞 Gateway 事件循环，也不重复注入模型上下文。Git 参数使用数组传递而不拼接 shell 字符串，超时和 diff 最大字符数由 `project.gitTimeoutMs`、`project.diffMaxChars` 控制。读取 `.tiny-claw/rules.md` 和根目录 `AGENTS.md` 时应用单文件与总字符上限。项目模式还会自动发现项目根目录下 `.agents/skills/<name>/SKILL.md`，并兼容 `.claude/skills/<name>/SKILL.md`；默认只把技能名称和描述注入提示词，完整正文仍通过 `skill_use` 按需加载。Gateway 只维护一个 `PluginManager`，项目根目录和有效配置通过 session 运行时上下文传递给插件及工具。
 
 `core-project-tools` 插件注册 `project_tree`、`project_search`、`git_status`、`git_diff` 四个只读开发工具。工具注册支持基于 `SessionContext` 的可用性过滤，因此普通会话不会把项目工具定义发送给模型。目录树使用异步文件系统 API，并跳过依赖、版本库和常见构建目录；项目搜索使用 `rg --json` 解析结构化结果，达到结果数、字符数或超时上限时主动终止子进程。四个工具都强制使用项目根目录和符号链接边界校验，并继承统一权限审批与审计日志。
 
@@ -629,7 +629,7 @@ Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prom
 
 ### 技能系统
 
-技能是 Markdown 文件，放在 `workspace/skills/` 目录下，包含 frontmatter（name、description）和指令正文：
+技能是 Markdown 文件。个人/workspace 技能放在 `workspace/skills/` 目录下；项目模式会额外发现项目根目录的 `.agents/skills/`，并兼容 `.claude/skills/`。每个技能目录包含一个 `SKILL.md`，其中包含 frontmatter（name、description）和指令正文：
 
 ```markdown
 ---
@@ -640,9 +640,9 @@ description: 代码审查，检查代码质量、安全性和最佳实践
 你是一个代码审查专家。执行以下步骤：...
 ```
 
-- **发现**：启动时 `listSkills()` 扫描 `skills/<name>/SKILL.md`，将名称和描述注入 system prompt
-- **激活**：模型调用 `skill_use(name)` 获取完整指令内容，指令中注入技能工作目录绝对路径
-- **查询**：模型调用 `skill_list()` 列出所有可用技能
+- **发现**：普通会话扫描 `workspace/skills/<name>/SKILL.md`；项目会话额外扫描 `<project>/.agents/skills/<name>/SKILL.md` 和 `<project>/.claude/skills/<name>/SKILL.md`，将名称和描述注入 system prompt
+- **激活**：模型调用 `skill_use(name)` 获取完整指令内容，指令中注入技能工作目录绝对路径。项目模式下裸名优先匹配项目技能，也可以用 `project/<name>` 或 `workspace/<name>` 精确指定来源
+- **查询**：模型调用 `skill_list()` 列出当前会话可用技能，并带上 `project/` 或 `workspace/` 来源前缀
 - **动态内容**：支持 `!`command`` 执行命令注入、`$ARGUMENTS` 参数替换、`${CLAUDE_SKILL_DIR}` 路径替换。动态命令统一遵循 `bash` 工具权限。
 - **文件格式**：`SKILL.md` frontmatter 用 `---` 包裹，必须包含 `description` 字段，`name` 由目录名决定
 

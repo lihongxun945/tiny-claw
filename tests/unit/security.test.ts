@@ -164,6 +164,56 @@ describe("security boundary", () => {
     expect(await skillList.execute({})).toContain("暂无可用技能");
   });
 
+  it("discovers and loads project skills from universal and Claude directories", async () => {
+    const workspacePath = createTempWorkspace();
+    const projectRoot = mkdtempSync(resolve(tmpdir(), "tiny-claw-project-skills-"));
+    paths.push(workspacePath, projectRoot);
+
+    const workspaceSkillDir = resolve(workspacePath, "skills", "review");
+    mkdirSync(workspaceSkillDir, { recursive: true });
+    writeFileSync(resolve(workspaceSkillDir, "SKILL.md"), [
+      "---",
+      "description: workspace review",
+      "---",
+      "workspace body",
+    ].join("\n"), "utf-8");
+
+    const projectSkillDir = resolve(projectRoot, ".agents", "skills", "review");
+    mkdirSync(projectSkillDir, { recursive: true });
+    writeFileSync(resolve(projectSkillDir, "SKILL.md"), [
+      "---",
+      "description: project review",
+      "---",
+      "project body",
+    ].join("\n"), "utf-8");
+
+    const claudeSkillDir = resolve(projectRoot, ".claude", "skills", "deploy");
+    mkdirSync(claudeSkillDir, { recursive: true });
+    writeFileSync(resolve(claudeSkillDir, "SKILL.md"), [
+      "---",
+      "description: claude deploy",
+      "---",
+      "claude body",
+    ].join("\n"), "utf-8");
+
+    const context = {
+      rootPath: projectRoot,
+      restrictToRoot: true,
+      sessionContext: { mode: "project" as const, project: { root: projectRoot, name: "project" } },
+    };
+    const skillList = createSkillListTool(workspacePath);
+    const listed = await skillList.execute({}, context);
+    expect(listed).toContain("project/review");
+    expect(listed).toContain("project/deploy");
+    expect(listed).toContain("workspace/review");
+
+    const skill = createSkillUseTool(workspacePath, () => loadConfig(workspacePath));
+    expect(await skill.execute({ name: "review" }, context)).toContain("project body");
+    expect(await skill.execute({ name: "workspace/review" }, context)).toContain("workspace body");
+    expect(await skill.execute({ name: "project/deploy" }, context)).toContain("claude body");
+    expect(await skill.execute({ name: "project/deploy" })).toContain("未找到技能");
+  });
+
   it("deduplicates, consumes, rejects and expires approvals", () => {
     const workspacePath = createTempWorkspace();
     paths.push(workspacePath);

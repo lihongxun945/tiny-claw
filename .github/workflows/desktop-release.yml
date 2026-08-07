@@ -44,6 +44,9 @@ jobs:
           npm ci
           npm --prefix web ci
 
+      - name: Install system dependencies
+        run: brew install ripgrep
+
       - name: Install Playwright Chromium
         run: npx playwright install chromium
 

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { Plugin, HookContext } from "../types.js";
 import { loadIdentity } from "../../workspace/workspace.js";
 import { loadAllMemories } from "../../tools/memory.js";
-import { listSkills } from "../../tools/skill.js";
+import { formatSkillName, listAvailableSkills } from "../../tools/skill.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -37,8 +37,8 @@ export const corePromptsPlugin: Plugin = {
         if (prompt === "") {
           const tools = _ctx.getToolDefinitions();
           const memories = loadAllMemories(workspacePath);
-          const skills = listSkills(workspacePath);
-          const skillsText = skills.map((s) => `- ${s.name}: ${s.description}`).join("\n");
+          const skills = listAvailableSkills(workspacePath, _ctx.sessionContext);
+          const skillsText = skills.map((s) => `- ${formatSkillName(s)}: ${s.description}`).join("\n");
           const toolsText = tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
           const currentDate = new Date().toISOString().slice(0, 10);
           const searchGuidance = buildSearchGuidance(_ctx.config.searchProvider);
