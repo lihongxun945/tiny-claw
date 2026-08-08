@@ -1,4 +1,4 @@
-import type { Session, Message, MemoryRecord, ApprovalRequest, ChatCommand, Attachment, ModelCallSummary, ModelCallTrace, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionContext, SessionPlan, ExecutionMode } from "../types.js";
+import type { Session, Message, MemoryRecord, ProfileRecord, ApprovalRequest, ChatCommand, Attachment, ModelCallSummary, ModelCallTrace, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionContext, SessionPlan, ExecutionMode } from "../types.js";
 
 export { streamChat, streamApprovalResume } from "./sse-client.js";
 
@@ -180,6 +180,26 @@ export async function setMemoryEnabled(name: string, enabled: boolean): Promise<
 
 export async function deleteMemory(name: string): Promise<void> {
   const res = await fetch(`/memory/${encodeURIComponent(name)}`, { method: "DELETE" });
+  await parseJSON(res);
+}
+
+export async function fetchProfiles(): Promise<ProfileRecord[]> {
+  const data = await parseJSON<{ profiles: ProfileRecord[] }>(await fetch("/profile"));
+  return data.profiles ?? [];
+}
+
+export async function fetchProfile(name: string): Promise<ProfileRecord> {
+  const res = await fetch("/profile/get", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+  return (await parseJSON<{ profile: ProfileRecord }>(res)).profile;
+}
+
+export async function updateProfile(profile: Partial<ProfileRecord> & { name: string; content: string }): Promise<ProfileRecord> {
+  const res = await fetch("/profile", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(profile) });
+  return (await parseJSON<{ profile: ProfileRecord }>(res)).profile;
+}
+
+export async function deleteProfile(name: string): Promise<void> {
+  const res = await fetch("/profile", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
   await parseJSON(res);
 }
 

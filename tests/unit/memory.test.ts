@@ -14,6 +14,8 @@ import {
   listMemoryRecords,
   loadAllMemories,
   readMemory,
+  restoreMemory,
+  runMemoryMaintenance,
   saveMemory,
   setMemoryDisabled,
   updateMemoryRecord,
@@ -62,8 +64,20 @@ describe("memory storage", () => {
       },
     });
 
-    expect(deleteMemory(workspacePath, "user-pref")).toBe("已删除记忆: user-pref");
+    expect(deleteMemory(workspacePath, "user-pref")).toBe("已将记忆移入回收站: user-pref");
     expect(getMemoryRecord(workspacePath, "user-pref")).toBeNull();
+    expect(restoreMemory(workspacePath, "user-pref")).toBe("已恢复记忆: user-pref");
+    expect(getMemoryRecord(workspacePath, "user-pref")?.status).toBe("active");
+  });
+
+  it("requires both turn and time thresholds before marking memory stale", () => {
+    saveMemory(workspacePath, "durable", "长期有效", { summary: "长期记忆" });
+    expect(runMemoryMaintenance(workspacePath, {
+      inactiveTurns: 1,
+      inactiveDays: 30,
+      trashRetentionDays: 30,
+    }).stale).toBe(0);
+    expect(getMemoryRecord(workspacePath, "durable")?.status).toBe("active");
   });
 
   it("injects all enabled memories and keeps disabled memories out of prompts", () => {
@@ -190,6 +204,6 @@ describe("memory storage", () => {
     })).toBe("已追加记忆: tool-memory");
     expect(JSON.parse(await createMemoryListTool(workspacePath).execute({})).memories).toHaveLength(1);
     expect(JSON.parse(await createMemoryReadTool(workspacePath).execute({ name: "tool-memory" })).content).toContain("more content");
-    expect(await createMemoryDeleteTool(workspacePath, getConfig).execute({ name: "tool-memory" })).toBe("已删除记忆: tool-memory");
+    expect(await createMemoryDeleteTool(workspacePath, getConfig).execute({ name: "tool-memory" })).toBe("已将记忆移入回收站: tool-memory");
   });
 });

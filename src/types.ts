@@ -69,6 +69,7 @@ export interface Config {
   subAgent?: SubAgentConfig;
   sessionSummary?: SessionSummaryConfig;
   autoMemory?: AutoMemoryConfig;
+  profile?: ProfileConfig;
   memory?: MemoryConfig;
   attachments?: AttachmentsConfig;
   debug?: boolean | DebugConfig;
@@ -175,6 +176,31 @@ export interface AutoMemoryConfig {
 }
 
 export interface MemoryConfig {
+  enabled?: boolean;
+  maxItemChars?: number;
+  maxTotalChars?: number;
+  retrieval?: {
+    maxResults?: number;
+    candidateLimit?: number;
+    maxContextChars?: number;
+    minScore?: number;
+  };
+  embedding?: {
+    provider?: "local-hash" | "openai-compatible";
+    model: string;
+    dimensions: number;
+    apiUrl?: string;
+    apiKey?: string;
+  };
+  maintenance?: {
+    inactiveTurns?: number;
+    inactiveDays?: number;
+    trashRetentionDays?: number;
+  };
+}
+
+export interface ProfileConfig {
+  enabled?: boolean;
   maxItemChars?: number;
   maxTotalChars?: number;
 }

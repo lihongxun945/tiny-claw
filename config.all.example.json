@@ -37,9 +37,33 @@
     "maxBatchChars": 8000,
     "lockTimeoutSeconds": 300
   },
+  "profile": {
+    "enabled": true,
+    "maxItemChars": 2000,
+    "maxTotalChars": 8000
+  },
   "memory": {
+    "enabled": true,
     "maxItemChars": 20000,
-    "maxTotalChars": 80000
+    "maxTotalChars": 80000,
+    "retrieval": {
+      "maxResults": 5,
+      "candidateLimit": 20,
+      "maxContextChars": 6000,
+      "minScore": 0.35
+    },
+    "embedding": {
+      "provider": "local-hash",
+      "model": "local-hash-v1",
+      "dimensions": 384,
+      "apiUrl": "",
+      "apiKey": ""
+    },
+    "maintenance": {
+      "inactiveTurns": 200,
+      "inactiveDays": 30,
+      "trashRetentionDays": 30
+    }
   },
   "attachments": {
     "enabled": true,
@@ -71,6 +95,9 @@
         "mode": "allow"
       },
       "memory_delete": {
+        "mode": "allow"
+      },
+      "memory_restore": {
         "mode": "allow"
       }
     },

@@ -1,8 +1,11 @@
 import { spawn } from "node:child_process";
+import { readdir, readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import type { Config, Tool, ToolExecutionContext } from "../types.js";
 import { checkDangerousToolPermission } from "./permission.js";
 import { resolveRootFile } from "./workspace-path.js";
+
+const DEFAULT_EXCLUDED_NAMES = new Set([".git", "node_modules", "dist", "build", "coverage", ".next", ".cache"]);
 
 interface SearchLimits {
   maxResults: number;
@@ -66,7 +69,15 @@ export function createProjectSearchTool(workspacePath: string, getConfig: () => 
         }));
       } catch (error) {
         if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-          return JSON.stringify({ error: "未找到 rg（ripgrep），project_search 需要安装 rg 后才能使用" });
+          return JSON.stringify(await runFallbackSearch({
+            root: project.root,
+            start,
+            query,
+            mode,
+            glob: typeof args.glob === "string" && args.glob ? args.glob : undefined,
+            limits,
+            signal: context?.signal,
+          }));
         }
         return JSON.stringify({ error: error instanceof Error ? error.message : String(error) });
       }
@@ -147,6 +158,136 @@ async function runSearch(options: {
   if (timedOut) throw new Error(`项目搜索超时（${options.limits.timeoutMs}ms）`);
   if (!truncated && exitCode !== 0 && exitCode !== 1) throw new Error(stderr.trim() || `rg 执行失败（退出码 ${exitCode}）`);
   return { results, truncated };
+}
+
+async function runFallbackSearch(options: {
+  root: string;
+  start: string;
+  query: string;
+  mode: "text" | "regex" | "files";
+  glob?: string;
+  limits: SearchLimits;
+  signal?: AbortSignal;
+}): Promise<{ results: unknown[]; truncated: boolean; engine: "typescript" }> {
+  const results: unknown[] = [];
+  const deadline = Date.now() + options.limits.timeoutMs;
+  const filesGlob = globToRegExp(options.mode === "files" ? options.query : options.glob);
+  const textMatcher = options.mode === "regex" ? new RegExp(options.query, "g") : undefined;
+  let chars = 0;
+  let truncated = false;
+
+  const pushResult = (result: unknown): boolean => {
+    const size = JSON.stringify(result).length;
+    if (results.length >= options.limits.maxResults || chars + size > options.limits.maxChars) {
+      truncated = true;
+      return false;
+    }
+    results.push(result);
+    chars += size;
+    return true;
+  };
+
+  const assertActive = () => {
+    if (options.signal?.aborted) throw new Error("项目搜索已取消");
+    if (Date.now() > deadline) throw new Error(`项目搜索超时（${options.limits.timeoutMs}ms）`);
+  };
+
+  const visitFile = async (absolutePath: string) => {
+    assertActive();
+    const pathFromStart = relative(options.start, absolutePath);
+    if (filesGlob && !filesGlob.test(normalizePath(pathFromStart))) return;
+    const pathFromRoot = normalizePath(relative(options.root, absolutePath));
+    if (options.mode === "files") {
+      pushResult({ path: pathFromRoot });
+      return;
+    }
+
+    const content = await readFile(absolutePath, "utf-8");
+    if (content.includes("\0")) return;
+    const lines = content.split(/\n/);
+    for (let index = 0; index < lines.length; index++) {
+      assertActive();
+      const line = lines[index].replace(/\r$/, "");
+      const matches = options.mode === "regex"
+        ? regexMatches(textMatcher!, line)
+        : textMatches(options.query, line);
+      if (matches.length === 0) continue;
+      if (!pushResult({ path: pathFromRoot, line: index + 1, text: line, matches })) return;
+    }
+  };
+
+  const walk = async (directory: string): Promise<void> => {
+    assertActive();
+    const children = await readdir(directory, { withFileTypes: true });
+    children.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
+    for (const child of children) {
+      if (truncated || DEFAULT_EXCLUDED_NAMES.has(child.name) || child.isSymbolicLink()) continue;
+      const absolutePath = resolve(directory, child.name);
+      if (child.isDirectory()) {
+        await walk(absolutePath);
+      } else if (child.isFile()) {
+        try {
+          await visitFile(absolutePath);
+        } catch (error) {
+          if (error instanceof TypeError) continue;
+          throw error;
+        }
+      }
+    }
+  };
+
+  await walk(options.start);
+  return { results, truncated, engine: "typescript" };
+}
+
+function textMatches(query: string, line: string): Array<{ start: number; end: number }> {
+  const matches: Array<{ start: number; end: number }> = [];
+  let index = line.indexOf(query);
+  while (index !== -1) {
+    matches.push({ start: index, end: index + query.length });
+    index = line.indexOf(query, index + Math.max(query.length, 1));
+  }
+  return matches;
+}
+
+function regexMatches(regex: RegExp, line: string): Array<{ start: number; end: number }> {
+  const matches: Array<{ start: number; end: number }> = [];
+  regex.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(line)) !== null) {
+    matches.push({ start: match.index, end: match.index + match[0].length });
+    if (match[0].length === 0) regex.lastIndex += 1;
+  }
+  return matches;
+}
+
+function globToRegExp(glob?: string): RegExp | undefined {
+  if (!glob) return undefined;
+  const normalized = normalizePath(glob);
+  let pattern = "^";
+  for (let index = 0; index < normalized.length; index++) {
+    const char = normalized[index];
+    const next = normalized[index + 1];
+    if (char === "*" && next === "*") {
+      pattern += ".*";
+      index += 1;
+    } else if (char === "*") {
+      pattern += "[^/]*";
+    } else if (char === "?") {
+      pattern += "[^/]";
+    } else {
+      pattern += escapeRegExp(char);
+    }
+  }
+  return new RegExp(`${pattern}$`);
+}
+
+function normalizePath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function getProjectExecution(context?: ToolExecutionContext): { root: string } | { error: string } {

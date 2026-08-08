@@ -31,9 +31,18 @@
     "maxBatchChars": 8000,
     "lockTimeoutSeconds": 300
   },
+  "profile": {
+    "enabled": true,
+    "maxItemChars": 2000,
+    "maxTotalChars": 8000
+  },
   "memory": {
-    "maxItemChars": 20000,
-    "maxTotalChars": 80000
+    "enabled": true,
+    "embedding": {
+      "provider": "local-hash",
+      "model": "local-hash-v1",
+      "dimensions": 384
+    }
   },
   "attachments": {
     "enabled": true,

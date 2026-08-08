@@ -57,9 +57,31 @@ export function createDefaultConfig(): Record<string, unknown> {
       maxBatchChars: 8000,
       lockTimeoutSeconds: 300,
     },
+    profile: {
+      enabled: true,
+      maxItemChars: 2000,
+      maxTotalChars: 8000,
+    },
     memory: {
+      enabled: true,
       maxItemChars: 20000,
       maxTotalChars: 80000,
+      retrieval: {
+        maxResults: 5,
+        candidateLimit: 20,
+        maxContextChars: 6000,
+        minScore: 0.35,
+      },
+      embedding: {
+        provider: "local-hash",
+        model: "local-hash-v1",
+        dimensions: 384,
+      },
+      maintenance: {
+        inactiveTurns: 200,
+        inactiveDays: 30,
+        trashRetentionDays: 30,
+      },
     },
     attachments: {
       enabled: true,
@@ -116,8 +138,8 @@ export function createDefaultConfig(): Record<string, unknown> {
     searxngUrl: "",
     braveApiKey: "",
     subAgent: {
-      allowedTools: ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "skill_list", "skill_use"],
-      disabledTools: ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "sub_agent_run"],
+      allowedTools: ["web_search", "web_fetch", "file_read", "memory_list", "memory_search", "memory_read", "skill_list", "skill_use"],
+      disabledTools: ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "memory_restore", "sub_agent_run"],
       maxIterations: 3,
       maxConcurrency: 3,
     },
@@ -252,6 +274,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
 
   if (raw.memory !== undefined) {
     assertObject(raw.memory, "memory");
+    assertOptionalBoolean(raw.memory.enabled, "memory.enabled");
     assertOptionalNumber(raw.memory.maxItemChars, "memory.maxItemChars", { min: 1000, integer: true });
     assertOptionalNumber(raw.memory.maxTotalChars, "memory.maxTotalChars", { min: 1000, integer: true });
     if (
@@ -261,6 +284,45 @@ export function validateConfig(raw: Record<string, unknown>): void {
     ) {
       throw new Error("配置字段 memory.maxItemChars 不能大于 memory.maxTotalChars");
     }
+    if (raw.memory.retrieval !== undefined) {
+      assertObject(raw.memory.retrieval, "memory.retrieval");
+      assertOptionalNumber(raw.memory.retrieval.maxResults, "memory.retrieval.maxResults", { min: 1, integer: true });
+      assertOptionalNumber(raw.memory.retrieval.candidateLimit, "memory.retrieval.candidateLimit", { min: 1, integer: true });
+      assertOptionalNumber(raw.memory.retrieval.maxContextChars, "memory.retrieval.maxContextChars", { min: 100, integer: true });
+      assertOptionalNumber(raw.memory.retrieval.minScore, "memory.retrieval.minScore", { min: 0, max: 1 });
+    }
+    if (raw.memory.embedding !== undefined) {
+      assertObject(raw.memory.embedding, "memory.embedding");
+      if (raw.memory.embedding.provider !== undefined && !["local-hash", "openai-compatible"].includes(String(raw.memory.embedding.provider))) {
+        throw new Error("配置字段 memory.embedding.provider 不受支持");
+      }
+      if (raw.memory.embedding.provider === "openai-compatible") {
+        assertString(raw.memory.embedding.model, "memory.embedding.model");
+        assertNumber(raw.memory.embedding.dimensions, "memory.embedding.dimensions", { min: 8, integer: true });
+      }
+      if (raw.memory.embedding.model !== undefined) assertString(raw.memory.embedding.model, "memory.embedding.model");
+      assertOptionalNumber(raw.memory.embedding.dimensions, "memory.embedding.dimensions", { min: 8, integer: true });
+      assertOptionalString(raw.memory.embedding.apiUrl, "memory.embedding.apiUrl");
+      assertOptionalString(raw.memory.embedding.apiKey, "memory.embedding.apiKey");
+    }
+    if (raw.memory.maintenance !== undefined) {
+      assertObject(raw.memory.maintenance, "memory.maintenance");
+      assertOptionalNumber(raw.memory.maintenance.inactiveTurns, "memory.maintenance.inactiveTurns", { min: 1, integer: true });
+      assertOptionalNumber(raw.memory.maintenance.inactiveDays, "memory.maintenance.inactiveDays", { min: 1, integer: true });
+      assertOptionalNumber(raw.memory.maintenance.trashRetentionDays, "memory.maintenance.trashRetentionDays", { min: 1, integer: true });
+    }
+  }
+
+  if (raw.profile !== undefined) {
+    assertObject(raw.profile, "profile");
+    assertOptionalBoolean(raw.profile.enabled, "profile.enabled");
+    assertOptionalNumber(raw.profile.maxItemChars, "profile.maxItemChars", { min: 100, integer: true });
+    assertOptionalNumber(raw.profile.maxTotalChars, "profile.maxTotalChars", { min: 100, integer: true });
+    if (
+      typeof raw.profile.maxItemChars === "number"
+      && typeof raw.profile.maxTotalChars === "number"
+      && raw.profile.maxItemChars > raw.profile.maxTotalChars
+    ) throw new Error("配置字段 profile.maxItemChars 不能大于 profile.maxTotalChars");
   }
 
   if (raw.attachments !== undefined) {

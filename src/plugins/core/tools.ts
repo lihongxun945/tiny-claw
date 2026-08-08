@@ -11,11 +11,13 @@ import {
   createMemoryListTool,
   createMemoryReadTool,
   createMemoryDeleteTool,
+  createMemoryRestoreTool,
 } from "../../tools/memory.js";
 import { createSkillUseTool, createSkillListTool } from "../../tools/skill.js";
 import { loadConfig } from "../../config.js";
 import { appendLog } from "../../workspace/logger.js";
 import type { Tool } from "../../types.js";
+import { createProfileDeleteTool, createProfileListTool, createProfileReadTool, createProfileSaveTool } from "../../tools/profile.js";
 
 function summarizeArgs(tool: Tool, args: Record<string, unknown>): Record<string, unknown> {
   if (tool.name === "bash") return { command: args.command, timeout: args.timeout, cwd: args.cwd };
@@ -58,6 +60,11 @@ export const coreToolsPlugin: Plugin = {
       createMemoryListTool(ctx.workspacePath),
       createMemoryReadTool(ctx.workspacePath),
       createMemoryDeleteTool(ctx.workspacePath, getConfig),
+      createMemoryRestoreTool(ctx.workspacePath, getConfig),
+      createProfileListTool(ctx.workspacePath),
+      createProfileReadTool(ctx.workspacePath),
+      createProfileSaveTool(ctx.workspacePath, getConfig),
+      createProfileDeleteTool(ctx.workspacePath, getConfig),
       createSkillUseTool(ctx.workspacePath, getConfig),
       createSkillListTool(ctx.workspacePath),
     ];

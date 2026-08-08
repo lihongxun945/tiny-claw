@@ -1918,6 +1918,37 @@ summary:focus-visible {
   background: var(--canvas);
 }
 
+.memory-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 26px 28px 28px;
+}
+
+.memory-view .memory-manager { padding: 0; }
+
+.memory-kind-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.memory-kind-tabs button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-secondary);
+}
+
+.memory-kind-tabs button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .memory-list-pane {
   min-width: 0;
   display: flex;

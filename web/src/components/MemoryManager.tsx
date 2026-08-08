@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import type { MemoryRecord, MemorySource } from "../types.js";
-import { deleteMemory, fetchMemories, fetchMemory, setMemoryEnabled, updateMemory } from "../lib/api.js";
+import type { MemoryRecord, MemorySource, ProfileRecord } from "../types.js";
+import { deleteMemory, deleteProfile, fetchMemories, fetchMemory, fetchProfile, fetchProfiles, setMemoryEnabled, updateMemory, updateProfile } from "../lib/api.js";
 
 const SOURCE_OPTIONS: MemorySource[] = ["auto", "tool", "manual"];
 
@@ -33,7 +33,7 @@ function tagText(memory: MemoryRecord): string {
   return memory.tags.length > 0 ? memory.tags.join(", ") : "";
 }
 
-export default function MemoryManager() {
+function ArchiveMemoryManager() {
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
   const [selectedName, setSelectedName] = useState("");
   const [draft, setDraft] = useState<MemoryRecord>(emptyDraft);
@@ -264,4 +264,76 @@ export default function MemoryManager() {
       </div>
     </div>
   );
+}
+
+function ProfileManager() {
+  const [profiles, setProfiles] = useState<ProfileRecord[]>([]);
+  const [selectedName, setSelectedName] = useState("");
+  const [draft, setDraft] = useState<ProfileRecord | null>(null);
+  const [message, setMessage] = useState("");
+
+  const load = async (preferred = selectedName) => {
+    try {
+      const list = await fetchProfiles();
+      setProfiles(list);
+      const selected = list.find((item) => item.name === preferred) ?? list[0];
+      setSelectedName(selected?.name ?? "");
+      setDraft(selected ? await fetchProfile(selected.name) : null);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "加载 Profile 失败"); }
+  };
+  useEffect(() => { void load(); }, []);
+
+  const select = async (name: string) => {
+    setSelectedName(name);
+    setDraft(await fetchProfile(name));
+  };
+  const save = async () => {
+    if (!draft) return;
+    try {
+      const updated = await updateProfile(draft);
+      setDraft(updated);
+      await load(updated.name);
+      setMessage("Profile 已保存");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "保存失败"); }
+  };
+  const remove = async () => {
+    if (!draft || !confirm(`确定删除 Profile ${draft.name}？`)) return;
+    await deleteProfile(draft.name);
+    setSelectedName("");
+    await load("");
+  };
+  const create = () => {
+    const now = new Date().toISOString();
+    setSelectedName("");
+    setDraft({ name: "", summary: "", content: "", disabled: false, source: "manual", createdAt: now, updatedAt: now });
+  };
+
+  return (
+    <div className="memory-manager">
+      <div className="memory-list-pane">
+        <div className="memory-toolbar"><button onClick={create}>新建 Profile</button><button onClick={() => load()}>刷新</button></div>
+        <div className="memory-list">
+          {profiles.length === 0 && <div className="empty-state">暂无 Profile</div>}
+          {profiles.map((profile) => <button key={profile.name} className={`memory-item ${profile.name === selectedName ? "active" : ""}`} onClick={() => select(profile.name)}><span className="memory-item-title"><span>{profile.name}</span><span className={`memory-state ${profile.disabled ? "disabled" : "enabled"}`}>{profile.disabled ? "禁用" : "固定注入"}</span></span><span className="memory-summary">{profile.summary || "无摘要"}</span></button>)}
+        </div>
+      </div>
+      <div className="memory-detail-pane">
+        {!draft ? <div className="empty-state">选择或新建一个 Profile</div> : <>
+          <div className="memory-detail-header"><div><h2>{draft.name || "新 Profile"}</h2><span>每轮固定发送给模型</span></div><div className="memory-actions">{draft.name && <button onClick={remove}>删除</button>}<button onClick={save} disabled={!draft.name.trim() || !draft.content.trim()}>保存</button></div></div>
+          <div className="memory-form">
+            <label><span>名称</span><input value={draft.name} disabled={Boolean(selectedName)} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="communication" /></label>
+            <label><span>摘要</span><input value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} /></label>
+            <div className="memory-checks"><label><input type="checkbox" checked={draft.disabled} onChange={(event) => setDraft({ ...draft, disabled: event.target.checked })} />禁用</label></div>
+            <label className="memory-content-field"><span>内容</span><textarea value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} /></label>
+          </div>
+          {message && <div className="memory-message">{message}</div>}
+        </>}
+      </div>
+    </div>
+  );
+}
+
+export default function MemoryManager() {
+  const [tab, setTab] = useState<"profile" | "memory">("profile");
+  return <div className="memory-view"><div className="memory-kind-tabs"><button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>用户 Profile</button><button className={tab === "memory" ? "active" : ""} onClick={() => setTab("memory")}>长期记忆</button></div>{tab === "profile" ? <ProfileManager /> : <ArchiveMemoryManager />}</div>;
 }

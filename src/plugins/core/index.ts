@@ -14,6 +14,8 @@ import { coreLocalModelsPlugin } from "./local-models.js";
 import { coreProjectPlugin } from "./project.js";
 import { coreProjectToolsPlugin } from "./project-tools.js";
 import { corePlanPlugin } from "./plan.js";
+import { coreVectorMemoryPlugin } from "./vector-memory.js";
+import { coreProfileMemoryPlugin } from "./profile-memory.js";
 
 export const corePlugins: Plugin[] = [
   coreChatCommandsPlugin,
@@ -21,6 +23,8 @@ export const corePlugins: Plugin[] = [
   coreDebugPlugin,
   coreLocalModelsPlugin,
   coreToolsPlugin,
+  coreProfileMemoryPlugin,
+  coreVectorMemoryPlugin,
   coreSubAgentPlugin,
   corePromptsPlugin,
   coreProjectPlugin,

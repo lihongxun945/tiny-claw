@@ -3,7 +3,6 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SessionContext, ToolDefinition } from "../types.js";
 import { loadIdentity } from "../workspace/workspace.js";
-import { loadAllMemories } from "../tools/memory.js";
 import { formatSkillName, listAvailableSkills } from "../tools/skill.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -29,8 +28,6 @@ export function buildSystemPrompt(workspacePath: string, tools: ToolDefinition[]
 
   const identity = loadIdentity(workspacePath);
 
-  const memories = loadAllMemories(workspacePath);
-
   const skills = listAvailableSkills(workspacePath, sessionContext);
   const skillsText = skills.map((s) => `- ${formatSkillName(s)}: ${s.description}`).join("\n");
 
@@ -40,7 +37,8 @@ export function buildSystemPrompt(workspacePath: string, tools: ToolDefinition[]
 
   return template
     .replace(/\{\{identity}}/g, identity)
-    .replace(/\{\{memories}}/g, memories)
+    .replace(/\{\{memories}}/g, "")
+    .replace(/\{\{profile}}/g, "")
     .replace(/\{\{skills}}/g, skillsText)
     .replace(/\{\{tools}}/g, toolsText)
     .replace(/\{\{current_date}}/g, currentDate)

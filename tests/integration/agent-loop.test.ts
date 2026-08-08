@@ -435,14 +435,14 @@ describe("AgentSession loop", () => {
       ]);
 
       expect(client.completeCalls).toHaveLength(0);
-      expect(client.systemPrompts[2]).toContain("你的任务不是总结对话，而是维护长期有效的 memory 文件");
-      expect(client.systemPrompts[2]).toContain("同主题已有记忆时");
-      expect(client.systemPrompts[2]).toContain("不要 append 式堆叠碎片");
+      expect(client.systemPrompts[2]).toContain("分别维护用户 Profile 和向量长期记忆");
+      expect(client.systemPrompts[2]).toContain("新事实明确替代旧状态时");
+      expect(client.systemPrompts[2]).toContain("不要静默覆盖历史");
       expect(client.systemPrompts[2]).toContain("已有记忆过长、重复、碎片化");
       expect(client.systemPrompts[2]).toContain("不要因为“暂时没提到”就删除");
       const prompt = String(client.calls[2][0].content);
       expect(prompt).toContain("单条记忆正文最大字符数：1000");
-      expect(prompt).toContain("当前已保存的长期记忆全文：");
+      expect(prompt).toContain("当前已保存的长期记忆摘要索引：");
       expect(prompt).toContain("暂无已保存长期记忆。");
       expect(prompt).toContain("[user] 用户原始问题");
       expect(prompt).toContain("[assistant] 最终回答：长期结论");
@@ -454,6 +454,11 @@ describe("AgentSession loop", () => {
         "memory_list",
         "memory_read",
         "memory_save",
+        "memory_search",
+        "profile_delete",
+        "profile_list",
+        "profile_read",
+        "profile_save",
       ]);
     } finally {
       await autoManager.destroy();
@@ -879,9 +884,9 @@ describe("AgentSession loop", () => {
       await collect(session.chat("刚才的 README 规则可以整理一下"));
 
       const prompt = String(client.calls[1][0].content);
-      expect(prompt).toContain("## project-rule");
-      expect(prompt).toContain("旧项目规则");
-      expect(prompt).toContain("README 要保持简洁");
+      expect(prompt).toContain("project-rule: 项目规则");
+      expect(prompt).not.toContain("旧项目规则");
+      expect(prompt).not.toContain("README 要保持简洁");
       expect(prompt).toContain("本次需要整理的增量对话");
       expect(getMemoryRecord(autoWorkspace, "project-rule")).toMatchObject({
         content: "项目规则：README 要保持简洁。",
@@ -1009,6 +1014,10 @@ describe("AgentSession loop", () => {
         "memory_list",
         "memory_read",
         "memory_save",
+        "memory_search",
+        "profile_list",
+        "profile_read",
+        "profile_save",
       ]);
     } finally {
       await autoManager.destroy();

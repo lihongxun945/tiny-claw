@@ -75,6 +75,35 @@ describe("project development tools", () => {
     expect(filesResult.results).toEqual([{ path: "src/alpha.ts" }]);
   });
 
+  it("falls back to the built-in search engine when ripgrep is unavailable", async () => {
+    const originalPath = process.env.PATH;
+    const { workspace, root, context, getConfig } = setup();
+    mkdirSync(resolve(root, "src"), { recursive: true });
+    writeFileSync(resolve(root, "src", "alpha.ts"), "const marker = 'needle';\nconst other = 'value';\n", "utf-8");
+    writeFileSync(resolve(root, "src", "beta.js"), "const marker = 'needle';\n", "utf-8");
+    const tool = createProjectSearchTool(workspace, getConfig);
+
+    try {
+      process.env.PATH = "";
+      const textResult = JSON.parse(await tool.execute({ query: "needle", mode: "text", glob: "**/*.ts" }, context));
+      expect(textResult).toMatchObject({
+        engine: "typescript",
+        results: [expect.objectContaining({ path: "src/alpha.ts", line: 1, text: expect.stringContaining("needle") })],
+        truncated: false,
+      });
+
+      const regexResult = JSON.parse(await tool.execute({ query: "other\\s+=\\s+'value'", mode: "regex" }, context));
+      expect(regexResult.results).toEqual([
+        expect.objectContaining({ path: "src/alpha.ts", line: 2, matches: [{ start: 6, end: 21 }] }),
+      ]);
+
+      const filesResult = JSON.parse(await tool.execute({ query: "**/*.js", mode: "files" }, context));
+      expect(filesResult.results).toEqual([{ path: "src/beta.js" }]);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
   it("rejects paths outside the project root", async () => {
     const { workspace, context, getConfig } = setup();
     const result = JSON.parse(await createProjectTreeTool(workspace, getConfig).execute({ path: "../" }, context));

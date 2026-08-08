@@ -101,6 +101,25 @@ export interface MemoryRecord {
   source: MemorySource;
   createdAt: string;
   updatedAt: string;
+  status?: "active" | "stale" | "superseded" | "trash";
+  validFrom?: string;
+  validTo?: string;
+  supersedes?: string[];
+  supersededBy?: string;
+  importance?: number;
+  strength?: number;
+  readCount?: number;
+  lastReadAt?: string;
+}
+
+export interface ProfileRecord {
+  name: string;
+  summary: string;
+  content: string;
+  disabled: boolean;
+  source: MemorySource;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ProjectInfo {

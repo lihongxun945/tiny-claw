@@ -23,7 +23,62 @@ tiny-claw 更关注 Agent 核心机制的可读性和可扩展性，适合学习
 
 ## 快速开始
 
-### 安装
+推荐普通用户使用 macOS 客户端，无需安装 Node.js 或手动启动 Gateway。只有需要研究 Agent 实现、调试源码或参与项目开发时，才推荐从源码本地启动。
+
+### 使用 macOS 客户端（推荐）
+
+#### 下载与安装
+
+从 GitHub Releases 下载 `tiny-claw-<version>-arm64.dmg`，打开 DMG 后将 `tiny-claw.app` 拖入“应用程序”目录。当前客户端仅支持 Apple Silicon Mac。
+
+#### 首次配置
+
+客户端首次启动会自动创建完整的默认配置。打开左下角“配置”页面，至少完成以下设置：
+
+1. 填写模型服务的 API URL。
+2. 填写 API Key。
+3. 填写模型名称。
+4. 选择模型协议：`anthropic-messages` 或 `openai-chat`。
+5. 按需配置 Ollama Web Search、Brave Search 或 SearXNG。
+6. 点击“保存”。
+
+模型配置保存后，新会话会自动使用最新设置。插件启停、Gateway Host 和 Gateway Token 等启动期配置需要退出并重新打开客户端后生效。
+
+客户端运行后会在 macOS 菜单栏显示 tiny-claw 图标。关闭主窗口只会隐藏窗口，Agent 和 Gateway 会继续在后台运行；点击菜单栏图标、Dock 图标或再次打开应用即可恢复窗口。需要完全退出时，请在菜单栏图标的菜单中选择“退出 tiny-claw”，或按 `Command+Q`。
+
+#### 日常使用
+
+- 在“聊天”页面输入任务并发送，Agent 会根据任务调用工具并流式输出结果。
+- 点击“新对话”创建新会话；历史会话会显示在左侧列表中。
+- 在“记忆”页面查看、编辑、禁用或删除长期记忆。
+- 在“日志”页面查看运行日志、模型调用错误和工具审计记录。
+- 在“配置”页面修改模型、上下文、搜索、权限、Sub-agent、插件和调试设置。
+- 当工具需要审批时，在聊天消息的工具块中点击“批准”或“拒绝”；批准后原任务会自动继续执行。
+- 项目模式的 `project_search` 会优先使用系统 `rg` 加速；未安装 ripgrep 时会自动使用内置搜索实现。
+
+#### Skill
+
+个人 Skill 放在 runtime workspace 的 `skills/<name>/SKILL.md`，会在所有会话中可用。项目模式会额外自动发现项目根目录下的 `.agents/skills/<name>/SKILL.md`，并兼容 `.claude/skills/<name>/SKILL.md`。系统提示词只注入 Skill 名称和描述，完整正文由模型在需要时通过 `skill_use` 按需加载。
+
+项目会话中，同名裸名优先匹配项目 Skill；也可以用 `project/<name>` 或 `workspace/<name>` 精确指定来源。`.agents/skills` 是推荐的跨 Agent 项目路径，`.claude/skills` 用于兼容 Claude Code 生态。
+
+#### 数据与升级
+
+macOS 客户端的所有用户数据保存在：
+
+```text
+~/Library/Application Support/tiny-claw/workspace
+```
+
+其中包含配置、会话、长期记忆、Skill、插件和日志。覆盖安装或升级客户端不会清除该目录，建议在迁移电脑前备份整个 workspace。
+
+客户端 workspace 与源码仓库中的 `./workspace` 相互独立，客户端不会自动读取源码开发环境的数据。如需迁移，可以在客户端完全退出后，将需要的配置、会话、记忆、Skill 或插件复制到客户端 workspace。
+
+### 从源码本地启动（开发者）
+
+源码启动适合研究 Agent Loop、插件系统、上下文与记忆实现，或者调试和参与 tiny-claw 开发。普通使用请优先选择上面的 macOS 客户端。
+
+#### 安装依赖
 
 ```bash
 git clone https://github.com/lihongxun945/tiny-claw.git
@@ -31,9 +86,9 @@ cd tiny-claw
 npm install
 ```
 
-### 配置模型
+#### 配置模型
 
-首次启动 Gateway 或桌面应用时，如果 workspace 中没有 `config.json`，tiny-claw 会自动生成一份完整的默认配置。可以直接在 WebUI 的“配置”页面填写 API Key、模型、搜索、权限、记忆、Sub-agent 和插件等全部设置。
+首次启动 Gateway 时，如果 workspace 中没有 `config.json`，tiny-claw 会自动生成一份完整的默认配置。可以直接在 WebUI 的“配置”页面填写 API Key、模型、搜索、权限、记忆、Sub-agent 和插件等全部设置。
 
 也可以在启动前手动复制配置模板：
 
@@ -62,7 +117,7 @@ cp config.simple.example.json workspace/config.json
 | `anthropic-messages` | Anthropic Messages API 兼容协议 |
 | `openai-chat` / `chatgpt` | OpenAI Chat Completions 兼容协议 |
 
-### 配置搜索引擎
+#### 配置搜索引擎
 
 Agent 的 `web_search` 能力依赖搜索 provider。`duckduckgo` 是免配置兜底，只适合简单关键词查询，本质上不是真正稳定的搜索引擎能力，效果较差；推荐配置 Ollama Web Search、Brave Search 或自建 SearXNG。
 
@@ -93,9 +148,9 @@ SearXNG 示例：
 }
 ```
 
-### 启动 Gateway
+#### 启动 Gateway
 
-推荐使用 Gateway + WebUI 模式进行本地部署：
+源码环境推荐使用 Gateway + WebUI 模式：
 
 ```bash
 npm run web:build
@@ -111,54 +166,6 @@ http://localhost:3001
 启动后即可在 WebUI 中创建会话并与 Agent 对话。
 
 注意：`npm run gateway` 会以 daemon 模式启动 Gateway。daemon 模式只有在 `web/dist/index.html` 已存在时才会启动 WebUI 静态服务；首次启动、刚拉代码或清理过构建产物后，需要先执行 `npm run web:build`，再启动或重启 Gateway。否则可能只启动了 Gateway API，`http://localhost:3001` 会提示无法访问。
-
-### 使用 macOS 客户端
-
-#### 下载与安装
-
-从 GitHub Releases 下载 `tiny-claw-<version>-arm64.dmg`，打开 DMG 后将 `tiny-claw.app` 拖入“应用程序”目录。当前客户端仅支持 Apple Silicon Mac。
-
-#### 首次配置
-
-客户端首次启动会自动创建完整的默认配置。打开左下角“配置”页面，至少完成以下设置：
-
-1. 填写模型服务的 API URL。
-2. 填写 API Key。
-3. 填写模型名称。
-4. 选择模型协议：`anthropic-messages` 或 `openai-chat`。
-5. 按需配置 Ollama Web Search、Brave Search 或 SearXNG。
-6. 点击“保存”。
-
-模型配置保存后，新会话会自动使用最新设置。插件启停、Gateway Host 和 Gateway Token 等启动期配置需要退出并重新打开客户端后生效。
-
-客户端运行后会在 macOS 菜单栏显示 tiny-claw 图标。关闭主窗口只会隐藏窗口，Agent 和 Gateway 会继续在后台运行；点击菜单栏图标、Dock 图标或再次打开应用即可恢复窗口。需要完全退出时，请在菜单栏图标的菜单中选择“退出 tiny-claw”，或按 `Command+Q`。
-
-#### 日常使用
-
-- 在“聊天”页面输入任务并发送，Agent 会根据任务调用工具并流式输出结果。
-- 点击“新对话”创建新会话；历史会话会显示在左侧列表中。
-- 在“记忆”页面查看、编辑、禁用或删除长期记忆。
-- 在“日志”页面查看运行日志、模型调用错误和工具审计记录。
-- 在“配置”页面修改模型、上下文、搜索、权限、Sub-agent、插件和调试设置。
-- 当工具需要审批时，在聊天消息的工具块中点击“批准”或“拒绝”；批准后原任务会自动继续执行。
-
-#### Skill
-
-个人 Skill 放在 runtime workspace 的 `skills/<name>/SKILL.md`，会在所有会话中可用。项目模式会额外自动发现项目根目录下的 `.agents/skills/<name>/SKILL.md`，并兼容 `.claude/skills/<name>/SKILL.md`。系统提示词只注入 Skill 名称和描述，完整正文由模型在需要时通过 `skill_use` 按需加载。
-
-项目会话中，同名裸名优先匹配项目 Skill；也可以用 `project/<name>` 或 `workspace/<name>` 精确指定来源。`.agents/skills` 是推荐的跨 Agent 项目路径，`.claude/skills` 用于兼容 Claude Code 生态。
-
-#### 数据与升级
-
-macOS 客户端的所有用户数据保存在：
-
-```text
-~/Library/Application Support/tiny-claw/workspace
-```
-
-其中包含配置、会话、长期记忆、Skill、插件和日志。覆盖安装或升级客户端不会清除该目录，建议在迁移电脑前备份整个 workspace。
-
-客户端 workspace 与源码仓库中的 `./workspace` 相互独立，客户端不会自动读取源码开发环境的数据。如需迁移，可以在客户端完全退出后，将需要的配置、会话、记忆、Skill 或插件复制到客户端 workspace。
 
 ## 配置参考
 
@@ -194,7 +201,8 @@ macOS 客户端的所有用户数据保存在：
 | `subAgent` | 见下文 | `{ "maxConcurrency": 3 }` | Sub-agent 工具权限与并发配置 |
 | `sessionSummary` | 见下文 | `{ "enabled": true }` | 会话滚动摘要与持久化配置 |
 | `autoMemory` | 见下文 | `{ "mode": "hybrid" }` | 自动长期记忆配置 |
-| `memory` | 见下文 | `{ "maxTotalChars": 80000 }` | 长期记忆单条与总容量限制 |
+| `profile` | 见下文 | `{ "enabled": true }` | 每轮固定注入的用户身份、偏好和长期约束 |
+| `memory` | 见下文 | `{ "enabled": true }` | 向量长期记忆、召回、Embedding 与遗忘配置 |
 | `debug` | `false` | `{ "enabled": true, "modelIO": true }` | 模型输入输出调试日志 |
 | `security` | 见下文 | `{ "bash": { "mode": "allow" } }` | bash、Gateway、工具审计安全配置 |
 | `project` | 见下文 | `{ "security": { "mode": "ask" }, "openTimeoutMs": 30000, "gitTimeoutMs": 10000, "diffMaxChars": 200000, "treeMaxDepth": 4, "treeMaxEntries": 2000, "searchMaxResults": 200, "searchMaxChars": 50000, "searchTimeoutMs": 10000 }` | 项目会话权限、打开/Git/搜索超时和工具输出限制 |
@@ -256,7 +264,13 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 
 ### 自动记忆配置
 
-`core-auto-memory` 可以在多轮对话后自动整理长期记忆：新增稳定记忆、更新已有记忆，压缩碎片化记忆，并在允许时删除过期记忆。每轮最终问答会先按 session 持久化到 `state.json`，但触发和整理是 workspace 级的：达到阈值或执行 `/dream` 时，会聚合所有主会话的待整理增量一起处理。长期记忆存储在 `workspace/memory/*.md`，不同于会话摘要；它更适合保存用户偏好、项目约定等跨会话信息。未禁用的长期记忆会以全文形式注入 system prompt，`memory_list` 仍返回摘要索引，避免工具结果过大。
+跨会话记忆分为两类：`workspace/profile/*.md` 保存稳定用户身份、称呼、语言和长期交互约束，由 `core-profile-memory` 每轮固定注入全文；`workspace/memory/*.md` 保存项目事实、历史决策和经验，由 `core-vector-memory` 按当前问题相关性召回。Profile 不进入向量数据库，也不会因长时间未使用而自动遗忘。
+
+`core-auto-memory` 可以在多轮对话后同时整理 Profile 和向量长期记忆。每轮最终问答会先按 session 持久化到 `state.json`，达到阈值或执行 `/dream` 时聚合全部主会话的待整理增量。Markdown 文件仍是可读、可备份的事实源，LanceDB 索引保存在 `workspace/memory/vector/`，只负责向量长期记忆的语义候选召回和 metadata 过滤。
+
+每次用户提问时，`core-vector-memory` 会自动执行向量与关键词混合检索，只把少量高相关记忆注入当前轮 Prompt；不再把全部记忆全文发送给模型。自动召回不足时，Agent 可以调用 `memory_search` 深度搜索，再用 `memory_read` 读取指定记忆。Embedding 不可用或索引损坏时会退化为关键词检索，不阻断正常聊天。
+
+新事实默认追加；明确替代旧状态时通过 `supersedes` 将旧记忆标记为 `superseded`，保留历史而不静默覆盖。删除会把记忆移入 `workspace/memory/trash/`。普通记忆只有在未使用轮次和未使用天数同时达到阈值后才标记为 `stale`；读取会刷新使用状态并增强记忆。回收站超过保留期后才物理清理。
 
 ```json
 {
@@ -267,6 +281,11 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
     "maxCandidates": 5,
     "maxBatchChars": 8000,
     "lockTimeoutSeconds": 300
+  },
+  "profile": {
+    "enabled": true,
+    "maxItemChars": 2000,
+    "maxTotalChars": 8000
   },
   "memory": {
     "maxItemChars": 20000,
@@ -281,12 +300,25 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 | `autoMemory.mode` | `"hybrid"` | `"hybrid"` | `auto` 开放保存/更新/删除；`hybrid` 只开放保存/更新，删除只建议；`suggest` 只读并输出建议 |
 | `autoMemory.turnThreshold` | `10` | `10` | workspace 内累计多少轮主会话最终问答后触发一次分析 |
 | `autoMemory.maxCandidates` | `5` | `5` | 单次最多允许的 memory 工具调用次数 |
-| `autoMemory.maxBatchChars` | `8000` | `8000` | 单次分析中增量对话的最大字符数；已有启用记忆始终全文输入 |
+| `autoMemory.maxBatchChars` | `8000` | `8000` | 单次分析中增量最终问答的最大字符数 |
 | `autoMemory.lockTimeoutSeconds` | `300` | `300` | workspace 记忆整理锁的过期时间 |
+| `profile.enabled` | `true` | `true` | 是否固定注入启用的用户 Profile |
+| `profile.maxItemChars` | `2000` | `2000` | 单个 Profile Markdown 正文上限 |
+| `profile.maxTotalChars` | `8000` | `8000` | 每轮固定注入的 Profile 总字符上限 |
 | `memory.maxItemChars` | `20000` | `20000` | 单条记忆正文最大字符数 |
 | `memory.maxTotalChars` | `80000` | `80000` | 所有启用记忆正文的总字符上限 |
+| `memory.enabled` | `true` | `true` | 是否启用向量长期记忆和自动召回 |
+| `memory.embedding.provider` | `local-hash` | `local-hash` | `local-hash` 无需模型；`openai-compatible` 使用 Embedding API |
+| `memory.embedding.model` | `local-hash-v1` | `local-hash-v1` | Embedding 模型名 |
+| `memory.embedding.dimensions` | `384` | `384` | 向量维度；切换模型或维度后自动重建索引 |
+| `memory.retrieval.maxResults` | `5` | `5` | 每轮最多自动召回的记忆条数 |
+| `memory.retrieval.maxContextChars` | `6000` | `6000` | 自动注入的记忆字符预算 |
+| `memory.retrieval.minScore` | `0.35` | `0.35` | 混合检索最低分数 |
+| `memory.maintenance.inactiveTurns` | `200` | `200` | 成为 stale 候选所需的未使用对话轮数 |
+| `memory.maintenance.inactiveDays` | `30` | `30` | 成为 stale 候选所需的未使用自然天数；与轮数条件同时满足 |
+| `memory.maintenance.trashRetentionDays` | `30` | `30` | 回收站物理清理前的保留天数 |
 
-自动记忆整理会把“已保存长期记忆全文 + workspace 内上次成功整理后累计的用户问题和最终回答 + 配置的长度限制”一起交给整理模型，不包含中间工具调用、工具结果或调试日志。达到阈值后的自动整理在后台运行，不会阻塞当前回复完成；`/dream` 会同步等待整理结果。每条待整理对话有唯一 ID；整理成功后只清除本次快照包含的 ID，因此整理期间新增的对话会保留到下一次。workspace 整理锁避免多个 Gateway 或桌面实例同时修改记忆。排队、开始、工具操作、完成、跳过和失败状态会写入 `[AUTO_MEMORY]` 日志，但不会记录对话或记忆正文。整理模型直接调用已有 `memory_*` 工具；写入超过单条或总容量限制时工具会要求模型压缩重试，不会截断内容后保存。
+自动记忆整理会把“Profile 摘要索引 + 长期记忆摘要索引 + workspace 内新增最终问答 + 配置限制”交给整理模型，不包含工具过程、工具结果或调试日志。稳定用户偏好使用 `profile_*` 工具维护；项目事实和历史经验使用 `memory_*` 工具维护。达到阈值后的整理在后台运行；`/dream` 同步等待结果。整理成功后只推进本次快照的增量游标，失败则保留待重试内容。
 
 ### 聊天命令
 

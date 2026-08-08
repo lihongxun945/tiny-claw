@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import type { Plugin, HookContext } from "../types.js";
 import type { ChatResponse, Config, Message, Tool, ToolDefinition, ToolResultBlock, ToolUseBlock, AgentActor } from "../../types.js";
 import type { ModelClient } from "../../model/index.js";
+import { listProfiles } from "../../tools/profile.js";
 import {
   createAutoMemoryTurnId,
   loadSessionState,
@@ -11,7 +12,7 @@ import {
   type PersistedSessionState,
 } from "../../session-state.js";
 import { listSessionMetas } from "../../session-store.js";
-import { loadAllMemories } from "../../tools/memory.js";
+import { listMemoryRecords } from "../../tools/memory.js";
 import { appendLog } from "../../workspace/logger.js";
 
 const DEFAULT_TURN_THRESHOLD = 10;
@@ -19,12 +20,12 @@ const DEFAULT_MAX_CANDIDATES = 5;
 const DEFAULT_MAX_BATCH_CHARS = 8000;
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 300;
 
-const AUTO_MEMORY_PROMPT = `你是 tiny-claw 的长期记忆整理器。你的任务不是总结对话，而是维护长期有效的 memory 文件。
+const AUTO_MEMORY_PROMPT = `你是 tiny-claw 的长期记忆整理器。你的任务不是总结对话，而是分别维护用户 Profile 和向量长期记忆。
 
-你必须通过可用的 memory 工具完成整理，不要输出自定义 JSON actions。
+你必须通过可用的 profile 或 memory 工具完成整理，不要输出自定义 JSON actions。
 
 输入包含：
-1. 当前已保存的长期记忆全文。
+1. 当前用户 Profile 与长期记忆的摘要索引。
 2. 最近若干轮增量对话。每轮只包含用户问题和最终回答，不包含工具调用过程、工具结果或调试日志。
 
 你需要判断是否要新增、更新、压缩、删除或忽略长期记忆。
@@ -43,9 +44,13 @@ const AUTO_MEMORY_PROMPT = `你是 tiny-claw 的长期记忆整理器。你的�
 - API key、token、cookie、密码、AppSecret 等凭证。
 
 工具使用规则：
-- 输入已经包含已保存记忆全文；只有需要核对最新磁盘状态时，才调用 memory_list 或 memory_read。
+- Profile 每轮固定注入，只保存稳定的用户身份、称呼、语言、交互偏好和跨任务长期约束；使用 profile_list/profile_read/profile_save/profile_delete 管理。
+- 项目事实、历史决策、任务经验和只在相关问题中需要的信息进入向量长期记忆，不得写入 Profile。
+- Profile 不按时间自动删除；只有用户明确取消或要求遗忘时才调用 profile_delete。
+- 输入只包含记忆摘要索引。先使用 memory_search 查找与新增事实相关的旧记忆，需要核对细节时再调用 memory_read。
 - 新主题使用 memory_save 创建记忆。
-- 同主题已有记忆时，优先用 memory_save 覆盖同名记忆。content 必须是整理后的完整正文，包含仍然有效的旧信息和新信息，并移除冲突或过期内容。不要 append 式堆叠碎片。
+- 新事实补充旧事实时新增独立记忆并建立关联；新事实明确替代旧状态时，在 memory_save 的 supersedes 中列出旧记忆名称。不要静默覆盖历史。
+- 只有对同一事实进行无时间意义的文字修正或去重合并时，才覆盖同名记忆。
 - 已有记忆过长、重复、碎片化或包含过期内容时，即使没有新增事实，也可以调用 memory_save 用同名记忆写回压缩整理后的完整正文。
 - 只有用户明确要求忘记/删除、明确表示某条规则已废弃、新规则明确替代旧规则且旧规则不应继续使用、或已有 memory 被确认错误时，才可以调用 memory_delete。
 - 如果没有值得长期保存或更新的内容，不要调用写入工具，直接说明无需更新。
@@ -274,12 +279,12 @@ function formatTurns(turns: AutoMemoryTurn[]): string {
 
 function allowedToolNames(mode: AutoMemoryMode): Set<string> {
   if (mode === "auto") {
-    return new Set(["memory_list", "memory_read", "memory_save", "memory_delete"]);
+    return new Set(["profile_list", "profile_read", "profile_save", "profile_delete", "memory_list", "memory_search", "memory_read", "memory_save", "memory_delete"]);
   }
   if (mode === "hybrid") {
-    return new Set(["memory_list", "memory_read", "memory_save"]);
+    return new Set(["profile_list", "profile_read", "profile_save", "memory_list", "memory_search", "memory_read", "memory_save"]);
   }
-  return new Set(["memory_list", "memory_read"]);
+  return new Set(["profile_list", "profile_read", "memory_list", "memory_search", "memory_read"]);
 }
 
 function filterToolDefinitions(definitions: ToolDefinition[], mode: AutoMemoryMode): ToolDefinition[] {
@@ -296,17 +301,28 @@ function buildUserPrompt(workspacePath: string, config: Config, turns: AutoMemor
       : "suggest：只能读取记忆并在最终文本中提出建议，不要保存、更新或删除。";
 
   const maxBatchChars = getMaxBatchChars(config);
-  const memories = loadAllMemories(workspacePath).trim() || "暂无已保存长期记忆。";
+  const memoryRecords = listMemoryRecords(workspacePath, { includeDisabled: true });
+  const memories = memoryRecords.length > 0
+    ? memoryRecords.map((memory) => `- ${memory.name}: ${memory.summary} [${memory.tags.join(", ")}] status=${memory.status} updated=${memory.updatedAt}`).join("\n")
+    : "暂无已保存长期记忆。";
+  const profiles = listProfiles(workspacePath).length > 0
+    ? listProfiles(workspacePath).map((profile) => `- ${profile.name}: ${profile.summary} disabled=${profile.disabled} updated=${profile.updatedAt}`).join("\n")
+    : "暂无用户 Profile。";
 
   return [
     `当前模式：${modeRule}`,
     `最多 memory 工具调用次数：${getMaxCandidates(config)}`,
     `单条记忆正文最大字符数：${getMaxMemoryChars(config)}`,
     `所有启用记忆正文总字符上限：${config.memory?.maxTotalChars ?? 80000}`,
+    `单条 Profile 最大字符数：${config.profile?.maxItemChars ?? 2000}`,
+    `全部启用 Profile 总字符上限：${config.profile?.maxTotalChars ?? 8000}`,
     `增量对话输入字符预算：最多 ${maxBatchChars} 字`,
     "",
-    "当前已保存的长期记忆全文：",
+    "当前已保存的长期记忆摘要索引：",
     memories,
+    "",
+    "当前用户 Profile 摘要索引：",
+    profiles,
     "",
     "本次需要整理的增量对话：",
     truncateText(formatTurns(turns), maxBatchChars),
@@ -332,7 +348,7 @@ function toolResultsToUserMessage(results: ToolResultBlock[]): Message {
 }
 
 function normalizeToolInput(toolCall: ToolUseBlock, config: Config): Record<string, unknown> {
-  if (toolCall.name !== "memory_save") return toolCall.input;
+  if (toolCall.name !== "memory_save" && toolCall.name !== "profile_save") return toolCall.input;
   const input = { ...toolCall.input };
   input.source = "auto";
   return input;
@@ -457,8 +473,8 @@ export async function runAutoMemoryAnalysis(options: {
           requiresConfirmation: true,
         };
       }
-      if (executed && !isToolErrorResult(result) && toolCall.name === "memory_save") saved += 1;
-      if (executed && !isToolErrorResult(result) && toolCall.name === "memory_delete") deleted += 1;
+      if (executed && !isToolErrorResult(result) && (toolCall.name === "memory_save" || toolCall.name === "profile_save")) saved += 1;
+      if (executed && !isToolErrorResult(result) && (toolCall.name === "memory_delete" || toolCall.name === "profile_delete")) deleted += 1;
     }
 
     messages.push(toolResultsToUserMessage(results));

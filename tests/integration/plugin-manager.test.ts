@@ -13,6 +13,7 @@ import type { Message } from "../../src/types.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 import { getMemoryRecord, saveMemory } from "../../src/tools/memory.js";
 import { loadSessionState, saveSessionState } from "../../src/session-state.js";
+import { saveProfile } from "../../src/tools/profile.js";
 
 function modelClient(): ModelClient {
   return {
@@ -115,6 +116,19 @@ describe("PluginManager hook lifecycle", () => {
       "chat-response-1",
       "chat-response-2",
     ]);
+  });
+
+  it("injects enabled Profile on every model iteration", async () => {
+    saveProfile(workspacePath, {
+      name: "communication",
+      summary: "称呼偏好",
+      content: "每次回复以陛下开头。",
+      source: "manual",
+    }, { maxItemChars: 2000, maxTotalChars: 8000 });
+    await manager.loadCorePlugins();
+    const base = await manager.callOnBuildPrompt("", "main");
+    expect(await manager.callOnBuildTurnPrompt(base, 1, "main")).toContain("每次回复以陛下开头。");
+    expect(await manager.callOnBuildTurnPrompt(base, 2, "main")).toContain("每次回复以陛下开头。");
   });
 
   it("supports aborting chat and tool execution", async () => {
@@ -223,7 +237,10 @@ describe("PluginManager hook lifecycle", () => {
       expect(chatCalls).toHaveLength(2);
       expect(String(chatCalls[0][0].content)).toContain("[user] 我需要 /dream 触发 auto-memory");
       expect(String(chatCalls[0][0].content)).toContain("[assistant] 最终回答：会增加 /dream 命令");
-      expect(chatTools[0]).toEqual(["memory_delete", "memory_list", "memory_read", "memory_save"]);
+      expect(chatTools[0]).toEqual([
+        "memory_delete", "memory_list", "memory_read", "memory_save", "memory_search",
+        "profile_delete", "profile_list", "profile_read", "profile_save",
+      ]);
       expect(loadSessionState(dreamWorkspace, "dream-session").autoMemory.pendingTurns).toHaveLength(0);
     } finally {
       await dreamManager.destroy();
@@ -255,7 +272,7 @@ describe("PluginManager hook lifecycle", () => {
       }));
       expect(chatCalls).toHaveLength(1);
       const prompt = String(chatCalls[0][0].content);
-      expect(prompt).toContain("## existing-memory");
+      expect(prompt).toContain("existing-memory: 用户希望记忆整理可以手动触发。");
       expect(prompt).toContain("本次没有新增对话");
     } finally {
       await dreamManager.destroy();

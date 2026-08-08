@@ -3,7 +3,6 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Plugin, HookContext } from "../types.js";
 import { loadIdentity } from "../../workspace/workspace.js";
-import { loadAllMemories } from "../../tools/memory.js";
 import { formatSkillName, listAvailableSkills } from "../../tools/skill.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -36,7 +35,6 @@ export const corePromptsPlugin: Plugin = {
         // 首次构建时从模板开始
         if (prompt === "") {
           const tools = _ctx.getToolDefinitions();
-          const memories = loadAllMemories(workspacePath);
           const skills = listAvailableSkills(workspacePath, _ctx.sessionContext);
           const skillsText = skills.map((s) => `- ${formatSkillName(s)}: ${s.description}`).join("\n");
           const toolsText = tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
@@ -45,7 +43,8 @@ export const corePromptsPlugin: Plugin = {
 
           let result = template
             .replace(/\{\{identity}}/g, identity)
-            .replace(/\{\{memories}}/g, memories)
+            .replace(/\{\{memories}}/g, "")
+            .replace(/\{\{profile}}/g, "")
             .replace(/\{\{skills}}/g, skillsText)
             .replace(/\{\{tools}}/g, toolsText)
             .replace(/\{\{current_date}}/g, currentDate)

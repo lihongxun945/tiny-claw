@@ -68,10 +68,10 @@ src/
 │   ├── file_write.ts # 文件写入
 │   ├── file_edit.ts  # 文件精确替换
 │   ├── project-tree.ts # 项目目录树（异步、边界与数量限制）
-│   ├── project-search.ts # 项目结构化搜索（ripgrep）
+│   ├── project-search.ts # 项目结构化搜索（ripgrep 优先，内置 fallback）
 │   ├── project-git.ts # 项目 Git 状态与 Diff 工具
 │   ├── plan.ts       # 计划创建与步骤状态更新工具
-│   ├── memory.ts     # 持久化记忆（读写 memory/*.md）
+│   ├── memory.ts     # 长期记忆事实源、生命周期与工具
 │   ├── skill.ts      # 技能系统（加载/激活 skills/*.md）
 │   └── sub_agent.ts  # sub_agent_run 工具定义
 └── workspace/        # 工作目录相关
@@ -88,6 +88,10 @@ desktop/                # Electron macOS 桌面壳
 ├── workspace.ts        # 桌面 workspace 首次初始化
 └── tsconfig.json       # 桌面主进程独立编译配置
 ```
+
+跨会话记忆拆分为两个独立模块。`core-profile-memory` 管理 `workspace/profile/*.md`，保存稳定用户身份、偏好和长期约束，并在每次模型调用前通过 `onBuildTurnPrompt` 固定注入全文；Profile 不进入向量数据库，也不按时间衰减。`core-vector-memory` 管理 `workspace/memory/*.md`，Markdown 是可读、可恢复的事实源，嵌入式 LanceDB 是可重建的检索索引；每轮用户消息触发语义向量、关键词和 metadata 过滤的混合检索，只把达到阈值的少量结果加入 Prompt。Embedding 或向量索引故障时退化为关键词检索，不阻断 Agent Loop。
+
+自动记忆只分析用户问题和最终回答，通过 `memory_search`、`memory_read`、`memory_save`、`memory_delete` 等已有工具维护记忆。新状态默认追加并用 `supersedes` 结束旧状态，避免破坏历史；读取会更新强度和最后使用轮次。遗忘使用 `active -> stale -> trash -> purge` 状态机，普通记忆只有同时满足未使用轮次和自然时间阈值才进入 stale，删除先进入可恢复回收站。workspace 成功主对话轮数持久化在 `memory/state.json`，sub-agent 和工具迭代不计入。
 
 ## 桌面应用
 
@@ -108,7 +112,8 @@ workspace/
 ├── system_prompt.md   # 可选：自定义 system prompt 模板（不存在则使用默认模板）
 ├── sub_agent_prompt.md # 可选：自定义 sub-agent 任务提示词模板
 ├── skills/            # 自定义技能（skills/<name>/SKILL.md）
-├── memory/            # 跨会话长期记忆（Markdown + frontmatter）
+├── profile/           # 每轮固定注入的用户 Profile（Markdown + frontmatter）
+├── memory/            # 按需向量召回的长期记忆（Markdown + frontmatter）
 ├── sessions/          # 按会话持久化消息、会话摘要、auto-memory 增量状态
 │   └── <encoded-session-id>/
 │       ├── messages.jsonl
@@ -126,7 +131,7 @@ workspace/
 
 `core-project` 插件负责 `/projects/inspect`、`/projects/status`、`/projects/diff` 路由和项目提示词注入。静态项目检查只识别技术栈与规则文件，并按文件签名缓存；动态 Git 状态与 diff 通过异步子进程按需读取，不阻塞 Gateway 事件循环，也不重复注入模型上下文。Git 参数使用数组传递而不拼接 shell 字符串，超时和 diff 最大字符数由 `project.gitTimeoutMs`、`project.diffMaxChars` 控制。读取 `.tiny-claw/rules.md` 和根目录 `AGENTS.md` 时应用单文件与总字符上限。项目模式还会自动发现项目根目录下 `.agents/skills/<name>/SKILL.md`，并兼容 `.claude/skills/<name>/SKILL.md`；默认只把技能名称和描述注入提示词，完整正文仍通过 `skill_use` 按需加载。Gateway 只维护一个 `PluginManager`，项目根目录和有效配置通过 session 运行时上下文传递给插件及工具。
 
-`core-project-tools` 插件注册 `project_tree`、`project_search`、`git_status`、`git_diff` 四个只读开发工具。工具注册支持基于 `SessionContext` 的可用性过滤，因此普通会话不会把项目工具定义发送给模型。目录树使用异步文件系统 API，并跳过依赖、版本库和常见构建目录；项目搜索使用 `rg --json` 解析结构化结果，达到结果数、字符数或超时上限时主动终止子进程。四个工具都强制使用项目根目录和符号链接边界校验，并继承统一权限审批与审计日志。
+`core-project-tools` 插件注册 `project_tree`、`project_search`、`git_status`、`git_diff` 四个只读开发工具。工具注册支持基于 `SessionContext` 的可用性过滤，因此普通会话不会把项目工具定义发送给模型。目录树使用异步文件系统 API，并跳过依赖、版本库和常见构建目录；项目搜索优先使用 `rg --json` 解析结构化结果，若运行环境未安装 ripgrep，则自动切换到内置 TypeScript 搜索实现，避免桌面发布包依赖用户系统预装外部命令。两种搜索实现都会在达到结果数、字符数或超时上限时主动截断或终止。四个工具都强制使用项目根目录和符号链接边界校验，并继承统一权限审批与审计日志。
 
 WebUI 打开项目时使用前端互斥锁和 loading 状态阻止重复提交，并用 `project.openTimeoutMs` 控制检查与会话创建总时限。Gateway 的 `reuseEmpty` 语义会复用同一项目最近的空闲空会话，作为重复请求的第二层保护。项目栏展示分支、工作区状态和变更文件，任务完成后自动刷新；diff 仅在用户选择文件时按需加载。
 
@@ -606,16 +611,16 @@ Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prom
 
 ### 持久化记忆
 
-记忆系统采用工具驱动的方式，让模型自主决定何时保存和读取信息：
+记忆系统分为 Profile 和向量长期记忆两个插件模块：
 
-- **写路径**：`memory_save` 和 `memory_append` 两个工具，写入 `workspace/memory/*.md`
-- **读路径**：启动时 `loadAllMemories()` 读取未禁用记忆全文，注入到 system prompt 的"长期记忆"章节；`memory_list` 仍返回摘要索引，避免工具结果过大
+- **Profile 写路径**：`profile_save` 写入 `workspace/profile/*.md`；`profile_delete` 只在用户明确取消或遗忘规则时删除
+- **Profile 读路径**：`core-profile-memory` 每次模型调用前读取所有启用 Profile 并固定注入全文，不参与向量检索和时间遗忘
+- **Memory 写路径**：`memory_save` 和 `memory_append` 写入 `workspace/memory/*.md`
+- **Memory 读路径**：`core-vector-memory` 根据当前用户问题执行混合检索，最终从 Markdown 读取命中正文并按字符预算注入
 - **文件格式**：带 frontmatter 的 Markdown，名称语义化（如 `user-preferences.md`、`project-context.md`）
 - **安全**：文件名仅允许字母、数字、下划线、连字符，防止路径遍历
-- **启停控制**：`disabled: true` 的记忆保留在磁盘中，但不进入 system prompt，也不参与默认 `memory_list`
+- **启停控制**：`disabled: true` 的内容保留在磁盘中，但不固定注入或参与默认向量召回
 - **来源标记**：`source` 记录记忆来源，取值为 `auto`、`tool`、`manual`，便于 Web UI 审计和人工整理
-
-对比"自动提取"方案，工具驱动的优势是实现简单、透明可控，适合早期阶段。后续可在此基础上叠加自动提取（Phase 2）。
 
 ### 系统提示词模板（插件化）
 
@@ -623,7 +628,7 @@ Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prom
 
 采用单文件模板方案，支持用户自定义覆盖。`src/prompts/default.md` 是默认模板，使用 `{{placeholder}}` 占位符语法。用户可在 `workspace/system_prompt.md` 放置自定义模板覆盖默认值。
 
-模板加载逻辑：优先检查 `workspace/system_prompt.md`，存在则使用用户模板，否则使用 `src/prompts/default.md`。运行时将所有 `{{xxx}}` 占位符替换为实际内容（identity、memories、skills、tools、current_date），未匹配的占位符替换为空字符串。
+模板加载逻辑：优先检查 `workspace/system_prompt.md`，存在则使用用户模板，否则使用 `src/prompts/default.md`。运行时将模板占位符替换为 identity、skills、tools、current_date 等基础内容；Profile 与向量召回内容由各自插件通过 `onBuildTurnPrompt` 动态追加，确保写入后下一次模型调用即可生效。
 
 其他插件可以通过 `ctx.extendPrompt()` 注册 `PromptSection`，自动追加到系统提示词末尾。
 
