@@ -31,7 +31,7 @@ export interface VectorSearchResult extends VectorMemoryDocument {
 
 export interface VectorMemoryStore {
   upsert(document: VectorMemoryDocument): Promise<void>;
-  search(vector: number[], limit: number, scope?: string): Promise<VectorSearchResult[]>;
+  search(vector: number[], limit: number, scopes?: string[]): Promise<VectorSearchResult[]>;
   list(limit?: number): Promise<VectorMemoryDocument[]>;
   remove(id: string): Promise<void>;
 }
@@ -107,11 +107,13 @@ export class LanceVectorMemoryStore implements VectorMemoryStore {
     await table.add([toRow(document)]);
   }
 
-  async search(vector: number[], limit: number, scope?: string): Promise<VectorSearchResult[]> {
+  async search(vector: number[], limit: number, scopes?: string[]): Promise<VectorSearchResult[]> {
     const table = await this.table();
     if (!table) return [];
-    let query = table.vectorSearch(vector).where("status = 'active'");
-    if (scope) query = query.where(`scope = '${escapeSql(scope)}'`);
+    const scopeFilter = scopes && scopes.length > 0
+      ? ` AND (${scopes.map((scope) => `scope = '${escapeSql(scope)}'`).join(" OR ")})`
+      : "";
+    const query = table.vectorSearch(vector).where(`status = 'active'${scopeFilter}`);
     const rows = await query.limit(limit).toArray();
     return rows.map((row) => ({
       ...fromRow(row as unknown as Record<string, unknown>),

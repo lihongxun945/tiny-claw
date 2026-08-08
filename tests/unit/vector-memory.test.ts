@@ -11,11 +11,13 @@ class MemoryStore implements VectorMemoryStore {
   async upsert(document: VectorMemoryDocument) { this.documents.set(document.id, document); }
   async list() { return [...this.documents.values()]; }
   async remove(id: string) { this.documents.delete(id); }
-  async search(vector: number[], limit: number): Promise<VectorSearchResult[]> {
-    return [...this.documents.values()].map((document) => {
-      const similarity = document.vector.reduce((sum, value, index) => sum + value * vector[index], 0);
-      return { ...document, distance: 1 - similarity };
-    }).sort((a, b) => a.distance - b.distance).slice(0, limit);
+  async search(vector: number[], limit: number, scopes?: string[]): Promise<VectorSearchResult[]> {
+    return [...this.documents.values()]
+      .filter((document) => !scopes || scopes.includes(document.scope))
+      .map((document) => {
+        const similarity = document.vector.reduce((sum, value, index) => sum + value * vector[index], 0);
+        return { ...document, distance: 1 - similarity };
+      }).sort((a, b) => a.distance - b.distance).slice(0, limit);
   }
 }
 
@@ -65,9 +67,37 @@ describe("vector memory", () => {
   it("persists and searches the embedded LanceDB index", async () => {
     workspacePath = createTempWorkspace();
     saveMemory(workspacePath, "deployment", "项目使用 Gateway 模式部署。", { summary: "部署模式" });
+    saveMemory(workspacePath, "current-deployment", "当前项目使用 Gateway 模式部署。", { scope: "project:/current", summary: "当前项目部署模式" });
+    saveMemory(workspacePath, "other-deployment", "其他项目使用 Gateway 模式部署。", { scope: "project:/other", summary: "其他项目部署模式" });
     const service = new VectorMemoryService(workspacePath, config(workspacePath), {
       embedding: new LocalHashEmbeddingProvider(64),
     });
-    expect((await service.search("Gateway 部署模式"))[0]?.memory.name).toBe("deployment");
+    const results = await service.search("Gateway 部署模式", "project:/current");
+    expect(results.map((result) => result.memory.name)).toEqual(expect.arrayContaining(["deployment", "current-deployment"]));
+    expect(results.map((result) => result.memory.name)).not.toContain("other-deployment");
+  });
+
+  it("filters scopes before applying the vector candidate limit", async () => {
+    workspacePath = createTempWorkspace();
+    const projectScope = "project:/current";
+    saveMemory(workspacePath, "other-project", "其他项目使用 TypeScript。", { scope: "project:/other", summary: "其他项目技术栈" });
+    saveMemory(workspacePath, "current-project", "当前项目使用 TypeScript。", { scope: projectScope, summary: "当前项目技术栈" });
+    saveMemory(workspacePath, "global-rule", "所有项目优先使用 TypeScript。", { scope: "global", summary: "全局技术规则" });
+    const scopedConfig = config(workspacePath);
+    scopedConfig.memory!.retrieval!.candidateLimit = 2;
+    const store = new MemoryStore();
+    const service = new VectorMemoryService(workspacePath, scopedConfig, {
+      store,
+      embedding: new LocalHashEmbeddingProvider(64),
+    });
+
+    const projectResults = await service.search("TypeScript 项目", projectScope);
+    expect(projectResults.map((result) => result.memory.name)).toEqual(expect.arrayContaining(["current-project", "global-rule"]));
+    expect(projectResults.map((result) => result.memory.name)).not.toContain("other-project");
+
+    const globalResults = await service.search("TypeScript 项目");
+    expect(globalResults.map((result) => result.memory.name)).toContain("global-rule");
+    expect(globalResults.map((result) => result.memory.name)).not.toContain("current-project");
+    expect(globalResults.map((result) => result.memory.name)).not.toContain("other-project");
   });
 });

@@ -91,15 +91,17 @@ export class VectorMemoryService {
     const maxResults = retrieval?.maxResults ?? 5;
     const candidateLimit = Math.max(maxResults, retrieval?.candidateLimit ?? 20);
     const minScore = retrieval?.minScore ?? 0.35;
+    const scopes = scope === "global" ? ["global"] : ["global", scope];
+    const allowedScopes = new Set(scopes);
     const records = listMemoryRecords(this.workspacePath)
-      .filter((record) => record.scope === "global" || record.scope === scope);
+      .filter((record) => allowedScopes.has(record.scope));
     if (records.length === 0) return [];
 
     let semantic = new Map<string, number>();
     try {
       await this.synchronize();
       const [vector] = await this.embedding.embed([query]);
-      const results = await this.store.search(vector, candidateLimit);
+      const results = await this.store.search(vector, candidateLimit, scopes);
       semantic = new Map(results.map((result) => [result.id, Math.max(0, 1 - result.distance)]));
     } catch {
       // Keyword retrieval keeps chat functional when embeddings or the index fail.
