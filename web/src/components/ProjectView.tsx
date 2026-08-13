@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import type { ExecutionMode, Message, ToolCallInfo, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionPlan } from "../types.js";
+import type { ExecutionMode, Message, PermissionMode, ToolCallInfo, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionPlan } from "../types.js";
 import { fetchConfig, fetchProjectDiff, fetchProjectInfo, fetchProjectStatus } from "../lib/api.js";
 import ChatView from "./ChatView.js";
 import ChatInput from "./ChatInput.js";
@@ -26,6 +26,10 @@ interface Props {
   plan: SessionPlan | null;
   executionMode: ExecutionMode;
   onExecutionModeChange: (mode: ExecutionMode) => void;
+  permissionMode: PermissionMode;
+  onPermissionModeChange: (mode: PermissionMode) => void;
+  permissionSaving: boolean;
+  permissionError: string;
 }
 
 export default function ProjectView({
@@ -48,6 +52,10 @@ export default function ProjectView({
   plan,
   executionMode,
   onExecutionModeChange,
+  permissionMode,
+  onPermissionModeChange,
+  permissionSaving,
+  permissionError,
 }: Props) {
   const [pathInput, setPathInput] = useState(projectRoot ?? "");
   const [info, setInfo] = useState<ProjectInfo | null>(null);
@@ -326,7 +334,17 @@ export default function ProjectView({
             onApproveTurnAndResume={onApproveTurnAndResume}
           />
           <PlanProgress plan={plan} />
-          <ChatInput onSend={onSend} onStop={onStop} disabled={isStreaming} executionMode={executionMode} onExecutionModeChange={onExecutionModeChange} />
+          <ChatInput
+            onSend={onSend}
+            onStop={onStop}
+            disabled={isStreaming}
+            executionMode={executionMode}
+            onExecutionModeChange={onExecutionModeChange}
+            permissionMode={permissionMode}
+            onPermissionModeChange={onPermissionModeChange}
+            permissionSaving={permissionSaving}
+            permissionError={permissionError}
+          />
         </>
       )}
     </>

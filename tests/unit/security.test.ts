@@ -51,7 +51,7 @@ describe("security boundary", () => {
     expect(readFileSync(resolve(outsidePath, "outside.txt"), "utf-8")).toBe("edited");
   });
 
-  it("allows bash by default and supports deny, ask and allow modes", async () => {
+  it("allows bash by default and supports ask and allow modes", async () => {
     const workspacePath = createTempWorkspace();
     const outsidePath = mkdtempSync(resolve(tmpdir(), "tiny-claw-bash-outside-"));
     paths.push(workspacePath, outsidePath);
@@ -60,10 +60,6 @@ describe("security boundary", () => {
 
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
     expect(await bash.execute({ command: "pwd" })).toContain(workspacePath);
-
-    config.security = { tools: { bash: { mode: "deny" } } };
-    writeFileSync(configPath, JSON.stringify(config), "utf-8");
-    expect(await bash.execute({ command: "pwd" })).toContain("bash 执行已禁用");
 
     config.security = { tools: { bash: { mode: "ask" } } };
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
@@ -239,10 +235,6 @@ describe("security boundary", () => {
     expect(await skill.execute({ name: "../config" })).toContain("未找到技能");
 
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    config.security = { tools: { bash: { mode: "deny" } } };
-    writeFileSync(configPath, JSON.stringify(config), "utf-8");
-    expect(await skill.execute({ name: "dynamic" })).toContain("bash 执行已禁用");
-
     config.security = { tools: { bash: { mode: "ask" } } };
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
     expect(await skill.execute({ name: "dynamic" })).toContain('"requiresConfirmation":true');
@@ -377,13 +369,14 @@ describe("security boundary", () => {
       .toEqual({ approved: true, source: "turn" });
     const denied = checkDangerousToolPermission({
       workspacePath,
-      config: { ...loadConfig(workspacePath), security: { mode: "deny" } },
+      config: { ...loadConfig(workspacePath), security: { mode: "auto" } },
       toolName: "bash",
-      args: { command: "blocked" },
+      args: { command: "sudo rm -rf /" },
+      command: "sudo rm -rf /",
       context: { sessionId: "session-a", actor },
     });
     expect(denied.allowed).toBe(false);
-    if (!denied.allowed) expect(denied.result).toContain("执行已禁用");
+    if (!denied.allowed) expect(denied.result).toContain("自动审批策略拒绝");
     expect(requestApproval(workspacePath, "bash", { command: "other-user" }, undefined, otherActor, "session-a").approved)
       .toBe(false);
     expect(requestApproval(workspacePath, "bash", { command: "other-session" }, undefined, actor, "session-b").approved)

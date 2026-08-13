@@ -2012,12 +2012,12 @@ describe("AgentSession loop", () => {
     }
   });
 
-  it("applies project tool permissions to the actual tool execution", async () => {
+  it("applies project ask permissions to the actual tool execution", async () => {
     const projectWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
       sessionSummary: { enabled: false },
       security: { mode: "allow", tools: {} },
-      project: { security: { mode: "ask", tools: { file_write: { mode: "deny" } } } },
+      project: { security: { mode: "ask", tools: { file_write: { mode: "ask" } } } },
     });
     const projectManager = new PluginManager(projectWorkspace);
     try {
@@ -2027,7 +2027,6 @@ describe("AgentSession loop", () => {
           text: "准备写入",
           toolCalls: [{ type: "tool_use", id: "write-1", name: "file_write", input: { path: "blocked.txt", content: "no" } }],
         },
-        { text: "写入被拒绝", toolCalls: [] },
       ]);
       const context = { mode: "project" as const, project: { root: projectWorkspace, name: "project" } };
       const session = new AgentSession("project-permission", projectWorkspace, projectManager, {}, client, context);
@@ -2035,17 +2034,10 @@ describe("AgentSession loop", () => {
       await collect(session.chat("写一个文件"));
 
       expect(existsSync(resolve(projectWorkspace, "blocked.txt"))).toBe(false);
-      expect(client.calls[1].messages).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          role: "user",
-          content: expect.arrayContaining([
-            expect.objectContaining({
-              type: "tool_result",
-              content: expect.stringContaining("file_write 执行已禁用"),
-            }),
-          ]),
-        }),
-      ]));
+      expect(client.calls).toHaveLength(1);
+      expect(listApprovals(projectWorkspace)).toEqual([
+        expect.objectContaining({ toolName: "file_write", sessionId: "project-permission" }),
+      ]);
       expect(client.calls[0].messages).toEqual(expect.arrayContaining([
         expect.objectContaining({ role: "user", content: "写一个文件" }),
       ]));

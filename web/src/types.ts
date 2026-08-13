@@ -68,6 +68,8 @@ export interface ApprovalRequest {
 
 export type ModelDebugPhase = "request" | "response" | "parsed_response" | "error" | "repair" | "stream_event";
 
+export type PermissionMode = "ask" | "auto" | "allow";
+
 export interface ModelCallSummary {
   requestId: string;
   sessionId?: string;

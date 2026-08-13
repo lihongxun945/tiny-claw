@@ -37,7 +37,7 @@ describe("project development context", () => {
   it("uses automatic approval by default for project sessions and applies tool overrides", () => {
     const workspace = createTempWorkspace({
       security: { mode: "allow", tools: {} },
-      project: { security: { tools: { file_read: { mode: "allow" }, bash: { mode: "deny" } } } },
+      project: { security: { tools: { file_read: { mode: "allow" }, bash: { mode: "ask" } } } },
     });
     paths.push(workspace);
     const effective = applySessionConfig(loadConfig(workspace), {
@@ -45,7 +45,7 @@ describe("project development context", () => {
       project: { root: workspace, name: "project" },
     });
     expect(effective.security?.mode).toBe("auto");
-    expect(effective.security?.tools?.bash?.mode).toBe("deny");
+    expect(effective.security?.tools?.bash?.mode).toBe("ask");
     expect(effective.security?.tools?.file_read?.mode).toBe("allow");
     expect(effective.security?.tools?.project_search?.mode).toBe("allow");
   });

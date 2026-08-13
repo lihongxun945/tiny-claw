@@ -1209,6 +1209,7 @@ summary:focus-visible {
 
 .composer-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -1248,6 +1249,46 @@ summary:focus-visible {
   background: var(--surface);
   color: var(--accent);
   box-shadow: 0 1px 4px rgba(26, 26, 26, .08);
+}
+
+.composer-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.permission-mode-select select {
+  height: 28px;
+  padding: 0 24px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.permission-mode-select select:hover:not(:disabled),
+.permission-mode-select select:focus {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.permission-mode-select select:disabled {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
+.permission-mode-error {
+  max-width: 160px;
+  overflow: hidden;
+  color: var(--danger) !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plan-progress {

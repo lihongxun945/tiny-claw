@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { fetchChatCommands } from "../lib/api.js";
-import type { ChatCommand } from "../types.js";
+import type { ChatCommand, PermissionMode } from "../types.js";
 import type { ExecutionMode } from "../types.js";
 
 interface Props {
@@ -9,9 +9,23 @@ interface Props {
   disabled: boolean;
   executionMode: ExecutionMode;
   onExecutionModeChange: (mode: ExecutionMode) => void;
+  permissionMode: PermissionMode;
+  onPermissionModeChange: (mode: PermissionMode) => void;
+  permissionSaving?: boolean;
+  permissionError?: string;
 }
 
-export default function ChatInput({ onSend, onStop, disabled, executionMode, onExecutionModeChange }: Props) {
+export default function ChatInput({
+  onSend,
+  onStop,
+  disabled,
+  executionMode,
+  onExecutionModeChange,
+  permissionMode,
+  onPermissionModeChange,
+  permissionSaving = false,
+  permissionError,
+}: Props) {
   const [text, setText] = useState("");
   const [commands, setCommands] = useState<ChatCommand[]>([]);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
@@ -220,11 +234,26 @@ export default function ChatInput({ onSend, onStop, disabled, executionMode, onE
             </div>
             <span>Enter 发送 · Shift+Enter 换行</span>
           </div>
-          {disabled ? (
-            <button className="stop-btn" onClick={onStop}>停止</button>
-          ) : (
-            <button onClick={handleSend} disabled={!text.trim() && images.length === 0} aria-label="↑">↑</button>
-          )}
+          <div className="composer-actions">
+            <label className="permission-mode-select" title={permissionError || "工具自定义权限配置优先"}>
+              <select
+                aria-label="审批模式"
+                value={permissionMode}
+                onChange={(event) => onPermissionModeChange(event.target.value as PermissionMode)}
+                disabled={disabled || permissionSaving}
+              >
+                <option value="auto">自动审批</option>
+                <option value="ask">总是询问</option>
+                <option value="allow">全部允许</option>
+              </select>
+            </label>
+            {permissionError && <span className="permission-mode-error">{permissionError}</span>}
+            {disabled ? (
+              <button className="stop-btn" onClick={onStop}>停止</button>
+            ) : (
+              <button onClick={handleSend} disabled={!text.trim() && images.length === 0} aria-label="↑">↑</button>
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -349,7 +349,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
   }
   const security = raw.security as Config["security"];
   const securityMode = security?.mode;
-  if (securityMode !== undefined && !["deny", "ask", "auto", "allow"].includes(securityMode)) {
+  if (securityMode !== undefined && !["ask", "auto", "allow"].includes(securityMode)) {
     throw new Error("配置字段 security.mode 不受支持");
   }
   if (security?.tools !== undefined) {
@@ -358,7 +358,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
       assertObject(toolConfig, `security.tools.${toolName}`);
       const toolSecurity = toolConfig as { mode?: unknown };
       const mode = toolSecurity.mode;
-      if (mode !== undefined && (typeof mode !== "string" || !["deny", "ask", "auto", "allow"].includes(mode))) {
+      if (mode !== undefined && (typeof mode !== "string" || !["ask", "auto", "allow"].includes(mode))) {
         throw new Error(`配置字段 security.tools.${toolName}.mode 不受支持`);
       }
     }
@@ -388,7 +388,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
     if (project.security !== undefined) {
       assertObject(project.security, "project.security");
       const projectSecurity = project.security as Record<string, unknown>;
-      if (projectSecurity.mode !== undefined && !["deny", "ask", "auto", "allow"].includes(String(projectSecurity.mode))) {
+      if (projectSecurity.mode !== undefined && !["ask", "auto", "allow"].includes(String(projectSecurity.mode))) {
         throw new Error("配置字段 project.security.mode 不受支持");
       }
       if (projectSecurity.tools !== undefined) {
@@ -397,7 +397,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
           assertObject(toolConfig, `project.security.tools.${toolName}`);
         const toolSecurity = toolConfig as { mode?: unknown };
         const mode = toolSecurity.mode;
-        if (mode !== undefined && (typeof mode !== "string" || !["deny", "ask", "auto", "allow"].includes(mode))) {
+        if (mode !== undefined && (typeof mode !== "string" || !["ask", "auto", "allow"].includes(mode))) {
             throw new Error(`配置字段 project.security.tools.${toolName}.mode 不受支持`);
           }
         }

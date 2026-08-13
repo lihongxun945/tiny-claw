@@ -1,5 +1,30 @@
 import { expect, test } from "@playwright/test";
 
+test("persists the approval mode from the chat composer", async ({ page }) => {
+  let config: Record<string, unknown> = {
+    security: { mode: "auto", tools: {} },
+    project: { security: { mode: "auto", tools: {} } },
+  };
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({ json: { sessions: [] } });
+  });
+  await page.route("**/config", async (route) => {
+    if (route.request().method() === "PUT") {
+      config = route.request().postDataJSON() as Record<string, unknown>;
+    }
+    await route.fulfill({ json: { config } });
+  });
+
+  await page.goto("/");
+  const permissionSelect = page.getByRole("combobox", { name: "审批模式" });
+  await expect(permissionSelect).toHaveValue("auto");
+  await permissionSelect.selectOption("ask");
+
+  await expect.poll(() => (config.security as { mode?: string }).mode).toBe("ask");
+  await expect(permissionSelect).toHaveValue("ask");
+  await expect(permissionSelect.locator("option")).toHaveCount(3);
+});
+
 test("renders markdown tables from persisted messages", async ({ page }) => {
   await page.route("**/history/sessions", async (route) => {
     await route.fulfill({

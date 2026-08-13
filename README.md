@@ -385,7 +385,7 @@ WebUI 支持选择图片或直接粘贴截图，可在发送前预览和移除�
 
 ### 安全边界
 
-文件工具支持读取和修改 workspace 之外的文件：相对路径以 workspace 为基准，也可以传入绝对路径。危险操作默认自动执行；如果需要更严格的安全边界，可以通过全局模式或工具级模式改为 `ask` / `deny`：
+文件工具支持读取和修改 workspace 之外的文件：相对路径以 workspace 为基准，也可以传入绝对路径。危险操作默认自动执行；审批模式可以直接在聊天输入框下方切换，工具级模式可在设置页配置：
 
 ```json
 {
@@ -394,19 +394,19 @@ WebUI 支持选择图片或直接粘贴截图，可在发送前预览和移除�
     "tools": {
       "bash": { "mode": "ask" },
       "file_write": { "mode": "ask" },
-      "memory_delete": { "mode": "deny" }
+      "memory_delete": { "mode": "ask" }
     },
     "auditTools": true
   }
 }
 ```
 
-权限决策顺序为：`security.tools.<tool>.mode` > `security.mode` > `auto`。`auto` 默认执行普通操作和当前工作目录内的全部文件操作，只对目录外写入、提权、系统状态修改和远程脚本执行等明确高风险行为请求审批；格式化磁盘、删除根目录等灾难性命令直接拒绝。`bash` 工具和技能文件中的动态 shell 注入都使用 `bash` 的工具级权限。`ask` 会创建一次性审批记录；Web UI 可以“批准本次”或“允许本轮”，飞书中可以回复完整 `/approve <审批 ID>` 或 `/approve-all <审批 ID>`，批准后都会尝试继续原会话。“允许本轮”仅对当前 session、调用者和当前 Agent Loop 生效，本轮完成、失败或取消后自动清理，且不会覆盖 `deny`。工具调用和自动权限决策默认写入审计日志，可通过 `auditTools: false` 关闭工具审计。
+权限决策顺序为：`security.tools.<tool>.mode` > `security.mode` > `auto`。用户可选 `ask`、`auto`、`allow`；`auto` 默认执行普通操作和当前工作目录内的全部文件操作，只对目录外写入、提权、系统状态修改和远程脚本执行等明确高风险行为请求审批；格式化磁盘、删除根目录等灾难性命令由内置安全策略直接拒绝。`bash` 工具和技能文件中的动态 shell 注入都使用 `bash` 的工具级权限。Web UI 可以“批准本次”或“允许本轮”，飞书中可以回复完整 `/approve <审批 ID>` 或 `/approve-all <审批 ID>`，批准后都会尝试继续原会话。工具调用和自动权限决策默认写入审计日志，可通过 `auditTools: false` 关闭工具审计。
 
 | 配置项 | 默认值 | 示例 | 说明 |
 |---|---:|---|---|
-| `security.mode` | `"auto"` | `"ask"` | 全局危险操作权限模式：`deny`、`ask`、`auto`、`allow` |
-| `security.tools.<tool>.mode` | 继承全局 | `"deny"` | 单个工具权限模式，覆盖 `security.mode` |
+| `security.mode` | `"auto"` | `"ask"` | 全局危险操作权限模式：`ask`、`auto`、`allow`；在聊天输入框下方切换 |
+| `security.tools.<tool>.mode` | 继承全局 | `"ask"` | 单个工具权限模式，覆盖 `security.mode` |
 | `security.gateway.host` | `"127.0.0.1"` | `"0.0.0.0"` | Gateway 监听地址；暴露到非回环地址时必须配置 token |
 | `security.gateway.token` | 无 | `"YOUR_GATEWAY_TOKEN"` | Gateway Bearer token |
 | `security.gateway.sseHeartbeatIntervalMs` | `15000` | `15000` | 流式响应空闲时发送 SSE 心跳的间隔，避免长时间推理导致连接超时 |

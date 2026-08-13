@@ -23,15 +23,6 @@ export function checkDangerousToolPermission(options: {
 }): { allowed: true } | { allowed: false; result: string } {
   const mode = getToolPermissionMode(options.config, options.toolName);
   if (mode === "allow") return { allowed: true };
-  if (mode === "deny") {
-    return {
-      allowed: false,
-      result: JSON.stringify({
-        error: `${options.toolName} 执行已禁用。请调整 security.mode 或 security.tools.${options.toolName}.mode。`,
-        permissionDecision: { action: "deny", risk: "high", ruleId: "configured-deny", reason: "权限配置明确禁止此工具" },
-      }),
-    };
-  }
 
   let autoDecision: AutoApprovalDecision | undefined;
   if (mode === "auto") {

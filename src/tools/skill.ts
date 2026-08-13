@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { execSync } from "node:child_process";
 import type { Config, SessionContext, Tool, ToolExecutionContext } from "../types.js";
 import { resolveRootFile, resolveWorkspaceFile } from "./workspace-path.js";
-import { checkDangerousToolPermission, getToolPermissionMode } from "./permission.js";
+import { checkDangerousToolPermission } from "./permission.js";
 
 export interface SkillMeta {
   name: string;
@@ -136,9 +136,7 @@ function executeDynamicCommands(workspacePath: string, body: string, skillDir: s
     });
     if (!permission.allowed) {
       approvalResult ??= permission.result;
-      return getToolPermissionMode(config, "bash") === "deny"
-        ? `[动态命令已禁用: ${cmd}]`
-        : `[动态命令需要用户确认，批准后系统会立即继续执行。命令: ${cmd}]`;
+      return `[动态命令需要用户确认或已被安全策略拒绝。命令: ${cmd}]`;
     }
     try {
       return execSync(cmd, { encoding: "utf-8", timeout: 10_000, cwd: skillDir }).trim();
@@ -161,9 +159,7 @@ function executeDynamicCommands(workspacePath: string, body: string, skillDir: s
     });
     if (!permission.allowed) {
       approvalResult ??= permission.result;
-      return getToolPermissionMode(config, "bash") === "deny"
-        ? `[动态命令已禁用: ${command}]`
-        : `[动态命令需要用户确认，批准后系统会立即继续执行。命令: ${command}]`;
+      return `[动态命令需要用户确认或已被安全策略拒绝。命令: ${command}]`;
     }
     try {
       return execSync(command, { encoding: "utf-8", timeout: 10_000, cwd: skillDir }).trim();

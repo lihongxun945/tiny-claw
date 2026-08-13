@@ -1,5 +1,40 @@
 import { test, expect } from "@playwright/test";
 
+test("persists project approval mode without changing the global mode", async ({ page }) => {
+  const session = {
+    id: "project-permission-session",
+    lastActivity: Date.now(),
+    preview: "权限测试",
+    context: { mode: "project", project: { root: "/Users/test/tiny-claw", name: "tiny-claw" } },
+    executionMode: "normal",
+  };
+  let config: Record<string, unknown> = {
+    security: { mode: "ask", tools: {} },
+    project: { security: { mode: "auto", tools: {} } },
+  };
+  await page.route("**/history/sessions", async (route) => route.fulfill({ json: { sessions: [session] } }));
+  await page.route("**/history/sessions/*/messages", async (route) => route.fulfill({ json: { messages: [] } }));
+  await page.route("**/projects/inspect", async (route) => route.fulfill({ json: { project: {
+    root: "/Users/test/tiny-claw", name: "tiny-claw", stack: [], rules: "(无)",
+  } } }));
+  await page.route("**/projects/status", async (route) => route.fulfill({ json: { status: {
+    isRepository: false, branch: "", clean: true, changedCount: 0, files: [],
+  } } }));
+  await page.route("**/config", async (route) => {
+    if (route.request().method() === "PUT") config = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ json: { config } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "项目", exact: true }).click();
+  await page.getByText("权限测试").click();
+  const permissionSelect = page.getByRole("combobox", { name: "审批模式" });
+  await permissionSelect.selectOption("allow");
+
+  await expect.poll(() => (((config.project as { security?: { mode?: string } }).security)?.mode)).toBe("allow");
+  expect((config.security as { mode?: string }).mode).toBe("ask");
+});
+
 test("creates and restores a project session as soon as a directory is selected", async ({ page }) => {
   const sessions: Array<Record<string, unknown>> = [];
   await page.addInitScript(() => {

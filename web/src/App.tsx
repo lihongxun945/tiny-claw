@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import type { Attachment, ExecutionMode, Message, SessionPlan, ToolCallInfo, Session } from "./types.js";
-import { streamChat, streamApprovalResume, fetchHistoryMessages, fetchHistorySessions, fetchSessionPlans, cancelSession, uploadImage, createSession, updateSessionExecutionMode } from "./lib/api.js";
+import type { Attachment, ExecutionMode, Message, PermissionMode, SessionPlan, ToolCallInfo, Session } from "./types.js";
+import { streamChat, streamApprovalResume, fetchConfig, fetchHistoryMessages, fetchHistorySessions, fetchSessionPlans, cancelSession, uploadImage, createSession, updateConfig, updateSessionExecutionMode } from "./lib/api.js";
 import { mergeApprovalResume } from "./lib/message-merge.js";
 import ChatView from "./components/ChatView.js";
 import ChatInput from "./components/ChatInput.js";
@@ -72,6 +72,10 @@ export default function App() {
   const [projectName, setProjectName] = useState<string | null>(null);
   const [projectStatusRefreshKey, setProjectStatusRefreshKey] = useState(0);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("normal");
+  const [globalPermissionMode, setGlobalPermissionMode] = useState<PermissionMode>("auto");
+  const [projectPermissionMode, setProjectPermissionMode] = useState<PermissionMode>("auto");
+  const [permissionSaving, setPermissionSaving] = useState(false);
+  const [permissionError, setPermissionError] = useState("");
   const activeSessionRef = useRef<string | null>(activeSessionId);
   const viewRef = useRef<View>(view);
   const lastChatSessionRef = useRef<string | null>(null);
@@ -80,6 +84,15 @@ export default function App() {
   const sessionModesRef = useRef(new Map<string, ExecutionMode>());
 
   const activeState = activeSessionId ? sessionStates[activeSessionId] ?? emptySessionState() : emptySessionState();
+
+  useEffect(() => {
+    fetchConfig().then((config) => {
+      const globalMode = (config.security as { mode?: unknown } | undefined)?.mode;
+      const projectMode = ((config.project as { security?: { mode?: unknown } } | undefined)?.security)?.mode;
+      if (globalMode === "ask" || globalMode === "auto" || globalMode === "allow") setGlobalPermissionMode(globalMode);
+      if (projectMode === "ask" || projectMode === "auto" || projectMode === "allow") setProjectPermissionMode(projectMode);
+    }).catch(() => setPermissionError("读取权限配置失败"));
+  }, []);
 
   const updateSessionState = useCallback((sessionId: string, update: (state: SessionUiState) => SessionUiState) => {
     setSessionStates((previous) => ({
@@ -520,6 +533,40 @@ export default function App() {
     });
   }, [activeSessionId, executionMode]);
 
+  const handlePermissionModeChange = useCallback(async (scope: "global" | "project", mode: PermissionMode) => {
+    if (permissionSaving) return;
+    const previous = scope === "project" ? projectPermissionMode : globalPermissionMode;
+    if (previous === mode) return;
+    if (scope === "project") setProjectPermissionMode(mode);
+    else setGlobalPermissionMode(mode);
+    setPermissionSaving(true);
+    setPermissionError("");
+    try {
+      const config = await fetchConfig();
+      const next = { ...config };
+      if (scope === "project") {
+        const project = { ...((config.project as Record<string, unknown> | undefined) ?? {}) };
+        project.security = {
+          ...((project.security as Record<string, unknown> | undefined) ?? {}),
+          mode,
+        };
+        next.project = project;
+      } else {
+        next.security = {
+          ...((config.security as Record<string, unknown> | undefined) ?? {}),
+          mode,
+        };
+      }
+      await updateConfig(next);
+    } catch (error) {
+      if (scope === "project") setProjectPermissionMode(previous);
+      else setGlobalPermissionMode(previous);
+      setPermissionError(error instanceof Error ? error.message : "保存权限配置失败");
+    } finally {
+      setPermissionSaving(false);
+    }
+  }, [globalPermissionMode, permissionSaving, projectPermissionMode]);
+
   const handleSessionDeleted = useCallback((id: string) => {
     abortControllersRef.current.get(id)?.abort();
     abortControllersRef.current.delete(id);
@@ -606,7 +653,17 @@ export default function App() {
               onApproveTurnAndResume={handleApproveTurnAndResume}
             />
             <PlanProgress plan={activeState.plan} />
-            <ChatInput onSend={handleSend} onStop={handleStop} disabled={activeState.isStreaming} executionMode={executionMode} onExecutionModeChange={handleExecutionModeChange} />
+            <ChatInput
+              onSend={handleSend}
+              onStop={handleStop}
+              disabled={activeState.isStreaming}
+              executionMode={executionMode}
+              onExecutionModeChange={handleExecutionModeChange}
+              permissionMode={globalPermissionMode}
+              onPermissionModeChange={(mode) => void handlePermissionModeChange("global", mode)}
+              permissionSaving={permissionSaving}
+              permissionError={permissionError}
+            />
           </>
         )}
         {view === "project" && (
@@ -630,6 +687,10 @@ export default function App() {
             plan={activeState.plan}
             executionMode={executionMode}
             onExecutionModeChange={handleExecutionModeChange}
+            permissionMode={projectPermissionMode}
+            onPermissionModeChange={(mode) => void handlePermissionModeChange("project", mode)}
+            permissionSaving={permissionSaving}
+            permissionError={permissionError}
           />
         )}
         {view === "memory" && <MemoryManager />}
