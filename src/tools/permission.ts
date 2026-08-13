@@ -2,8 +2,9 @@ import type { Config, PermissionMode } from "../types.js";
 import { requestApproval } from "./approval.js";
 import type { ToolExecutionContext } from "../types.js";
 import { appendLog } from "../workspace/logger.js";
+import { evaluateAutoApproval, type AutoApprovalDecision } from "../security/auto-approval.js";
 
-const DEFAULT_PERMISSION_MODE: PermissionMode = "allow";
+const DEFAULT_PERMISSION_MODE: PermissionMode = "auto";
 
 export function getToolPermissionMode(config: Config, toolName: string): PermissionMode {
   return config.security?.tools?.[toolName]?.mode
@@ -27,8 +28,35 @@ export function checkDangerousToolPermission(options: {
       allowed: false,
       result: JSON.stringify({
         error: `${options.toolName} 执行已禁用。请调整 security.mode 或 security.tools.${options.toolName}.mode。`,
+        permissionDecision: { action: "deny", risk: "high", ruleId: "configured-deny", reason: "权限配置明确禁止此工具" },
       }),
     };
+  }
+
+  let autoDecision: AutoApprovalDecision | undefined;
+  if (mode === "auto") {
+    autoDecision = evaluateAutoApproval({
+      toolName: options.toolName,
+      args: options.args,
+      command: options.command,
+      cwd: options.cwd,
+      rootPath: options.context?.rootPath ?? options.workspacePath,
+    });
+    appendLog(
+      options.workspacePath,
+      "AUDIT",
+      `自动权限决策 ${options.toolName} ${JSON.stringify({ action: autoDecision.action, risk: autoDecision.risk, ruleId: autoDecision.ruleId, reason: autoDecision.reason, sessionId: options.context?.sessionId })}`,
+    );
+    if (autoDecision.action === "allow") return { allowed: true };
+    if (autoDecision.action === "deny") {
+      return {
+        allowed: false,
+        result: JSON.stringify({
+          error: `${options.toolName} 被自动审批策略拒绝：${autoDecision.reason}`,
+          permissionDecision: autoDecision,
+        }),
+      };
+    }
   }
 
   const approval = requestApproval(
@@ -73,6 +101,7 @@ export function checkDangerousToolPermission(options: {
       args: options.args,
       command: options.command,
       cwd: options.cwd,
+      permissionDecision: autoDecision,
     }),
   };
 }

@@ -229,7 +229,7 @@ export interface SecurityConfig {
   auditTools?: boolean;
 }
 
-export type PermissionMode = "deny" | "ask" | "allow";
+export type PermissionMode = "deny" | "ask" | "auto" | "allow";
 
 export interface ToolSecurityConfig {
   mode?: PermissionMode;

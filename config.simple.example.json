@@ -63,7 +63,7 @@
   "searchProvider": "ollama",
   "ollamaApiKey": "YOUR_OLLAMA_API_KEY",
   "security": {
-    "mode": "allow",
+    "mode": "auto",
     "tools": {}
   }
 }

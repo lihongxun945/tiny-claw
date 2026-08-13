@@ -188,7 +188,7 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 | attachments | 图片附件配置 | enabled=true, 每条最多 4 张、单张 10 MB |
 | debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
 | security | 基础安全边界：bash 策略、Gateway host/token、工具审计 | 见下文 |
-| project | 项目会话权限、历史窗口与迭代上限 | security.mode=ask, historyWindowSize=8, maxAgentIterations=100 |
+| project | 项目会话权限、历史窗口与迭代上限 | security.mode=auto, historyWindowSize=8, maxAgentIterations=100 |
 | searchProvider | 搜索引擎 (ollama/searxng/brave/duckduckgo) | ollama |
 | ollamaApiKey | Ollama Web Search API key | - |
 | searxngUrl | SearXNG 实例地址 | - |
@@ -277,13 +277,15 @@ Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件�
 }
 ```
 
-- `security.mode`：全局危险操作权限模式，默认 `allow` 自动执行；`ask` 创建一次性审批记录；`deny` 拒绝执行。
+- `security.mode`：全局危险操作权限模式，默认 `auto`；`auto` 由确定性策略根据工具、参数、路径和 Bash 命令决定自动执行、人工审批或拒绝；`ask` 总是创建一次性审批记录；`deny` 拒绝执行；`allow` 无条件执行。
 - `security.tools.<tool>.mode`：单个工具权限模式，覆盖全局模式。`bash` 工具和技能动态 shell 统一使用 `security.tools.bash.mode`。
 - `gateway.host`：Gateway API 监听地址，默认 `127.0.0.1`。暴露到其他机器时应同时配置 token。
 - `gateway.token`：可选 Bearer token。配置后 API 请求需要携带 `Authorization: Bearer <token>`。
 - `auditTools`：是否把工具调用和完成状态写入日志，默认开启。审计日志不会记录文件内容或记忆内容。
 
-`ask` 模式使用进程内审批队列。审批记录按 workspace、工具名、参数和调用者身份去重，默认 10 分钟过期。单次批准后的许可只消费一次；拒绝、过期或消费后立即失效。“允许本轮”会以 session 和调用者身份建立临时授权，当前审批先按单次许可消费，后续 `ask` 工具在同一个 Agent Loop 中自动通过；`deny` 不受影响。临时授权在恢复执行结束、失败或取消后由 `AgentSession` 的 `finally` 清理，服务重启也会自然失效。Gateway 暴露 `/approvals` 系列接口，Web UI 在聊天工具块内提供“批准本次”“允许本轮”和拒绝操作，批准后会自动调用 `AgentSession.resumeApproval()` 继续原任务。飞书消息会携带用户 `open_id` 和 `chat_id`，用户可以发送 `/approvals`、`/approve <id>`、`/approve-all <id>` 或 `/reject <id>` 处理自己在当前会话发起的审批。
+自动审批策略位于独立安全模块，输出 `allow`、`ask` 或 `deny` 以及风险等级、规则 ID 和原因。策略默认放行普通工具和命令，当前工作目录内的创建、覆盖、编辑、移动和删除均视为低风险；目录外写入、提权、系统状态修改和远程脚本执行进入 `ask`；格式化磁盘、删除根目录等灾难性操作直接 `deny`。每次自动决策写入审计日志，但不记录文件内容或密钥。
+
+`ask` 模式及自动策略返回的 `ask` 决策使用进程内审批队列。审批记录按 workspace、工具名、参数和调用者身份去重，默认 10 分钟过期。单次批准后的许可只消费一次；拒绝、过期或消费后立即失效。“允许本轮”会以 session 和调用者身份建立临时授权，当前审批先按单次许可消费，后续需要人工审批的工具在同一个 Agent Loop 中自动通过；显式 `deny` 和自动策略的直接拒绝不受影响。临时授权在恢复执行结束、失败或取消后由 `AgentSession` 的 `finally` 清理，服务重启也会自然失效。Gateway 暴露 `/approvals` 系列接口，Web UI 在聊天工具块内展示风险和原因，并提供“批准本次”“允许本轮”和拒绝操作，批准后会自动调用 `AgentSession.resumeApproval()` 继续原任务。飞书消息会携带用户 `open_id` 和 `chat_id`，用户可以发送 `/approvals`、`/approve <id>`、`/approve-all <id>` 或 `/reject <id>` 处理自己在当前会话发起的审批。
 
 当工具结果包含 `requiresConfirmation: true` 时，Agent Loop 会立即暂停当前轮：审批提示会发给用户并写入历史用于 UI 恢复，但不会再把该结果回灌给模型继续总结。这样用户批准前不会产生基于“未执行命令”的最终回答；批准后由审批命令消费一次性许可并执行记录的命令。工具调用和工具结果的 SSE 事件携带同一个稳定 `tool_call_id`；Web UI 在审批续跑过程中以该 ID 实时替换原工具块中的待审批结果，并将后续工具调用和回复流投影到同一条助手消息，收到完成事件后再固化该消息，保持实时显示与刷新后的持久化历史一致。
 

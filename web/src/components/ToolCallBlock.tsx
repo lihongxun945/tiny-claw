@@ -15,6 +15,11 @@ export interface ApprovalResult {
   command?: string;
   cwd?: string;
   error?: string;
+  permissionDecision?: {
+    risk?: "low" | "medium" | "high" | "critical";
+    reason?: string;
+    ruleId?: string;
+  };
 }
 
 function summarizeInput(name: string, input: Record<string, unknown>): string {
@@ -141,6 +146,12 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveT
               <div>
                 <div className="tool-approval-title">此工具调用需要批准</div>
                 {approval.error && <div>{approval.error}</div>}
+                {approval.permissionDecision?.reason && (
+                  <div className="tool-approval-reason">
+                    自动判断：{approval.permissionDecision.reason}
+                    {approval.permissionDecision.risk && `（风险：${approval.permissionDecision.risk}）`}
+                  </div>
+                )}
                 <div>审批 ID：<code>{approval.approvalId}</code></div>
                 {approval.command && <pre>{approval.command}</pre>}
                 {approval.cwd && <div>目录：{approval.cwd}</div>}

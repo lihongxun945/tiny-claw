@@ -77,16 +77,16 @@
     "rawStreamEvents": true
   },
   "security": {
-    "mode": "allow",
+    "mode": "auto",
     "tools": {
       "bash": {
-        "mode": "allow"
+        "mode": "auto"
       },
       "file_write": {
-        "mode": "allow"
+        "mode": "auto"
       },
       "file_edit": {
-        "mode": "allow"
+        "mode": "auto"
       },
       "memory_save": {
         "mode": "allow"
@@ -110,12 +110,12 @@
   },
   "project": {
     "security": {
-      "mode": "ask",
+      "mode": "auto",
       "tools": {
         "file_read": { "mode": "allow" },
-        "file_write": { "mode": "ask" },
-        "file_edit": { "mode": "ask" },
-        "bash": { "mode": "ask" },
+        "file_write": { "mode": "auto" },
+        "file_edit": { "mode": "auto" },
+        "bash": { "mode": "auto" },
         "project_tree": { "mode": "allow" },
         "project_search": { "mode": "allow" },
         "git_status": { "mode": "allow" },

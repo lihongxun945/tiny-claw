@@ -190,7 +190,10 @@ describe("memory storage", () => {
   });
 
   it("exposes memory storage through tool wrappers", async () => {
-    const getConfig = () => loadConfig(workspacePath);
+    const getConfig = () => ({
+      ...loadConfig(workspacePath),
+      security: { mode: "allow" as const },
+    });
     expect(await createMemorySaveTool(workspacePath, getConfig).execute({
       name: "tool-memory",
       content: "tool content",

@@ -155,8 +155,8 @@ const FIELD_GROUPS: FieldGroup[] = [
   {
     title: "权限与 Gateway",
     fields: [
-      { key: "security.mode", label: "全局危险操作模式", type: "select", options: ["deny", "ask", "allow"], defaultValue: "allow" },
-      { key: "security.tools", label: "工具权限覆盖", type: "json", defaultValue: {}, description: "按工具名设置 mode，可覆盖全局模式。" },
+      { key: "security.mode", label: "全局危险操作模式", type: "select", options: ["deny", "ask", "auto", "allow"], defaultValue: "auto" },
+      { key: "security.tools", label: "工具权限覆盖", type: "json", defaultValue: {}, description: "按工具名设置 mode，可覆盖全局配置。" },
       { key: "security.gateway.host", label: "Gateway Host", type: "text", defaultValue: "127.0.0.1" },
       { key: "security.gateway.token", label: "Gateway Token", type: "password" },
       { key: "security.gateway.sseHeartbeatIntervalMs", label: "SSE 心跳间隔（毫秒）", type: "number", defaultValue: 15000 },
@@ -166,8 +166,8 @@ const FIELD_GROUPS: FieldGroup[] = [
   {
     title: "项目开发模式",
     fields: [
-      { key: "project.security.mode", label: "项目危险操作模式", type: "select", options: ["deny", "ask", "allow"], defaultValue: "ask", description: "项目会话默认使用 ask，并覆盖全局危险操作模式。" },
-      { key: "project.security.tools", label: "项目工具权限覆盖", type: "json", defaultValue: { file_read: { mode: "allow" }, file_write: { mode: "ask" }, file_edit: { mode: "ask" }, bash: { mode: "ask" }, project_tree: { mode: "allow" }, project_search: { mode: "allow" }, git_status: { mode: "allow" }, git_diff: { mode: "allow" } } },
+      { key: "project.security.mode", label: "项目危险操作模式", type: "select", options: ["deny", "ask", "auto", "allow"], defaultValue: "auto", description: "项目会话权限覆盖全局危险操作模式。" },
+      { key: "project.security.tools", label: "项目工具权限覆盖", type: "json", defaultValue: { file_read: { mode: "allow" }, file_write: { mode: "auto" }, file_edit: { mode: "auto" }, bash: { mode: "auto" }, project_tree: { mode: "allow" }, project_search: { mode: "allow" }, git_status: { mode: "allow" }, git_diff: { mode: "allow" } } },
       { key: "project.historyWindowSize", label: "项目历史窗口轮数", type: "number", defaultValue: 8 },
       { key: "project.maxAgentIterations", label: "项目最大 Agent 迭代", type: "number", defaultValue: 100 },
       { key: "project.gitTimeoutMs", label: "Git 操作超时（毫秒）", type: "number", defaultValue: 10000 },

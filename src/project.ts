@@ -277,7 +277,7 @@ export function applySessionConfig(config: Config, context: SessionContext): Con
     maxAgentIterations: project?.maxAgentIterations ?? config.maxAgentIterations,
     security: {
       ...config.security,
-      mode: project?.security?.mode ?? "ask",
+      mode: project?.security?.mode ?? "auto",
       tools: {
         ...config.security?.tools,
         project_tree: { mode: "allow" },

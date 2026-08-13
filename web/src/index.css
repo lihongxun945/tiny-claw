@@ -994,6 +994,11 @@ summary:focus-visible {
   line-height: 1.6;
 }
 
+.tool-approval-reason {
+  margin-top: 8px;
+  color: #8a5a00;
+}
+
 .tool-approval-actions .approve-turn {
   border-color: rgba(99, 91, 255, 0.45);
   color: var(--accent);

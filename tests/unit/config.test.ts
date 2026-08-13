@@ -61,7 +61,7 @@ describe("loadConfig", () => {
       searchProvider: "duckduckgo",
       enabledPlugins: [],
       plugins: {},
-      security: { mode: "allow", gateway: { sseHeartbeatIntervalMs: 15000 } },
+      security: { mode: "auto", gateway: { sseHeartbeatIntervalMs: 15000 } },
       remoteModel: { enabled: true },
       localModel: { enabled: false, modelId: "qwen3.5-4b-q4", contextSize: 32768 },
     });

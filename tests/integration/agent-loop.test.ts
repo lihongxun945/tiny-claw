@@ -964,6 +964,7 @@ describe("AgentSession loop", () => {
     const autoWorkspace = createTempWorkspace({
       autoMemory: { enabled: true, mode: "auto", turnThreshold: 1, maxCandidates: 1 },
       sessionSummary: { enabled: false },
+      security: { mode: "auto", tools: { memory_delete: { mode: "allow" } } },
     });
     const autoManager = new PluginManager(autoWorkspace);
     try {

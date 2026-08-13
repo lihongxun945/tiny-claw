@@ -36,9 +36,10 @@ describe("security boundary", () => {
     writeFileSync(resolve(outsidePath, "outside.txt"), "outside", "utf-8");
     symlinkSync(outsidePath, resolve(workspacePath, "escape"));
 
-    const read = createFileReadTool(workspacePath, () => loadConfig(workspacePath));
-    const write = createFileWriteTool(workspacePath, () => loadConfig(workspacePath));
-    const edit = createFileEditTool(workspacePath, () => loadConfig(workspacePath));
+    const unrestricted = () => ({ ...loadConfig(workspacePath), security: { mode: "allow" as const } });
+    const read = createFileReadTool(workspacePath, unrestricted);
+    const write = createFileWriteTool(workspacePath, unrestricted);
+    const edit = createFileEditTool(workspacePath, unrestricted);
 
     expect(await read.execute({ path: "inside.txt" })).toContain("inside");
     expect(await read.execute({ path: resolve(outsidePath, "outside.txt") })).toContain("outside");
@@ -76,6 +77,114 @@ describe("security boundary", () => {
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
     expect(await bash.execute({ command: "pwd" })).toContain(workspacePath);
     expect(await bash.execute({ command: "pwd", cwd: outsidePath })).toContain(outsidePath);
+  });
+
+  it("automatically allows ordinary operations, asks for high-risk changes and denies catastrophic commands", async () => {
+    const workspacePath = createTempWorkspace({ security: { mode: "auto" } });
+    paths.push(workspacePath);
+    const config = loadConfig(workspacePath);
+
+    expect(checkDangerousToolPermission({
+      workspacePath,
+      config,
+      toolName: "project_search",
+      args: { query: "permission" },
+    })).toEqual({ allowed: true });
+
+    expect(checkDangerousToolPermission({
+      workspacePath,
+      config,
+      toolName: "file_write",
+      args: { path: "src/generated.ts", content: "export {};" },
+    })).toEqual({ allowed: true });
+
+    const unknown = checkDangerousToolPermission({
+      workspacePath,
+      config,
+      toolName: "bash",
+      args: { command: "node scripts/release.mjs" },
+      command: "node scripts/release.mjs",
+      cwd: workspacePath,
+    });
+    expect(unknown).toEqual({ allowed: true });
+
+    expect(checkDangerousToolPermission({
+      workspacePath,
+      config,
+      toolName: "memory_delete",
+      args: { name: "obsolete" },
+    })).toEqual({ allowed: true });
+
+    expect(checkDangerousToolPermission({
+      workspacePath,
+      config,
+      toolName: "bash",
+      args: { command: "rm -rf .cache && echo done > result.txt" },
+      command: "rm -rf .cache && echo done > result.txt",
+      cwd: workspacePath,
+    })).toEqual({ allowed: true });
+
+    const externalWrite = checkDangerousToolPermission({
+      workspacePath,
+      config,
+      toolName: "file_write",
+      args: { path: resolve(workspacePath, "..", "external.txt"), content: "external" },
+    });
+    expect(externalWrite.allowed).toBe(false);
+    if (!externalWrite.allowed) {
+      expect(JSON.parse(externalWrite.result)).toMatchObject({
+        requiresConfirmation: true,
+        permissionDecision: { action: "ask", ruleId: "external-write" },
+      });
+    }
+
+    const externalShellWrite = checkDangerousToolPermission({
+      workspacePath,
+      config,
+      toolName: "bash",
+      args: { command: `echo unsafe > ${resolve(workspacePath, "..", "external.txt")}` },
+      command: `echo unsafe > ${resolve(workspacePath, "..", "external.txt")}`,
+      cwd: workspacePath,
+    });
+    expect(externalShellWrite.allowed).toBe(false);
+    if (!externalShellWrite.allowed) {
+      expect(JSON.parse(externalShellWrite.result)).toMatchObject({
+        requiresConfirmation: true,
+        permissionDecision: { action: "ask", ruleId: "external-shell-write" },
+      });
+    }
+
+    const elevated = checkDangerousToolPermission({
+      workspacePath,
+      config,
+      toolName: "bash",
+      args: { command: "sudo launchctl kickstart system/service" },
+      command: "sudo launchctl kickstart system/service",
+      cwd: workspacePath,
+    });
+    expect(elevated.allowed).toBe(false);
+    if (!elevated.allowed) {
+      expect(JSON.parse(elevated.result)).toMatchObject({
+        requiresConfirmation: true,
+        permissionDecision: { action: "ask", ruleId: "high-risk-system-command" },
+      });
+    }
+
+    const critical = checkDangerousToolPermission({
+      workspacePath,
+      config,
+      toolName: "bash",
+      args: { command: "sudo rm -rf /" },
+      command: "sudo rm -rf /",
+      cwd: workspacePath,
+    });
+    expect(critical.allowed).toBe(false);
+    if (!critical.allowed) {
+      expect(JSON.parse(critical.result)).toMatchObject({
+        permissionDecision: { action: "deny", risk: "critical", ruleId: "catastrophic-system-command" },
+      });
+      expect(JSON.parse(critical.result).requiresConfirmation).toBeUndefined();
+    }
   });
 
   it("terminates an allowed bash command when cancelled", async () => {

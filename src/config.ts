@@ -95,7 +95,7 @@ export function createDefaultConfig(): Record<string, unknown> {
       rawStreamEvents: false,
     },
     security: {
-      mode: "allow",
+      mode: "auto",
       tools: {},
       gateway: {
         host: "127.0.0.1",
@@ -106,12 +106,12 @@ export function createDefaultConfig(): Record<string, unknown> {
     },
     project: {
       security: {
-        mode: "ask",
+        mode: "auto",
         tools: {
           file_read: { mode: "allow" },
-          file_write: { mode: "ask" },
-          file_edit: { mode: "ask" },
-          bash: { mode: "ask" },
+          file_write: { mode: "auto" },
+          file_edit: { mode: "auto" },
+          bash: { mode: "auto" },
           project_tree: { mode: "allow" },
           project_search: { mode: "allow" },
           git_status: { mode: "allow" },
@@ -349,7 +349,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
   }
   const security = raw.security as Config["security"];
   const securityMode = security?.mode;
-  if (securityMode !== undefined && !["deny", "ask", "allow"].includes(securityMode)) {
+  if (securityMode !== undefined && !["deny", "ask", "auto", "allow"].includes(securityMode)) {
     throw new Error("配置字段 security.mode 不受支持");
   }
   if (security?.tools !== undefined) {
@@ -358,7 +358,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
       assertObject(toolConfig, `security.tools.${toolName}`);
       const toolSecurity = toolConfig as { mode?: unknown };
       const mode = toolSecurity.mode;
-      if (mode !== undefined && (typeof mode !== "string" || !["deny", "ask", "allow"].includes(mode))) {
+      if (mode !== undefined && (typeof mode !== "string" || !["deny", "ask", "auto", "allow"].includes(mode))) {
         throw new Error(`配置字段 security.tools.${toolName}.mode 不受支持`);
       }
     }
@@ -388,7 +388,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
     if (project.security !== undefined) {
       assertObject(project.security, "project.security");
       const projectSecurity = project.security as Record<string, unknown>;
-      if (projectSecurity.mode !== undefined && !["deny", "ask", "allow"].includes(String(projectSecurity.mode))) {
+      if (projectSecurity.mode !== undefined && !["deny", "ask", "auto", "allow"].includes(String(projectSecurity.mode))) {
         throw new Error("配置字段 project.security.mode 不受支持");
       }
       if (projectSecurity.tools !== undefined) {
@@ -397,7 +397,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
           assertObject(toolConfig, `project.security.tools.${toolName}`);
         const toolSecurity = toolConfig as { mode?: unknown };
         const mode = toolSecurity.mode;
-        if (mode !== undefined && (typeof mode !== "string" || !["deny", "ask", "allow"].includes(mode))) {
+        if (mode !== undefined && (typeof mode !== "string" || !["deny", "ask", "auto", "allow"].includes(mode))) {
             throw new Error(`配置字段 project.security.tools.${toolName}.mode 不受支持`);
           }
         }
