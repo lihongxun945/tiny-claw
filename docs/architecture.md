@@ -499,7 +499,7 @@ token 估算采用统一粗略规则，只用于预算保护。压缩使用 `cli
 
 插件也可以注册自己的工具，通过 `PluginContext.registerTool()` 方法。所有插件的工具统一合并到 PluginManager 的 ToolRegistry 中，模型调用时通过 `getTool(name)` 查找执行。新增工具只需：1) 在任意插件中实现 Tool 接口 2) 在插件 init 中注册。
 
-`PluginManager` 支持工具白名单/黑名单过滤（`allowedTools` / `disabledTools`），用于 sub-agent 等需要收敛权限的场景。工具在注册阶段被过滤，模型看不到被禁用的工具定义，也无法调用这些工具。文件工具支持 workspace 外路径；危险操作默认允许执行，可通过 `security.mode` 或 `security.tools.<tool>.mode` 改为 `ask` 或 `deny`。
+`PluginManager` 支持工具白名单/黑名单过滤（`allowedTools` / `disabledTools`），用于 sub-agent 等需要收敛权限的场景。工具在注册阶段被过滤，模型看不到被禁用的工具定义，也无法调用这些工具。文件工具支持 workspace 外路径；危险操作默认使用自动审批，可通过 `security.mode` 或 `security.tools.<tool>.mode` 配置为 `ask`、`auto` 或 `allow`。灾难性操作由自动审批策略在内部直接拒绝，不作为用户可选模式。
 
 ### 聊天命令注册：插件化
 

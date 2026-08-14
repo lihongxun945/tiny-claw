@@ -18,7 +18,7 @@ test("manages long-term memories", async ({ page }) => {
   await page.route("**/history/sessions", async (route) => {
     await route.fulfill({ json: { sessions: [] } });
   });
-  await page.route("**/memory?*", async (route) => {
+  await page.route(/\/memory(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { memories: [current] } });
   });
   await page.route("**/memory/project-context", async (route) => {
@@ -36,6 +36,7 @@ test("manages long-term memories", async ({ page }) => {
 
   await page.goto("/");
   await page.getByRole("button", { name: "记忆" }).click();
+  await page.getByRole("button", { name: "长期记忆" }).click();
 
   await expect(page.getByRole("heading", { name: "project-context" })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "摘要" })).toHaveValue("项目背景");
@@ -52,12 +53,13 @@ test("shows API errors instead of a misleading empty state", async ({ page }) =>
   await page.route("**/history/sessions", async (route) => {
     await route.fulfill({ json: { sessions: [] } });
   });
-  await page.route("**/memory?*", async (route) => {
+  await page.route(/\/memory(?:\?.*)?$/, async (route) => {
     await route.fulfill({ status: 500, json: { error: "memory api failed" } });
   });
 
   await page.goto("/");
   await page.getByRole("button", { name: "记忆" }).click();
+  await page.getByRole("button", { name: "长期记忆" }).click();
 
   await expect(page.getByText("memory api failed")).toBeVisible();
   await expect(page.getByText("暂无记忆")).not.toBeVisible();
