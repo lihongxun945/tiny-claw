@@ -276,6 +276,7 @@ export function createSkillListTool(workspacePath: string): Tool {
   return {
     name: "skill_list",
     description: "列出所有可用的技能。",
+    effect: "read",
     inputSchema: {
       type: "object",
       properties: {},

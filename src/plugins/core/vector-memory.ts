@@ -63,6 +63,7 @@ export const coreVectorMemoryPlugin: Plugin = {
     ctx.registerTool({
       name: "memory_search",
       description: "按语义和关键词搜索长期记忆。自动召回的信息不足，或者需要查找历史偏好、决策、事实和经验时使用",
+      effect: "read",
       inputSchema: {
         type: "object",
         properties: {

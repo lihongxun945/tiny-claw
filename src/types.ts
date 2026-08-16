@@ -250,6 +250,8 @@ export interface ToolDefinition {
 export interface Tool {
   name: string;
   description: string;
+  /** 工具对外部状态的影响；未声明时按 write 处理。 */
+  effect?: "read" | "write";
   inputSchema: ToolDefinition["input_schema"];
   isAvailable?: (context: SessionContext, executionMode: ExecutionMode) => boolean;
   execute: (args: Record<string, unknown>, context?: ToolExecutionContext) => Promise<string>;

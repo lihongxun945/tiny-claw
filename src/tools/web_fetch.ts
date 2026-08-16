@@ -25,6 +25,7 @@ export function createWebFetchTool(): Tool {
   return {
     name: "web_fetch",
     description: "获取网页内容并转为纯文本。输入 URL，返回页面文本内容。",
+    effect: "read",
     inputSchema: {
       type: "object",
       properties: {

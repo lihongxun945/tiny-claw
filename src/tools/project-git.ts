@@ -8,6 +8,7 @@ export function createGitStatusTool(workspacePath: string, getConfig: () => Conf
   return {
     name: "git_status",
     description: "读取当前项目的 Git 分支、工作区状态和结构化变更文件列表。",
+    effect: "read",
     isAvailable: (context) => context.mode === "project",
     inputSchema: { type: "object", properties: {} },
     execute: async (args, context) => {
@@ -31,6 +32,7 @@ export function createGitDiffTool(workspacePath: string, getConfig: () => Config
   return {
     name: "git_diff",
     description: "读取当前项目全部变更或指定文件的 staged/unstaged Git Diff。",
+    effect: "read",
     isAvailable: (context) => context.mode === "project",
     inputSchema: {
       type: "object",

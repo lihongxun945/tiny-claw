@@ -7,7 +7,8 @@ import { withAudit } from "./tools.js";
 
 const PLAN_PROMPT = `## 计划执行模式
 如果用户问题无需调用任何工具就能准确回答，可以直接回答，不要创建计划。
-如果任务需要调用工具，你必须先调用 plan_create 创建 2 到配置上限个可验证步骤，禁止在创建计划前调用其他工具。信息不足时先创建包含“调研现状”和“根据调研结果细化计划”的初步计划。
+创建计划前可以调用只读工具收集制定可靠计划所必需的信息，但禁止调用任何写入或有副作用的工具，也不要为了完善计划而无限调研。
+如果完成必要侦察后任务仍需要写入或有副作用的工具，必须先调用 plan_create 创建 2 到配置上限个基于事实、可验证的步骤。
 执行每一步前调用 plan_update 将其设为 in_progress；完成后设为 completed 并写简短 summary。
 调研完成后调用 plan_revise，将全部尚未执行的步骤替换为基于调研结果的具体步骤，再继续执行。
 同一时间只能有一个执行中步骤，必须按顺序执行。不得披露内部推理，只描述可观察的目标和结果。
@@ -17,14 +18,15 @@ const PLAN_PROMPT = `## 计划执行模式
 function filterPlanTools(
   definitions: ToolDefinition[],
   plan: ReturnType<typeof findActiveSessionPlan>,
+  isReadOnly: (name: string) => boolean,
 ): ToolDefinition[] {
-  if (!plan) return definitions.filter((definition) => definition.name === "plan_create");
+  if (!plan) return definitions.filter((definition) => definition.name === "plan_create" || isReadOnly(definition.name));
   if (plan.status === "completed" || plan.status === "failed") return [];
   const current = plan.steps.find((step) => step.id === plan.currentStepId);
   if (current?.status === "in_progress") {
     return definitions.filter((definition) => definition.name !== "plan_create");
   }
-  return definitions.filter((definition) => definition.name === "plan_update" || definition.name === "plan_revise");
+  return definitions.filter((definition) => definition.name === "plan_update" || definition.name === "plan_revise" || isReadOnly(definition.name));
 }
 
 function reportPlanStatus(
@@ -88,7 +90,7 @@ export const corePlanPlugin: Plugin = {
       onFilterToolDefinitions(hookCtx, definitions) {
         if (hookCtx.executionMode !== "plan" || !hookCtx.turnId) return definitions;
         const plan = findActiveSessionPlan(ctx.workspacePath, hookCtx.sessionId, hookCtx.turnId);
-        return filterPlanTools(definitions, plan);
+        return filterPlanTools(definitions, plan, (name) => hookCtx.getTool(name)?.effect === "read");
       },
       onBeforeModelCall(hookCtx, modelContext) {
         if (hookCtx.executionMode !== "plan" || !hookCtx.turnId || !modelContext.reportStatus) return;
@@ -99,8 +101,11 @@ export const corePlanPlugin: Plugin = {
         if (hookCtx.executionMode !== "plan" || name === "plan_create" || name === "plan_update" || name === "plan_revise") return;
         if (!hookCtx.turnId) return { abort: "计划模式缺少轮次标识" };
         const plan = findActiveSessionPlan(ctx.workspacePath, hookCtx.sessionId, hookCtx.turnId);
-        if (!plan) return { abort: "计划模式必须先调用 plan_create" };
+        const isReadOnly = hookCtx.getTool(name)?.effect === "read";
+        if (!plan && isReadOnly) return;
+        if (!plan) return { abort: "计划模式执行写入或有副作用的工具前必须先调用 plan_create" };
         const current = plan.steps.find((step) => step.id === plan.currentStepId);
+        if (isReadOnly && current?.status !== "in_progress") return;
         if (current?.status === "waiting_approval" || current?.status === "waiting_user") markCurrentPlanStep(ctx.workspacePath, hookCtx.sessionId, plan.turnId, "in_progress");
         else if (current?.status !== "in_progress") return { abort: "执行工具前必须调用 plan_update 将当前步骤设为 in_progress" };
       },

@@ -132,11 +132,11 @@ export function getProfileLimits(config: Config): ProfileLimits {
 }
 
 export function createProfileListTool(workspacePath: string): Tool {
-  return { name: "profile_list", description: "列出每轮固定注入的用户 Profile", inputSchema: { type: "object", properties: {} }, execute: async () => JSON.stringify({ profiles: listProfiles(workspacePath).map(({ content: _content, ...item }) => item) }) };
+  return { name: "profile_list", description: "列出每轮固定注入的用户 Profile", effect: "read", inputSchema: { type: "object", properties: {} }, execute: async () => JSON.stringify({ profiles: listProfiles(workspacePath).map(({ content: _content, ...item }) => item) }) };
 }
 
 export function createProfileReadTool(workspacePath: string): Tool {
-  return { name: "profile_read", description: "读取指定用户 Profile 的完整内容", inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] }, execute: async (args) => JSON.stringify({ profile: getProfile(workspacePath, String(args.name ?? "")) }) };
+  return { name: "profile_read", description: "读取指定用户 Profile 的完整内容", effect: "read", inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] }, execute: async (args) => JSON.stringify({ profile: getProfile(workspacePath, String(args.name ?? "")) }) };
 }
 
 export function createProfileSaveTool(workspacePath: string, getConfig: () => Config): Tool {

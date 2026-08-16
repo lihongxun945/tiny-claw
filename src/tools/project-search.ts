@@ -17,6 +17,7 @@ export function createProjectSearchTool(workspacePath: string, getConfig: () => 
   return {
     name: "project_search",
     description: "在当前项目中按文件 Glob、纯文本或正则表达式搜索，返回结构化路径、行号和匹配文本。",
+    effect: "read",
     isAvailable: (context) => context.mode === "project",
     inputSchema: {
       type: "object",

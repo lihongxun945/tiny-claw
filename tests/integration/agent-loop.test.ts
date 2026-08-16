@@ -299,7 +299,10 @@ describe("AgentSession loop", () => {
     const planTurnId = "11111111-1111-4111-8111-111111111111";
     const events = await collect(session.chat("执行任务", undefined, undefined, "plan", planTurnId));
     expect(events.at(-1)).toEqual({ type: "done", text: "全部完成", reason: "completed" });
-    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(["plan_create"]);
+    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "plan_create", "file_read", "web_search", "memory_search",
+    ]));
+    expect(client.calls[0].tools?.map((tool) => tool.name)).not.toContain("echo");
     expect(client.calls[1].tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["plan_update", "plan_revise"]));
     expect(client.calls[1].tools?.map((tool) => tool.name)).not.toContain("echo");
     expect(client.calls[2].tools?.map((tool) => tool.name)).toContain("echo");
@@ -330,7 +333,9 @@ describe("AgentSession loop", () => {
       text: "RAG 更适合语义检索。",
       reason: "completed",
     });
-    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(["plan_create"]);
+    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "plan_create", "file_read", "web_search", "memory_search",
+    ]));
     expect(client.calls[0].systemPrompt).toContain("无需调用任何工具");
     expect(readSessionPlan(workspacePath, "plan-direct-answer", turnId)).toBeUndefined();
   });
@@ -400,7 +405,10 @@ describe("AgentSession loop", () => {
     const plan = readSessionPlan(workspacePath, "plan-revise", reviseTurnId);
     expect(plan?.revision).toBe(1);
     expect(plan?.steps.map((step) => step.title)).toEqual(["调研现状", "修改实现", "运行测试"]);
-    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(["plan_create"]);
+    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "plan_create", "file_read", "web_search", "memory_search",
+    ]));
+    expect(client.calls[0].tools?.map((tool) => tool.name)).not.toContain("echo");
     expect(client.calls[4].tools?.map((tool) => tool.name)).toContain("plan_revise");
     expect(client.calls[0].systemPrompt).toContain("调研完成后调用 plan_revise");
   });

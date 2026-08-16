@@ -34,6 +34,7 @@ import { startSSEHeartbeat } from "./gateway-sse.js";
 import { inspectProject } from "./project.js";
 import type { ExecutionMode, SessionContext } from "./types.js";
 import { listSessionPlans, type SessionPlan } from "./plan-store.js";
+import { ensureWebBuild } from "./web-build.js";
 
 const SESSION_TIMEOUT = 30 * 60 * 1000;
 const DEFAULT_SSE_HEARTBEAT_INTERVAL_MS = 15_000;
@@ -109,6 +110,7 @@ function startDaemon(port: number, workspacePath: string): void {
 
   // 找到 tsx 二进制路径来重新调用自己（因为 .ts 文件不能直接用 node 执行）
   const __dirname = dirname(fileURLToPath(import.meta.url));
+  ensureWebBuild(resolve(__dirname, ".."));
   const tsxBin = resolve(__dirname, "../node_modules/.bin/tsx");
   const webPort = parseWebPortArg() || port + 1;
 

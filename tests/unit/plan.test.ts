@@ -12,6 +12,10 @@ import {
 import { createPlanCreateTool, createPlanPauseTool, createPlanReviseTool } from "../../src/tools/plan.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 import { createTempWorkspace } from "../helpers/temp-workspace.js";
+import { PluginManager } from "../../src/plugin-manager.js";
+import { loadConfig } from "../../src/config.js";
+import { MessageHistory } from "../../src/history.js";
+import { FakeModelClient } from "../helpers/fake-model-client.js";
 
 describe("session plans", () => {
   const turnId = "11111111-1111-4111-8111-111111111111";
@@ -79,6 +83,38 @@ describe("session plans", () => {
     registry.register(createPlanCreateTool(workspace, () => ({ plan: { maxSteps: 4 } }) as never));
     expect(registry.getDefinitions({ mode: "chat" }, "normal")).toEqual([]);
     expect(registry.getDefinitions({ mode: "chat" }, "plan")).toEqual([expect.objectContaining({ name: "plan_create" })]);
+  });
+
+  it("allows read-only discovery before planning and gates side effects until a step starts", async () => {
+    const workspace = setup();
+    const manager = new PluginManager(workspace);
+    await manager.loadCorePlugins();
+    manager.setRuntimeDeps(loadConfig(workspace), new FakeModelClient([]), new MessageHistory(), "plan-session");
+    manager.setExecutionMode("plan-session", "plan");
+    manager.setTurnId("plan-session", turnId);
+    const names = () => manager.getToolDefinitions({ mode: "chat" }, "plan", "plan-session").map((tool) => tool.name);
+
+    try {
+      expect(names()).toEqual(expect.arrayContaining(["plan_create", "file_read", "web_search", "memory_search", "profile_read", "skill_list"]));
+      for (const name of ["file_write", "file_edit", "bash", "skill_use", "sub_agent_run"]) expect(names()).not.toContain(name);
+      expect(await manager.callOnBeforeTool("file_read", {}, 1, "plan-session")).toEqual({});
+      expect(await manager.callOnBeforeTool("file_write", {}, 1, "plan-session")).toEqual({
+        abort: "计划模式执行写入或有副作用的工具前必须先调用 plan_create",
+      });
+
+      createSessionPlan(workspace, "plan-session", turnId, ["修改实现", "运行测试"]);
+      expect(names()).toEqual(expect.arrayContaining(["plan_update", "plan_revise", "file_read", "memory_search"]));
+      for (const name of ["plan_create", "file_write", "bash", "skill_use"]) expect(names()).not.toContain(name);
+      expect(await manager.callOnBeforeTool("file_read", {}, 1, "plan-session")).toEqual({});
+      expect((await manager.callOnBeforeTool("file_write", {}, 1, "plan-session")).abort).toContain("plan_update");
+
+      updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
+      expect(names()).toEqual(expect.arrayContaining(["file_read", "file_write", "bash", "skill_use", "plan_update"]));
+      expect(names()).not.toContain("plan_create");
+      expect(await manager.callOnBeforeTool("file_write", {}, 1, "plan-session")).toEqual({});
+    } finally {
+      await manager.destroy();
+    }
   });
 
   it("persists a user pause and resolves it from a later turn", async () => {

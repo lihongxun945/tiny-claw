@@ -756,6 +756,7 @@ export function createMemoryListTool(workspacePath: string): Tool {
   return {
     name: "memory_list",
     description: "列出长期记忆摘要索引。当用户询问你记住了什么、或者你想回顾已有记忆时使用",
+    effect: "read",
     inputSchema: {
       type: "object" as const,
       properties: {},
@@ -770,6 +771,7 @@ export function createMemoryReadTool(workspacePath: string): Tool {
   return {
     name: "memory_read",
     description: "读取指定长期记忆的完整内容。已知记忆名称且需要详细内容时使用",
+    effect: "read",
     inputSchema: {
       type: "object" as const,
       properties: {

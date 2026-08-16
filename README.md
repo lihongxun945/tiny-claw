@@ -88,7 +88,7 @@ npm install
 
 #### 配置模型
 
-首次启动 Gateway 时，如果 workspace 中没有 `config.json`，tiny-claw 会自动生成一份完整的默认配置。可以直接在 WebUI 的“配置”页面填写 API Key、模型、搜索、权限、记忆、Sub-agent 和插件等全部设置。
+首次启动 CLI 或 Gateway 时，如果 workspace 中没有 `config.json`，tiny-claw 会自动生成一份完整的默认配置。可以直接编辑该文件，或在 WebUI 的“配置”页面填写 API Key、模型、搜索、权限、记忆、Sub-agent 和插件等全部设置。
 
 也可以在启动前手动复制配置模板：
 
@@ -153,7 +153,6 @@ SearXNG 示例：
 源码环境推荐使用 Gateway + WebUI 模式：
 
 ```bash
-npm run web:build
 npm run gateway -- --port 3000
 ```
 
@@ -165,7 +164,7 @@ http://localhost:3001
 
 启动后即可在 WebUI 中创建会话并与 Agent 对话。
 
-注意：`npm run gateway` 会以 daemon 模式启动 Gateway。daemon 模式只有在 `web/dist/index.html` 已存在时才会启动 WebUI 静态服务；首次启动、刚拉代码或清理过构建产物后，需要先执行 `npm run web:build`，再启动或重启 Gateway。否则可能只启动了 Gateway API，`http://localhost:3001` 会提示无法访问。
+`npm run gateway` 会以 daemon 模式启动 Gateway。若 `web/dist/index.html` 不存在，启动命令会先自动安装 WebUI 依赖并完成构建；构建失败时 Gateway 不会启动，并保留 npm/Vite 的原始错误输出。已有构建产物时会直接启动，不重复构建。
 
 ## 配置参考
 

@@ -218,6 +218,7 @@ export function createWebSearchTool(configOrLoader: Config | (() => Config)): To
   return {
     name: "web_search",
     description,
+    effect: "read",
     inputSchema: {
       type: "object",
       properties: {

@@ -10,6 +10,7 @@ export function createProjectTreeTool(workspacePath: string, getConfig: () => Co
   return {
     name: "project_tree",
     description: "读取当前项目的目录树。仅在项目会话中可用，自动跳过依赖、版本库和常见构建目录。",
+    effect: "read",
     isAvailable: (context) => context.mode === "project",
     inputSchema: {
       type: "object",

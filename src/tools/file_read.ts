@@ -10,6 +10,7 @@ export function createFileReadTool(workspacePath: string, getConfig: () => Confi
   return {
     name: "file_read",
     description: "读取文件内容，返回带行号的文本。支持按行号范围读取。",
+    effect: "read",
     inputSchema: {
       type: "object",
       properties: {

@@ -6,7 +6,8 @@ import { createSessionMeta } from "./session-store.js";
 import { inspectProject } from "./project.js";
 import type { SessionContext } from "./types.js";
 import { PluginManager } from "./plugin-manager.js";
-import { resolveWorkspacePath } from "./workspace/workspace.js";
+import { ensureConfigFile } from "./config.js";
+import { ensureWorkspace, resolveWorkspacePath } from "./workspace/workspace.js";
 
 function parseWorkspaceArg(): string | undefined {
   const idx = process.argv.indexOf("--workspace");
@@ -27,6 +28,8 @@ function parseProjectArg(): string | undefined {
 async function main() {
   const workspacePath = resolveWorkspacePath(parseWorkspaceArg());
   const projectRoot = parseProjectArg();
+  ensureWorkspace(workspacePath);
+  ensureConfigFile(workspacePath);
   const pm = new PluginManager(workspacePath);
   await pm.loadCorePlugins();
   let context: SessionContext = { mode: "chat" };

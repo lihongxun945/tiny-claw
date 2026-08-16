@@ -145,9 +145,9 @@ WebUI 先调用 `/projects/inspect` 检查目录，选择成功后立即通过 `
 
 `core-plan` 插件通过 `onBuildTurnPrompt` 注入不进入历史记录的本轮计划规则，并负责计划工具、状态机及 `GET /plan?session_id=...` 恢复接口。每轮消息生成独立 `turnId`，消息和 Hook 只把该标识作为内部元数据使用，调用模型前会将其剥离。计划原子写入 `sessions/<session>/plans/<turnId>.json`，步骤状态为 pending、in_progress、completed、failed、skipped、waiting_approval、waiting_user；同一时间只能有一个执行中步骤且必须按顺序推进。需要审批时插件把当前步骤切换到 waiting_approval，恢复工具执行前切回 in_progress；需要用户确认或补充信息时，模型通过 `plan_pause` 将步骤持久化为 waiting_user，下一轮用户回复后继续原计划，Gateway 重启不会丢失暂停状态。迭代上限和执行错误会明确标记当前步骤失败。
 
-计划模式不强制纯文本问答创建空计划。初次模型调用可以在“直接回答”和“调用 `plan_create`”之间选择：不需要任何工具时直接返回文本，不写入计划文件也不显示进度；需要工具执行时仍必须先创建计划。一旦本轮创建或继承了计划，完成、暂停和失败校验继续强制执行。
+计划模式不强制纯文本问答创建空计划。初次模型调用可以直接回答、调用只读工具补充信息，或调用 `plan_create`：不需要执行任务时可直接返回文本，不写入计划文件也不显示进度；写入或其他有副作用的工具仍必须等到计划创建且步骤开始后才能执行。一旦本轮创建或继承了计划，完成、暂停和失败校验继续强制执行。
 
-计划插件通过通用 `onFilterToolDefinitions` 钩子按持久化状态限制模型可见工具：创建计划前只暴露 `plan_create`；计划存在但当前步骤尚未开始时只暴露 `plan_update` 和 `plan_revise`；步骤进入 `in_progress` 后才开放普通执行工具及其余计划控制工具。`onBeforeTool` 仍保留相同状态校验，防止绕过模型工具定义直接执行。插件还通过 `onBeforeModelCall.reportStatus` 推送“生成计划、准备步骤、执行步骤、整理结果”等临时状态，状态不写入会话历史。
+计划插件通过通用 `onFilterToolDefinitions` 钩子按持久化状态限制模型可见工具。工具可声明 `effect: "read" | "write"`，未声明时按有副作用处理：创建计划前允许使用显式只读工具收集制定可靠计划所需的信息，同时暴露 `plan_create`；计划存在但当前步骤尚未开始时允许只读工具以及 `plan_update`、`plan_revise`；步骤进入 `in_progress` 后才开放写入和其他有副作用的执行工具。`skill_use` 可能运行技能中的动态命令，因此不属于只读工具。`onBeforeTool` 仍保留相同阶段校验，防止绕过模型工具定义直接执行。插件还通过 `onBeforeModelCall.reportStatus` 推送“生成计划、准备步骤、执行步骤、整理结果”等临时状态，状态不写入会话历史。
 
 复杂任务允许渐进式计划：模型先创建包含调研步骤的粗粒度计划，在明确现状和约束后调用 `plan_revise` 整体替换末尾连续的 pending 步骤。已经开始或结束的步骤原样保留，新步骤使用不复用的递增 ID，计划 `revision` 随每次调整递增；调整后的总步骤数继续受 `plan.maxSteps` 限制。WebUI 收到 `plan_revise` 工具结果后立即重新读取持久化计划。
 
@@ -163,7 +163,7 @@ WebUI 以单条助手消息作为工具调用的展示边界。同一轮出现�
 
 仓库提供两个配置示例：`config.simple.example.json` 是推荐入门配置，`config.all.example.json` 是完整配置参考。实际运行时只读取 `workspace/config.json`。
 
-Gateway 和 AgentSession 启动时会调用 `ensureConfigFile()`：配置文件不存在时生成完整默认配置，已存在时绝不覆盖。远程模型与本地模型可分别启用，同时启用时模型工厂固定优先选择远程模型；仅启用本地模型时不要求 API Key。本地模型目录、显式后台下载、字节级进度和独立连通性测试由 `core-local-models` 插件提供，GGUF 文件及清单保存在 `workspace/models/`。目录覆盖 Qwen3.5 与 Gemma 4 的不同参数规模，WebUI 通过插件路由动态读取，不维护独立的硬编码型号列表。选择本地模型不会触发下载，只有调用下载路由后才开始。每个本地模型在目录中声明建议内存、推荐上下文与模型上限，运行时和 `core-compress` 使用同一个实际上下文值，防止压缩逻辑按远程模型窗口计算而让本地推理溢出。配置 API 保存后会释放空闲会话，使模型与上下文配置在下一次消息时重新加载。
+CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensureConfigFile()`，AgentSession 仍保留幂等兜底：配置文件不存在时生成完整默认配置，已存在时绝不覆盖。远程模型与本地模型可分别启用，同时启用时模型工厂固定优先选择远程模型；仅启用本地模型时不要求 API Key。本地模型目录、显式后台下载、字节级进度和独立连通性测试由 `core-local-models` 插件提供，GGUF 文件及清单保存在 `workspace/models/`。目录覆盖 Qwen3.5 与 Gemma 4 的不同参数规模，WebUI 通过插件路由动态读取，不维护独立的硬编码型号列表。选择本地模型不会触发下载，只有调用下载路由后才开始。每个本地模型在目录中声明建议内存、推荐上下文与模型上限，运行时和 `core-compress` 使用同一个实际上下文值，防止压缩逻辑按远程模型窗口计算而让本地推理溢出。配置 API 保存后会释放空闲会话，使模型与上下文配置在下一次消息时重新加载。
 
 本地模型适配器在模型首次输出工具调用时立即终止当前次生成，只把工具调用交回 Agent Loop；它不会向模型注入占位工具结果。工具实际执行并返回真实结果后，Agent Loop 才开始下一次模型调用，确保等待审批期间不会生成基于虚假结果的回答。
 
@@ -689,7 +689,7 @@ Gateway 是一个 HTTP 服务器，让外部客户端（Web UI、聊天机器人
 
 **会话管理：** 通过 `session_id` 复用会话，30 分钟无活动自动清理。
 
-**静态文件服务：** Gateway 启动时自动在独立端口（默认 gateway 端口 +1，可通过 `--web-port` 指定）启动 Web UI 服务器。若 `web/dist/` 存在（已构建前端），提供静态文件 + 代理 API 请求到 gateway；若不存在且非 daemon 模式，自动启动 Vite dev server。
+**静态文件服务：** Gateway 启动时自动在独立端口（默认 gateway 端口 +1，可通过 `--web-port` 指定）启动 Web UI 服务器。daemon 父进程在派生后台子进程前检查 `web/dist/index.html`，缺失时同步执行现有 `web:build` 脚本；只有构建成功且产物存在才启动 Gateway，失败则保留构建输出并终止启动。已有构建产物时直接提供静态文件并代理 API 请求；非 daemon 模式缺少构建产物时仍可启动 Vite dev server。
 
 ### Web UI
 
@@ -729,7 +729,7 @@ Web UI 按 session 保存消息、流式文本、工具调用、运行状态和�
 
 **开发模式：** `npm run web:dev` 启动 Vite dev server（:5173），通过代理转发 API 请求到 Gateway（:3000）。
 
-**生产模式：** `npm run web:build` 构建到 `web/dist/`，Gateway 启动时自动在独立端口启动 Web UI 服务器并代理 API 请求。默认 `http://localhost:3001`（可通过 `--web-port` 指定）。
+**生产模式：** `npm run web:build` 可手动构建到 `web/dist/`；daemon 启动时若产物缺失也会自动完成该构建。Gateway 随后在独立端口启动 Web UI 服务器并代理 API 请求。默认 `http://localhost:3001`（可通过 `--web-port` 指定）。
 
 ### 插件系统
 
