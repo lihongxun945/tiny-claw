@@ -711,7 +711,7 @@ web/
 
 **SSE 消费：** POST /chat 返回 SSE 流，无法使用 `EventSource`（仅支持 GET）。使用 `fetch` + `ReadableStream` 手动解析 SSE 帧，实现为 async generator。
 
-Web UI 按 session 保存消息、流式文本、工具调用、运行状态和中止控制器。切换会话或进入其他页签不会关闭仍在运行的 SSE；流事件继续写入其所属 session，返回该会话时可恢复处理中状态和已有输出。“停止”只中止当前会话。刷新页面后的任务重连不在这一前端状态机制的范围内。
+Web UI 按 session 保存消息、流式文本、工具调用、运行状态和中止控制器。切换会话或进入其他页签不会关闭仍在运行的 SSE；流事件继续写入其所属 session，返回该会话时可恢复处理中状态和已有输出。“停止”只中止当前会话。刷新页面后的任务重连不在这一前端状态机制的范围内。助手消息由 ReactMarkdown 渲染，围栏代码块通过共享的 highlight.js 语言注册表执行语法高亮；项目 Diff 视图复用同一高亮模块，未知或未标注语言使用自动识别。
 
 Web UI 的主题状态只属于客户端展示偏好，不进入 Gateway 配置或 Session 数据。首次加载优先读取浏览器 `localStorage` 中的 `tiny-claw-theme`，没有有效值时使用 `prefers-color-scheme`；用户通过侧栏切换后持久化为 `light` 或 `dark`。`index.html` 在 React 挂载前同步设置根节点的 `data-theme`，避免页面先以浅色渲染再切换；组件样式通过语义化 CSS 变量响应主题。
 

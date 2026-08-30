@@ -5,6 +5,7 @@ import type { Message } from "../types.js";
 import ImageLightbox from "./ImageLightbox.js";
 import ToolCallBlock from "./ToolCallBlock.js";
 import ToolCallGroup from "./ToolCallGroup.js";
+import SyntaxHighlightedPre from "./SyntaxHighlightedPre.js";
 
 interface Props {
   message: Message;
@@ -71,6 +72,7 @@ export default function MessageBubble({ message, isStreaming, toolGroupExpanded,
                   <Markdown
                     remarkPlugins={[remarkGfm]}
                     components={{
+                      pre: SyntaxHighlightedPre,
                       table: ({ children }) => (
                         <div className="markdown-table-wrap">
                           <table>{children}</table>

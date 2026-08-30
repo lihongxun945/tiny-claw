@@ -55,6 +55,30 @@ test("renders markdown tables from persisted messages", async ({ page }) => {
   await expect(table.getByRole("cell", { name: "web_search" })).toBeVisible();
 });
 
+test("syntax highlights fenced code in assistant messages", async ({ page }) => {
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({ json: {
+      sessions: [{ id: "code-session", lastActivity: Date.now(), preview: "code", context: { mode: "chat" } }],
+    } });
+  });
+  await page.route("**/history/sessions/code-session/messages", async (route) => {
+    await route.fulfill({ json: { messages: [{
+      role: "assistant",
+      text: "```typescript\nconst greeting: string = \"hello\";\n```",
+      toolCalls: [],
+      timestamp: Date.now(),
+    }] } });
+  });
+
+  await page.goto("/");
+  await page.getByText("code-ses").click();
+
+  const code = page.locator(".message.assistant pre code.hljs.language-typescript");
+  await expect(code).toBeVisible();
+  await expect(code.locator(".hljs-keyword")).toHaveText("const");
+  await expect(code.locator(".hljs-string")).toHaveText('"hello"');
+});
+
 test("shows a stop button while streaming and cancels the request", async ({ page }) => {
   await page.route("**/history/sessions", async (route) => {
     await route.fulfill({ json: { sessions: [] } });
