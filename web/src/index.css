@@ -23,11 +23,42 @@
   --warning: #b7791f;
   --warning-soft: #fffaf0;
   --code: #181a1f;
+  --sidebar: rgba(252, 252, 250, 0.96);
+  --toolbar: rgba(255, 255, 255, 0.92);
+  --user-text: #332d7f;
+  --inline-code-text: #4943b6;
+  --danger-soft: #fff0f0;
   --radius-sm: 7px;
   --radius: 11px;
   --radius-lg: 16px;
   --shadow-composer: 0 12px 36px rgba(26, 26, 26, 0.08), 0 2px 8px rgba(26, 26, 26, 0.04);
   font-synthesis: none;
+}
+
+:root[data-theme="dark"] {
+  --canvas: #111113;
+  --surface: #19191c;
+  --surface-subtle: #222226;
+  --surface-active: rgba(139, 132, 255, 0.16);
+  --text: #f1f1f3;
+  --text-secondary: #b3b3ba;
+  --text-tertiary: #7f7f89;
+  --border: #303035;
+  --border-strong: #45454d;
+  --accent: #8b84ff;
+  --accent-hover: #a39dff;
+  --accent-soft: rgba(139, 132, 255, 0.16);
+  --success: #67d982;
+  --danger: #ff7a7a;
+  --warning: #f2bd65;
+  --warning-soft: rgba(242, 189, 101, 0.12);
+  --code: #0d0f13;
+  --sidebar: rgba(21, 21, 23, 0.96);
+  --toolbar: rgba(25, 25, 28, 0.92);
+  --user-text: #dedbff;
+  --inline-code-text: #b9b4ff;
+  --danger-soft: rgba(255, 122, 122, 0.12);
+  --shadow-composer: 0 12px 36px rgba(0, 0, 0, 0.34), 0 2px 8px rgba(0, 0, 0, 0.22);
 }
 
 html, body, #root {
@@ -72,7 +103,7 @@ summary:focus-visible {
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
-  background: rgba(252, 252, 250, 0.96);
+  background: var(--sidebar);
 }
 
 .sidebar-header {
@@ -262,7 +293,7 @@ summary:focus-visible {
 }
 
 .session-item .delete-btn:hover {
-  background: #fff0f0;
+  background: var(--danger-soft);
   color: var(--danger);
 }
 
@@ -330,7 +361,7 @@ summary:focus-visible {
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--toolbar);
 }
 
 .chat-title {
@@ -615,7 +646,7 @@ summary:focus-visible {
   padding: 10px 14px;
   border-radius: 14px 14px 4px 14px;
   background: var(--accent-soft);
-  color: #332d7f;
+  color: var(--user-text);
 }
 
 .message.assistant .message-content {
@@ -673,7 +704,7 @@ summary:focus-visible {
   padding: 2px 5px;
   border-radius: 5px;
   background: var(--surface-subtle);
-  color: #4943b6;
+  color: var(--inline-code-text);
   font-size: 12px;
 }
 
@@ -2337,6 +2368,67 @@ summary:focus-visible {
   .command-usage {
     display: none;
   }
+}
+
+:root[data-theme="dark"] .chat-input {
+  background: linear-gradient(to top, var(--surface) 72%, rgba(25, 25, 28, 0));
+}
+
+:root[data-theme="dark"] .model-warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+:root[data-theme="dark"] .model-installed-state,
+:root[data-theme="dark"] .memory-state.enabled,
+:root[data-theme="dark"] .project-toolbar-badge {
+  color: var(--success);
+}
+
+:root[data-theme="dark"] .memory-state.enabled,
+:root[data-theme="dark"] .project-toolbar-badge {
+  background: rgba(103, 217, 130, 0.12);
+}
+
+:root[data-theme="dark"] .memory-state.disabled {
+  background: var(--surface-subtle);
+}
+
+:root[data-theme="dark"] .project-picker-select-btn {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--accent);
+}
+
+:root[data-theme="dark"] .project-picker-select-btn:hover:not(:disabled),
+:root[data-theme="dark"] .project-group.active,
+:root[data-theme="dark"] .project-toolbar-action:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+:root[data-theme="dark"] .project-delete-btn:hover:not(:disabled),
+:root[data-theme="dark"] .project-toolbar-close:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+:root[data-theme="dark"] .project-toolbar {
+  background: var(--toolbar);
+}
+
+:root[data-theme="dark"] .project-changes-bar,
+:root[data-theme="dark"] .project-changes-bar:hover,
+:root[data-theme="dark"] .project-changes-bar.active {
+  border-bottom-color: #66552f;
+  background: linear-gradient(135deg, #2c281d 0%, #35301f 100%);
+  color: #f0d995;
+}
+
+:root[data-theme="dark"] .project-changes-bar-count,
+:root[data-theme="dark"] .project-changes-bar-preview,
+:root[data-theme="dark"] .project-changes-bar-toggle {
+  color: #f0d995;
 }
 
 @media (prefers-reduced-motion: reduce) {

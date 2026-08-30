@@ -10,6 +10,7 @@ import ConfigEditor from "./components/ConfigEditor.js";
 import MemoryManager from "./components/MemoryManager.js";
 import ProjectView from "./components/ProjectView.js";
 import PlanProgress from "./components/PlanProgress.js";
+import { readInitialTheme, saveTheme, type Theme } from "./lib/theme.js";
 
 type View = "chat" | "project" | "memory" | "logs" | "config";
 
@@ -77,6 +78,7 @@ export default function App() {
   const [projectPermissionMode, setProjectPermissionMode] = useState<PermissionMode>("auto");
   const [permissionSaving, setPermissionSaving] = useState(false);
   const [permissionError, setPermissionError] = useState("");
+  const [theme, setTheme] = useState<Theme>(readInitialTheme);
   const activeSessionRef = useRef<string | null>(activeSessionId);
   const viewRef = useRef<View>(view);
   const lastChatSessionRef = useRef<string | null>(null);
@@ -85,6 +87,10 @@ export default function App() {
   const sessionModesRef = useRef(new Map<string, ExecutionMode>());
 
   const activeState = activeSessionId ? sessionStates[activeSessionId] ?? emptySessionState() : emptySessionState();
+
+  useEffect(() => {
+    saveTheme(theme);
+  }, [theme]);
 
   useEffect(() => {
     fetchConfig().then((config) => {
@@ -643,6 +649,8 @@ export default function App() {
         onViewChange={handleViewChange}
         refreshKey={sidebarRefreshKey}
         projectRoot={projectRoot}
+        theme={theme}
+        onThemeChange={setTheme}
       />
       <div className="chat-area">
         {view === "chat" && (

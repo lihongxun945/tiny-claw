@@ -164,6 +164,8 @@ http://localhost:3001
 
 启动后即可在 WebUI 中创建会话并与 Agent 对话。
 
+WebUI 支持浅色和深色主题，可在左侧栏底部切换。首次打开时跟随系统外观，手动选择后会保存在当前浏览器中；桌面版启动页同样会跟随系统深浅色设置。
+
 `npm run gateway` 会以 daemon 模式启动 Gateway。若 `web/dist/index.html` 不存在，启动命令会先自动安装 WebUI 依赖并完成构建；构建失败时 Gateway 不会启动，并保留 npm/Vite 的原始错误输出。已有构建产物时会直接启动，不重复构建。
 
 ## 配置参考

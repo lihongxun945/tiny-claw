@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell, Tray } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
@@ -115,7 +115,7 @@ async function launchDesktop(): Promise<void> {
     minWidth: 960,
     minHeight: 640,
     title: "tiny-claw",
-    backgroundColor: "#f7f7f5",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#111113" : "#f7f7f5",
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

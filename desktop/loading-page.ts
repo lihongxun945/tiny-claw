@@ -17,6 +17,11 @@ export function createLoadingPageUrl(logoDataUrl: string): string {
         font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         -webkit-font-smoothing: antialiased;
       }
+      @media (prefers-color-scheme: dark) {
+        body { background: #111113; color: #f1f1f3; }
+        .status { color: #aaaab2; }
+        .spinner { border-color: #35353d; border-top-color: #8b84ff; }
+      }
       main {
         display: flex;
         flex-direction: column;

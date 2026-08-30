@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import type { Session } from "../types.js";
 import { fetchHistorySessions, deleteSession } from "../lib/api.js";
+import type { Theme } from "../lib/theme.js";
 
 type View = "chat" | "project" | "memory" | "logs" | "config";
 type SidebarMode = "chat" | "project";
@@ -18,9 +19,11 @@ interface Props {
   onViewChange: (view: View) => void;
   refreshKey: number;
   projectRoot: string | null;
+  theme: Theme;
+  onThemeChange: (theme: Theme) => void;
 }
 
-export default function SessionSidebar({ activeSessionId, currentView, sidebarMode, onSelectSession, onNewChat, onNewProject, onNewProjectChat, onSessionDeleted, onProjectDeleted, onViewChange, refreshKey, projectRoot }: Props) {
+export default function SessionSidebar({ activeSessionId, currentView, sidebarMode, onSelectSession, onNewChat, onNewProject, onNewProjectChat, onSessionDeleted, onProjectDeleted, onViewChange, refreshKey, projectRoot, theme, onThemeChange }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [deletingProjectRoot, setDeletingProjectRoot] = useState<string | null>(null);
@@ -209,6 +212,12 @@ export default function SessionSidebar({ activeSessionId, currentView, sidebarMo
           onClick={() => onViewChange("config")}
           aria-label="配置"
         ><span aria-hidden="true">⚙</span>设置</button>
+        <button
+          className="nav-btn theme-toggle"
+          onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")}
+          aria-label={theme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
+          title={theme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
+        ><span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>{theme === "dark" ? "浅色模式" : "深色模式"}</button>
       </div>
     </div>
   );

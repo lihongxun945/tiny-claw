@@ -95,7 +95,7 @@ desktop/                # Electron macOS 桌面壳
 
 ## 桌面应用
 
-macOS 桌面版使用 Electron 承载现有 Web UI，不改变 Agent Loop 和插件边界。Electron 主进程创建窗口后先加载内置浅色启动页，展示应用 Logo 和服务启动状态；同时启动独立 Gateway 子进程，Gateway 就绪后在同一窗口切换到本机随机端口上的 Web UI。窗口不直接开放 Node.js 能力。受 sandbox 和 context isolation 保护的 preload 只暴露 `selectProjectDirectory()`，通过固定 IPC 请求调用系统目录选择器；主进程仅接受当前主窗口的请求。浏览器版没有该桥接能力，继续使用手动路径输入。桌面主进程创建系统菜单栏图标，关闭主窗口时只隐藏窗口并保持 Gateway 常驻；点击菜单栏图标、Dock 图标或再次启动应用会恢复并聚焦现有窗口。只有通过菜单栏“退出 tiny-claw”、`Command+Q` 等显式退出应用时，主进程才向 Gateway 发送 `SIGTERM`，等待其销毁插件并关闭 HTTP 服务。
+macOS 桌面版使用 Electron 承载现有 Web UI，不改变 Agent Loop 和插件边界。Electron 主进程创建窗口后先加载内置启动页，启动页与窗口背景跟随操作系统深浅色外观，展示应用 Logo 和服务启动状态；同时启动独立 Gateway 子进程，Gateway 就绪后在同一窗口切换到本机随机端口上的 Web UI。窗口不直接开放 Node.js 能力。受 sandbox 和 context isolation 保护的 preload 只暴露 `selectProjectDirectory()`，通过固定 IPC 请求调用系统目录选择器；主进程仅接受当前主窗口的请求。浏览器版没有该桥接能力，继续使用手动路径输入。桌面主进程创建系统菜单栏图标，关闭主窗口时只隐藏窗口并保持 Gateway 常驻；点击菜单栏图标、Dock 图标或再次启动应用会恢复并聚焦现有窗口。只有通过菜单栏“退出 tiny-claw”、`Command+Q` 等显式退出应用时，主进程才向 Gateway 发送 `SIGTERM`，等待其销毁插件并关闭 HTTP 服务。
 
 桌面版 workspace 默认位于 `~/Library/Application Support/tiny-claw/workspace`。首次启动由统一配置初始化器生成不含真实密钥的完整默认配置，应用升级和重新安装不会覆盖已有配置、会话、记忆、技能及插件。开发模式和 CLI/Gateway 模式仍使用原有 `./workspace` 或显式指定的目录。
 
@@ -712,6 +712,8 @@ web/
 **SSE 消费：** POST /chat 返回 SSE 流，无法使用 `EventSource`（仅支持 GET）。使用 `fetch` + `ReadableStream` 手动解析 SSE 帧，实现为 async generator。
 
 Web UI 按 session 保存消息、流式文本、工具调用、运行状态和中止控制器。切换会话或进入其他页签不会关闭仍在运行的 SSE；流事件继续写入其所属 session，返回该会话时可恢复处理中状态和已有输出。“停止”只中止当前会话。刷新页面后的任务重连不在这一前端状态机制的范围内。
+
+Web UI 的主题状态只属于客户端展示偏好，不进入 Gateway 配置或 Session 数据。首次加载优先读取浏览器 `localStorage` 中的 `tiny-claw-theme`，没有有效值时使用 `prefers-color-scheme`；用户通过侧栏切换后持久化为 `light` 或 `dark`。`index.html` 在 React 挂载前同步设置根节点的 `data-theme`，避免页面先以浅色渲染再切换；组件样式通过语义化 CSS 变量响应主题。
 
 **记忆管理：** Web UI 提供"记忆"页签，支持搜索、刷新、查看、编辑、保存、删除、启用/禁用长期记忆。面板直接调用 `/memory` API，不通过 agent tool，以避免管理操作被模型行为影响。
 

@@ -6,6 +6,19 @@
     <link rel="icon" type="image/png" href="/icon.png" />
     <link rel="apple-touch-icon" href="/icon.png" />
     <title>tiny-claw</title>
+    <script>
+      (() => {
+        let stored = null;
+        try {
+          stored = localStorage.getItem("tiny-claw-theme");
+        } catch {}
+        const theme = stored === "light" || stored === "dark"
+          ? stored
+          : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
