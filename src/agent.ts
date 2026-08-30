@@ -97,6 +97,25 @@ export class AgentSession {
     this.activeController.abort();
     return true;
   }
+  private async *runTurnEndHooks(
+    reason: "completed" | "approval_required" | "iteration_limit",
+    iteration: number,
+  ): AsyncGenerator<AgentEvent> {
+    const queue = new EventQueue();
+    const promise = this.pluginManager.callOnTurnEnd(
+      reason,
+      iteration,
+      this.id,
+      (status) => queue.push({ type: "status", ...status }),
+    ).finally(() => queue.close());
+    let event = await queue.next();
+    while (!event.done) {
+      yield event.value;
+      event = await queue.next();
+    }
+    await promise;
+  }
+
 
   private async notifyError(error: Error, iteration: number): Promise<void> {
     try {
@@ -226,13 +245,13 @@ export class AgentSession {
       const result = await this.executeToolCall(pending.toolCall, controller, actor, agentIteration);
       yield { type: "tool_call", toolCallId: pending.toolCall.id, name: pending.toolCall.name, input: pending.toolCall.input };
       yield { type: "tool_result", toolCallId: pending.toolCall.id, name: pending.toolCall.name, result };
-      this.appendToolResult(pending.toolCall.id, result);
+      await this.appendToolResult(pending.toolCall.id, result);
 
       for (const skipped of pending.skippedToolCalls) {
         const skippedResult = JSON.stringify({
           error: "前一个工具调用需要授权，本工具调用已暂停执行。如仍需要，请重新发起该工具调用。",
         });
-        this.appendToolResult(skipped.id, skippedResult);
+        await this.appendToolResult(skipped.id, skippedResult);
       }
 
       yield* this.runModelLoop(controller, actor, agentIteration, "");
@@ -290,17 +309,31 @@ export class AgentSession {
       if (modifiedContext.messages !== context || modifiedContext.turnStartIndex !== turnStartIdx) {
         this.history.replaceWithCompressed(modifiedContext.messages, modifiedContext.turnStartIndex);
       }
+      const effectiveTurnPrompt = modifiedContext.systemPromptSuffix
+        ? `${turnPrompt}\n\n${modifiedContext.systemPromptSuffix}`
+        : turnPrompt;
+      const effectiveMessageTokenBudget = Math.min(
+        modifiedContext.messageTokenBudget,
+        calculateMessageTokenBudget(this.config, effectiveTurnPrompt, toolDefs),
+      );
 
-      const estimatedMessageTokens = estimateTokens(modifiedContext.messages);
-      if (estimatedMessageTokens > messageTokenBudget) {
+      const modelMessages = modifiedContext.derivedContext
+        ? [
+            ...modifiedContext.messages.slice(0, modifiedContext.turnStartIndex),
+            { role: "assistant" as const, content: modifiedContext.derivedContext },
+            ...modifiedContext.messages.slice(modifiedContext.turnStartIndex),
+          ]
+        : modifiedContext.messages;
+      const estimatedMessageTokens = estimateTokens(modelMessages);
+      if (estimatedMessageTokens > effectiveMessageTokenBudget) {
         const error = new Error(
-          `当前请求压缩后仍超过模型上下文限制（消息约 ${estimatedMessageTokens} tokens，预算 ${messageTokenBudget} tokens）。请缩小单次输入或工具读取范围。`,
+          `当前请求压缩后仍超过模型上下文限制（消息约 ${estimatedMessageTokens} tokens，预算 ${effectiveMessageTokenBudget} tokens）。请缩小单次输入或工具读取范围。`,
         );
         await this.notifyError(error, agentIteration);
         yield { type: "error", message: error.message };
         return;
       }
-      const toolChainError = validateToolMessageChains(modifiedContext.messages);
+      const toolChainError = validateToolMessageChains(modelMessages);
       if (toolChainError) {
         const error = new Error(`上下文压缩产生了无效的工具消息链：${toolChainError}`);
         await this.notifyError(error, agentIteration);
@@ -315,10 +348,15 @@ export class AgentSession {
         const eventQueue = new EventQueue();
         let chatError: string | null = null;
         const retryPrompt = attempt === 0
-          ? turnPrompt
-          : `${turnPrompt}\n\n上一次模型响应为空。请继续完成当前任务，必须返回可见文本或有效工具调用。`;
+          ? effectiveTurnPrompt
+          : `${effectiveTurnPrompt}\n\n上一次模型响应为空。请继续完成当前任务，必须返回可见文本或有效工具调用。`;
         const chatPromise = this.client.chat(
-          modifiedContext.messages.map(({ _turnId: _ignoredTurnId, ...message }) => message),
+          modelMessages.map(({
+            _turnId: _ignoredTurnId,
+            _messageId: _ignoredMessageId,
+            _sequence: _ignoredSequence,
+            ...message
+          }) => message),
           (delta) => {
             fullText += delta;
             eventQueue.push({ type: "text_delta", text: delta });
@@ -385,8 +423,8 @@ export class AgentSession {
 
       if (assistantContent.length > 0) {
         const assistantMsg: Message = { role: "assistant", content: assistantContent, _timestamp: Date.now(), _turnId: this.pluginManager.getTurnId(this.id) };
-        appendHistory(this.workspacePath, assistantMsg, this.id);
-        this.history.push(assistantMsg);
+        const persisted = await appendHistory(this.workspacePath, assistantMsg, this.id);
+        this.history.push(persisted);
       }
 
       // 8. After Iteration Hook
@@ -394,7 +432,7 @@ export class AgentSession {
 
       // 9. 无工具调用，结束
       if (response.toolCalls.length === 0) {
-        await this.pluginManager.callOnTurnEnd("completed", agentIteration, this.id);
+        for await (const event of this.runTurnEndHooks("completed", agentIteration)) yield event;
         yield { type: "done", text: fullText, reason: "completed" };
         return;
       }
@@ -419,12 +457,12 @@ export class AgentSession {
               turnId: this.pluginManager.getTurnId(this.id) ?? randomUUID(),
             });
           }
-          await this.pluginManager.callOnTurnEnd("approval_required", agentIteration, this.id);
+          for await (const event of this.runTurnEndHooks("approval_required", agentIteration)) yield event;
           yield { type: "done", text: fullText, reason: "approval_required" };
           return;
         }
 
-        this.appendToolResult(toolCall.id, result);
+        await this.appendToolResult(toolCall.id, result);
       }
     }
 
@@ -436,9 +474,9 @@ export class AgentSession {
         _timestamp: Date.now(),
         _turnId: this.pluginManager.getTurnId(this.id),
       };
-      appendHistory(this.workspacePath, noticeMessage, this.id);
-      this.history.push(noticeMessage);
-      await this.pluginManager.callOnTurnEnd("iteration_limit", agentIteration, this.id);
+      const persisted = await appendHistory(this.workspacePath, noticeMessage, this.id);
+      this.history.push(persisted);
+      for await (const event of this.runTurnEndHooks("iteration_limit", agentIteration)) yield event;
       yield { type: "text_delta", text: notice };
       yield { type: "done", text: `${fullText}${notice}`, reason: "iteration_limit" };
     }
@@ -487,15 +525,15 @@ export class AgentSession {
     );
   }
 
-  private appendToolResult(toolUseId: string, result: string): void {
+  private async appendToolResult(toolUseId: string, result: string): Promise<void> {
     const toolResult: ToolResultBlock = {
       type: "tool_result",
       tool_use_id: toolUseId,
       content: result,
     };
     const toolResultMsg: Message = { role: "user", content: [toolResult], _timestamp: Date.now(), _turnId: this.pluginManager.getTurnId(this.id) };
-    appendHistory(this.workspacePath, toolResultMsg, this.id);
-    this.history.push(toolResultMsg);
+    const persisted = await appendHistory(this.workspacePath, toolResultMsg, this.id);
+    this.history.push(persisted);
   }
 }
 

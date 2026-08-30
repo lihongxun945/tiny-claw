@@ -36,6 +36,10 @@ export type ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlo
 export interface Message {
   role: "user" | "assistant";
   content: string | ContentBlock[];
+  /** Session 内稳定的消息标识；旧消息读取时会生成确定性兼容 ID。 */
+  _messageId?: string;
+  /** Session 内从 1 开始单调递增的持久化序号。 */
+  _sequence?: number;
   _timestamp?: number;
   _turnId?: string;
 }
@@ -164,6 +168,14 @@ export interface SessionSummaryConfig {
   maxChars?: number;
   /** 摘要 LLM 输出的 token 上限（默认 10000），避免通用 complete 的 1024 限制 */
   maxOutputTokens?: number;
+  maxOperations?: number;
+  maxItemChars?: number;
+  maxSourcesPerOperation?: number;
+  checkpointDeltaThreshold?: number;
+  checkpointMaxChars?: number;
+  recallMaxResults?: number;
+  recallMaxOutputChars?: number;
+  recallMaxQueryChars?: number;
 }
 
 export interface AutoMemoryConfig {

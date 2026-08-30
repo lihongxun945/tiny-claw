@@ -194,19 +194,44 @@ describe("memory storage", () => {
       ...loadConfig(workspacePath),
       security: { mode: "allow" as const },
     });
+    const projectContext = {
+      sessionContext: { mode: "project" as const, project: { root: "/repo/current", name: "current" } },
+    };
     expect(await createMemorySaveTool(workspacePath, getConfig).execute({
       name: "tool-memory",
       content: "tool content",
       tags: ["tool"],
-      scope: "project",
       summary: "tool summary",
-    })).toBe("已保存记忆: tool-memory");
+    }, projectContext)).toBe("已保存记忆: tool-memory");
+    expect(getMemoryRecord(workspacePath, "tool-memory")?.scope).toBe("project:/repo/current");
     expect(await createMemoryAppendTool(workspacePath, getConfig).execute({
       name: "tool-memory",
       content: "more content",
-    })).toBe("已追加记忆: tool-memory");
-    expect(JSON.parse(await createMemoryListTool(workspacePath).execute({})).memories).toHaveLength(1);
-    expect(JSON.parse(await createMemoryReadTool(workspacePath).execute({ name: "tool-memory" })).content).toContain("more content");
-    expect(await createMemoryDeleteTool(workspacePath, getConfig).execute({ name: "tool-memory" })).toBe("已将记忆移入回收站: tool-memory");
+    }, projectContext)).toBe("已追加记忆: tool-memory");
+    expect(JSON.parse(await createMemoryListTool(workspacePath).execute({}, projectContext)).memories).toHaveLength(1);
+    expect(await createMemoryListTool(workspacePath).execute({})).toBe("暂无记忆");
+    expect(JSON.parse(await createMemoryReadTool(workspacePath).execute({ name: "tool-memory" }, projectContext)).content).toContain("more content");
+    expect(await createMemoryDeleteTool(workspacePath, getConfig).execute({ name: "tool-memory" }, projectContext)).toBe("已将记忆移入回收站: tool-memory");
+  });
+
+  it("allows project sessions to write global memories but rejects other project scopes", async () => {
+    const getConfig = () => ({ ...loadConfig(workspacePath), security: { mode: "allow" as const } });
+    const tool = createMemorySaveTool(workspacePath, getConfig);
+    const context = {
+      sessionContext: { mode: "project" as const, project: { root: "/repo/current", name: "current" } },
+    };
+
+    expect(await tool.execute({ name: "global-rule", content: "shared", scope: "global" }, context)).toBe("已保存记忆: global-rule");
+    expect(getMemoryRecord(workspacePath, "global-rule")?.scope).toBe("global");
+    expect(JSON.parse(await tool.execute({
+      name: "other-rule",
+      content: "forbidden",
+      scope: "project:/repo/other",
+    }, context))).toMatchObject({ error: "memory_scope_forbidden" });
+
+    saveMemory(workspacePath, "other-existing", "secret", { scope: "project:/repo/other" });
+    expect(JSON.parse(await createMemoryReadTool(workspacePath).execute({ name: "other-existing" }, context))).toMatchObject({
+      error: "memory_scope_forbidden",
+    });
   });
 });

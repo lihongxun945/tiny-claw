@@ -176,6 +176,11 @@ describe("loadConfig", () => {
     [{ memory: { maxItemChars: 2000, maxTotalChars: 1000 } }, "配置字段 memory.maxItemChars 不能大于 memory.maxTotalChars"],
     [{ sessionSummary: { enabled: "yes" } }, "配置字段 sessionSummary.enabled 必须是布尔值"],
     [{ sessionSummary: { persistent: "yes" } }, "配置字段 sessionSummary.persistent 必须是布尔值"],
+    [{ sessionSummary: { maxOperations: 0 } }, "配置字段 sessionSummary.maxOperations 超出允许范围"],
+    [{ sessionSummary: { maxItemChars: 0 } }, "配置字段 sessionSummary.maxItemChars 超出允许范围"],
+    [{ sessionSummary: { maxSourcesPerOperation: 0 } }, "配置字段 sessionSummary.maxSourcesPerOperation 超出允许范围"],
+    [{ sessionSummary: { checkpointDeltaThreshold: 0 } }, "配置字段 sessionSummary.checkpointDeltaThreshold 超出允许范围"],
+    [{ sessionSummary: { checkpointMaxChars: 999 } }, "配置字段 sessionSummary.checkpointMaxChars 超出允许范围"],
     [{ enabledPlugins: "feishu" }, "配置字段 enabledPlugins 必须是字符串数组"],
     [{ plugins: [] }, "配置字段 plugins 必须是对象"],
   ])("rejects invalid configuration", (overrides, message) => {

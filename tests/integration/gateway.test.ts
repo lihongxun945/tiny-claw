@@ -168,10 +168,10 @@ describe("Gateway HTTP API", () => {
     createSessionPlan(workspacePath, created.body.session.id, secondTurnId, ["检查", "输出"]);
     updateSessionPlanStep(workspacePath, created.body.session.id, secondTurnId, "step-1", "in_progress");
     const secondPlan = updateSessionPlanStep(workspacePath, created.body.session.id, secondTurnId, "step-1", "failed", "检查失败");
-    appendSessionMessage(workspacePath, created.body.session.id, { role: "user", content: "第一轮", _timestamp: 1, _turnId: firstTurnId });
-    appendSessionMessage(workspacePath, created.body.session.id, { role: "assistant", content: "第一轮结果", _timestamp: 2, _turnId: firstTurnId });
-    appendSessionMessage(workspacePath, created.body.session.id, { role: "user", content: "第二轮", _timestamp: 3, _turnId: secondTurnId });
-    appendSessionMessage(workspacePath, created.body.session.id, { role: "assistant", content: "第二轮结果", _timestamp: 4, _turnId: secondTurnId });
+    await appendSessionMessage(workspacePath, created.body.session.id, { role: "user", content: "第一轮", _timestamp: 1, _turnId: firstTurnId });
+    await appendSessionMessage(workspacePath, created.body.session.id, { role: "assistant", content: "第一轮结果", _timestamp: 2, _turnId: firstTurnId });
+    await appendSessionMessage(workspacePath, created.body.session.id, { role: "user", content: "第二轮", _timestamp: 3, _turnId: secondTurnId });
+    await appendSessionMessage(workspacePath, created.body.session.id, { role: "assistant", content: "第二轮结果", _timestamp: 4, _turnId: secondTurnId });
     const response = await json(`${gateway.webUrl}/plan?session_id=${encodeURIComponent(created.body.session.id)}`);
     expect(response).toEqual({ status: 200, body: { plans: [firstPlan, secondPlan] } });
     const history = await json(`${gateway.webUrl}/history/sessions/${encodeURIComponent(created.body.session.id)}/messages`);
@@ -328,9 +328,9 @@ describe("Gateway HTTP API", () => {
   });
 
   it("filters sub-agent sessions and deletes persisted session messages", async () => {
-    appendSessionMessage(workspacePath, "main", { role: "user", content: "main question", _timestamp: 2 });
-    appendSessionMessage(workspacePath, "main", { role: "assistant", content: "main answer", _timestamp: 3 });
-    appendSessionMessage(workspacePath, "sub:main:worker", { role: "user", content: "sub question", _timestamp: 4 });
+    await appendSessionMessage(workspacePath, "main", { role: "user", content: "main question", _timestamp: 2 });
+    await appendSessionMessage(workspacePath, "main", { role: "assistant", content: "main answer", _timestamp: 3 });
+    await appendSessionMessage(workspacePath, "sub:main:worker", { role: "user", content: "sub question", _timestamp: 4 });
 
     const sessions = await json(`${gateway.apiUrl}/history/sessions`);
     expect(sessions.body.sessions.map((session: { id: string }) => session.id)).toEqual(["main"]);
@@ -346,8 +346,8 @@ describe("Gateway HTTP API", () => {
 
   it("deletes persisted session messages for encoded session ids", async () => {
     const sessionId = "web/session?special#id";
-    appendSessionMessage(workspacePath, sessionId, { role: "user", content: "special question", _timestamp: 2 });
-    appendSessionMessage(workspacePath, sessionId, { role: "assistant", content: "special answer", _timestamp: 3 });
+    await appendSessionMessage(workspacePath, sessionId, { role: "user", content: "special question", _timestamp: 2 });
+    await appendSessionMessage(workspacePath, sessionId, { role: "assistant", content: "special answer", _timestamp: 3 });
 
     expect((await json(`${gateway.apiUrl}/history/sessions`)).body.sessions.map((session: { id: string }) => session.id)).toEqual([sessionId]);
 
@@ -358,7 +358,7 @@ describe("Gateway HTTP API", () => {
 
   it("proxies DELETE session requests without sending an empty body", async () => {
     const sessionId = "web-proxy-delete";
-    appendSessionMessage(workspacePath, sessionId, { role: "user", content: "delete through web proxy", _timestamp: 2 });
+    await appendSessionMessage(workspacePath, sessionId, { role: "user", content: "delete through web proxy", _timestamp: 2 });
 
     const deleted = await json(`${gateway.webUrl}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
     expect(deleted).toEqual({ status: 200, body: { deleted: true, deletedHistoryRecords: 1, deletedSessionState: false } });
@@ -382,13 +382,13 @@ describe("Gateway HTTP API", () => {
   });
 
   it("restores persisted tool results after a page refresh", async () => {
-    appendSessionMessage(workspacePath, "tool-history", { role: "user", content: "run pwd", _timestamp: 1 });
-    appendSessionMessage(workspacePath, "tool-history", {
+    await appendSessionMessage(workspacePath, "tool-history", { role: "user", content: "run pwd", _timestamp: 1 });
+    await appendSessionMessage(workspacePath, "tool-history", {
       role: "assistant",
       content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "pwd" } }],
       _timestamp: 2,
     });
-    appendSessionMessage(workspacePath, "tool-history", {
+    await appendSessionMessage(workspacePath, "tool-history", {
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "call-1", content: "{\"error\":\"bash 执行已禁用\"}" }],
       _timestamp: 3,
@@ -453,7 +453,7 @@ describe("Gateway HTTP API", () => {
 
     const record = readAttachment(workspacePath, "image-session", upload.body.attachment.id);
     expect(record).toBeDefined();
-    appendSessionMessage(workspacePath, "image-session", {
+    await appendSessionMessage(workspacePath, "image-session", {
       role: "user",
       content: [{ type: "text", text: "解释图片" }, attachmentToImageBlock(record!)],
     });
@@ -540,8 +540,8 @@ describe("Gateway HTTP API", () => {
   });
 
   it("reports context length for the active session", async () => {
-    appendSessionMessage(workspacePath, "ctx-session", { role: "user", content: "hello context", _timestamp: 1 });
-    appendSessionMessage(workspacePath, "ctx-session", { role: "assistant", content: [{ type: "text", text: "context reply" }], _timestamp: 2 });
+    await appendSessionMessage(workspacePath, "ctx-session", { role: "user", content: "hello context", _timestamp: 1 });
+    await appendSessionMessage(workspacePath, "ctx-session", { role: "assistant", content: [{ type: "text", text: "context reply" }], _timestamp: 2 });
 
     const events = await sse(`${gateway.apiUrl}/chat`, {
       method: "POST",

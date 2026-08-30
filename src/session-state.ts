@@ -34,6 +34,7 @@ export interface PersistedAutoMemoryTurn {
   user: string;
   assistant: string;
   at: string;
+  memoryScope?: string;
 }
 
 export interface PersistedAutoMemoryResult {
@@ -206,6 +207,7 @@ function sanitizeAutoMemoryTurns(value: unknown[]): PersistedAutoMemoryTurn[] {
       user: record.user,
       assistant: record.assistant,
       at,
+      memoryScope: typeof record.memoryScope === "string" && record.memoryScope ? record.memoryScope : undefined,
     });
   }
   return turns;

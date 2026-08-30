@@ -4,6 +4,7 @@ import { coreSubAgentPlugin } from "./sub-agent.js";
 import { corePromptsPlugin } from "./prompts.js";
 import { coreHistoryPlugin } from "./history.js";
 import { coreSessionSummaryPlugin } from "./session-summary.js";
+import { coreSessionRecallPlugin } from "./session-recall.js";
 import { coreAutoMemoryPlugin } from "./auto-memory.js";
 import { coreCompressPlugin } from "./compress.js";
 import { coreLoggerPlugin } from "./logger.js";
@@ -32,6 +33,7 @@ export const corePlugins: Plugin[] = [
   corePlanPlugin,
   coreHistoryPlugin,
   coreSessionSummaryPlugin,
+  coreSessionRecallPlugin,
   coreAutoMemoryPlugin,
   coreCompressPlugin,
   coreLoggerPlugin,

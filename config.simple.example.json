@@ -21,7 +21,15 @@
     "recentTurns": 3,
     "maxInputChars": 40000,
     "maxChars": 10000,
-    "maxOutputTokens": 10000
+    "maxOutputTokens": 10000,
+    "maxOperations": 32,
+    "maxItemChars": 1000,
+    "maxSourcesPerOperation": 8,
+    "checkpointDeltaThreshold": 20,
+    "checkpointMaxChars": 50000,
+    "recallMaxResults": 20,
+    "recallMaxOutputChars": 20000,
+    "recallMaxQueryChars": 500
   },
   "autoMemory": {
     "enabled": true,

@@ -75,9 +75,8 @@ describe("compressMessages (core-compress plugin)", () => {
     expect(prompt).toContain("不超过 5000 字");
     expect(prompt).toContain("[工具结果]");
     expect(prompt).not.toContain("TAIL_SHOULD_NOT_APPEAR");
-    expect(result).toHaveLength(1);
-    expect(result[0].content).toContain("[当前会话摘要]");
-    expect(result[0].content).toContain("压缩摘要");
+    expect(result).toBe("压缩摘要");
+    expect(result).not.toContain("[当前会话摘要]");
     expect(client.completeOptions[0]).toEqual({ maxTokens: 2048 });
   });
 
@@ -86,7 +85,7 @@ describe("compressMessages (core-compress plugin)", () => {
     client.complete = async () => { throw new Error("model unavailable"); };
     const ctx = { config: config(), client } as unknown as HookContext;
 
-    await expect(compressMessages([{ role: "user", content: "必须保留的历史" }], ctx)).resolves.toEqual([]);
+    await expect(compressMessages([{ role: "user", content: "必须保留的历史" }], ctx)).resolves.toBeUndefined();
   });
 
   it("enforces the configured summary character limit after generation", async () => {
@@ -95,7 +94,6 @@ describe("compressMessages (core-compress plugin)", () => {
     const ctx = { config: config({ contextCompressionMaxChars: 100 }), client } as unknown as HookContext;
 
     const result = await compressMessages([{ role: "user", content: "历史" }], ctx);
-    const content = String(result[0].content).replace("[当前会话摘要]\n", "");
-    expect(content.length).toBeLessThanOrEqual(100);
+    expect(result?.length).toBeLessThanOrEqual(100);
   });
 });

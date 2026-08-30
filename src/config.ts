@@ -48,6 +48,14 @@ export function createDefaultConfig(): Record<string, unknown> {
       maxInputChars: 40000,
       maxChars: 10000,
       maxOutputTokens: 10000,
+      maxOperations: 32,
+      maxItemChars: 1000,
+      maxSourcesPerOperation: 8,
+      checkpointDeltaThreshold: 20,
+      checkpointMaxChars: 50000,
+      recallMaxResults: 20,
+      recallMaxOutputChars: 20000,
+      recallMaxQueryChars: 500,
     },
     autoMemory: {
       enabled: true,
@@ -258,6 +266,14 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertOptionalNumber(raw.sessionSummary.maxInputChars, "sessionSummary.maxInputChars", { min: 1, integer: true });
     assertOptionalNumber(raw.sessionSummary.maxChars, "sessionSummary.maxChars", { min: 1, integer: true });
     assertOptionalNumber(raw.sessionSummary.maxOutputTokens, "sessionSummary.maxOutputTokens", { min: 256, integer: true });
+    assertOptionalNumber(raw.sessionSummary.maxOperations, "sessionSummary.maxOperations", { min: 1, integer: true });
+    assertOptionalNumber(raw.sessionSummary.maxItemChars, "sessionSummary.maxItemChars", { min: 1, integer: true });
+    assertOptionalNumber(raw.sessionSummary.maxSourcesPerOperation, "sessionSummary.maxSourcesPerOperation", { min: 1, integer: true });
+    assertOptionalNumber(raw.sessionSummary.checkpointDeltaThreshold, "sessionSummary.checkpointDeltaThreshold", { min: 1, integer: true });
+    assertOptionalNumber(raw.sessionSummary.checkpointMaxChars, "sessionSummary.checkpointMaxChars", { min: 1000, integer: true });
+    assertOptionalNumber(raw.sessionSummary.recallMaxResults, "sessionSummary.recallMaxResults", { min: 1, integer: true });
+    assertOptionalNumber(raw.sessionSummary.recallMaxOutputChars, "sessionSummary.recallMaxOutputChars", { min: 1, integer: true });
+    assertOptionalNumber(raw.sessionSummary.recallMaxQueryChars, "sessionSummary.recallMaxQueryChars", { min: 1, integer: true });
   }
 
   if (raw.autoMemory !== undefined) {

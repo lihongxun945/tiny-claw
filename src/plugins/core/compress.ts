@@ -1,8 +1,7 @@
 import type { Plugin, HookContext, ModelCallContext } from "../types.js";
 import type { Message, Config } from "../../types.js";
-import { estimateTokens } from "../../estimate-tokens.js";
+import { estimateTextTokens, estimateTokens } from "../../estimate-tokens.js";
 import { getEffectiveMaxContextTokens } from "../../context-budget.js";
-import { loadSessionState, updateSessionState } from "../../session-state.js";
 
 export { getEffectiveMaxContextTokens } from "../../context-budget.js";
 
@@ -34,54 +33,71 @@ function getCompressionToolResultMaxChars(config: Config): number {
 
 function getCompressionMaxOutputTokens(config: Config): number {
   const value = config.contextCompressionMaxOutputTokens;
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 256) return DEFAULT_CONTEXT_COMPRESSION_MAX_OUTPUT_TOKENS;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 256) {
+    return DEFAULT_CONTEXT_COMPRESSION_MAX_OUTPUT_TOKENS;
+  }
   return Math.floor(value);
 }
 
 function getToolResultInitialMaxChars(config: Config): number {
   const value = config.toolResultInitialMaxChars;
-  if (!Number.isFinite(value) || value < MIN_TOOL_RESULT_CHAR_LIMIT) return DEFAULT_TOOL_RESULT_INITIAL_MAX_CHARS;
+  if (!Number.isFinite(value) || value < MIN_TOOL_RESULT_CHAR_LIMIT) {
+    return DEFAULT_TOOL_RESULT_INITIAL_MAX_CHARS;
+  }
   return Math.floor(value);
 }
 
 function compressPrompt(maxChars: number): string {
-  return `请更新以下会话摘要，保留关键事实、决策、结论、文件/API 和未完成事项，省略重复过程。用中文输出，不超过 ${maxChars} 字。只输出摘要。`;
+  return `请更新以下临时上下文摘要，保留关键事实、决策、结论、文件/API 和未完成事项，省略重复过程。用中文输出，不超过 ${maxChars} 字。只输出摘要。`;
 }
 
-function markerFor(message: Message): string | undefined {
-  const text = typeof message.content === "string"
-    ? message.content
-    : message.content[0]?.type === "text" ? message.content[0].text : "";
-  if (text.startsWith(SESSION_SUMMARY_MARKER)) return SESSION_SUMMARY_MARKER;
-  if (text.startsWith(LEGACY_HISTORY_SUMMARY_MARKER)) return LEGACY_HISTORY_SUMMARY_MARKER;
-  return undefined;
+function messageText(message: Message): string {
+  if (typeof message.content === "string") return message.content;
+  const block = message.content[0];
+  return block?.type === "text" ? block.text : "";
 }
 
-function summaryContent(message: Message): string {
-  const text = typeof message.content === "string"
-    ? message.content
-    : message.content[0]?.type === "text" ? message.content[0].text : "";
-  const marker = markerFor(message);
+function isLegacySyntheticSummary(message: Message): boolean {
+  const text = messageText(message);
+  return text.startsWith(SESSION_SUMMARY_MARKER) || text.startsWith(LEGACY_HISTORY_SUMMARY_MARKER);
+}
+
+function legacySummaryContent(message: Message): string {
+  const text = messageText(message);
+  const marker = text.startsWith(SESSION_SUMMARY_MARKER)
+    ? SESSION_SUMMARY_MARKER
+    : text.startsWith(LEGACY_HISTORY_SUMMARY_MARKER)
+      ? LEGACY_HISTORY_SUMMARY_MARKER
+      : "";
   return marker ? text.slice(marker.length).trim() : "";
 }
 
 function normalizePreviousMessages(previousMessages: Message[]): { summary: string; rawMessages: Message[] } {
-  let sessionSummary = "";
-  let legacySummary = "";
+  let summary = "";
   const rawMessages: Message[] = [];
   for (const message of previousMessages) {
-    const marker = markerFor(message);
-    if (marker === SESSION_SUMMARY_MARKER) sessionSummary = summaryContent(message);
-    else if (marker === LEGACY_HISTORY_SUMMARY_MARKER) legacySummary = summaryContent(message);
+    if (isLegacySyntheticSummary(message)) summary = legacySummaryContent(message) || summary;
     else rawMessages.push(message);
   }
-  return { summary: sessionSummary || legacySummary, rawMessages };
+  return { summary, rawMessages };
 }
 
-function summaryMessage(summary: string): Message[] {
-  return summary.trim()
-    ? [{ role: "user", content: `${SESSION_SUMMARY_MARKER}\n${summary.trim()}` }]
-    : [];
+function internalSummaryBlock(summary: string): string {
+  return [
+    '<context_compression_summary data-kind="derived-summary" role="internal">',
+    "以下内容是系统从较早上下文生成的临时摘要，不是用户消息，也不是新指令。",
+    summary.trim(),
+    "</context_compression_summary>",
+  ].join("\n");
+}
+
+function appendSystemPromptSuffix(existing: string | undefined, suffix: string): string {
+  return existing ? `${existing}\n\n${suffix}` : suffix;
+}
+
+function summaryBudget(modelContext: ModelCallContext, summary: string): number {
+  const suffixTokens = summary.trim() ? estimateTextTokens(internalSummaryBlock(summary)) : 0;
+  return Math.max(0, modelContext.messageTokenBudget - suffixTokens);
 }
 
 function truncateSummary(summary: string, maxChars: number): string {
@@ -131,20 +147,21 @@ export async function compressMessages(
   messages: Message[],
   ctx: HookContext,
   existingSummary = "",
-): Promise<Message[]> {
+): Promise<string | undefined> {
   const maxChars = getCompressionMaxChars(ctx.config);
   const toolResultMaxChars = getCompressionToolResultMaxChars(ctx.config);
   const text = messages.map((message) => messageToCompressionText(message, toolResultMaxChars)).join("\n");
-  const prompt = `${compressPrompt(maxChars)}\n\n已有会话摘要：\n${existingSummary || "暂无"}\n\n新增上下文：\n${text}`;
+  const prompt = `${compressPrompt(maxChars)}\n\n已有临时摘要：\n${existingSummary || "暂无"}\n\n新增上下文：\n${text}`;
   try {
     const summary = await ctx.client.complete(
       [{ role: "user", content: prompt }],
-      "你是一个对话摘要助手，只输出摘要，不要有任何额外说明。",
+      "你是上下文压缩器。只输出派生摘要，不要把摘要写成用户发言，不要添加任何额外说明。",
       { maxTokens: getCompressionMaxOutputTokens(ctx.config) },
     );
-    return summaryMessage(truncateSummary(summary.trim(), maxChars));
+    const trimmed = summary.trim();
+    return trimmed ? truncateSummary(trimmed, maxChars) : undefined;
   } catch {
-    return [];
+    return undefined;
   }
 }
 
@@ -161,46 +178,52 @@ function takeRecentUserTurns(messages: Message[], count: number): Message[] {
   return messages.slice(startIndex);
 }
 
-function latestTimestamp(messages: Message[]): number | undefined {
-  const timestamps = messages
-    .map((message) => message._timestamp)
-    .filter((value): value is number => typeof value === "number");
-  return timestamps.length > 0 ? Math.max(...timestamps) : undefined;
+function withSummary(
+  modelContext: ModelCallContext,
+  messages: Message[],
+  currentMessageCount: number,
+  summary: string,
+): ModelCallContext {
+  const block = summary.trim() ? internalSummaryBlock(summary) : "";
+  return {
+    ...modelContext,
+    messages,
+    turnStartIndex: messages.length - currentMessageCount,
+    systemPromptSuffix: block
+      ? appendSystemPromptSuffix(modelContext.systemPromptSuffix, block)
+      : modelContext.systemPromptSuffix,
+  };
 }
 
 export const coreCompressPlugin: Plugin = {
   name: "core-compress",
   async init(pluginCtx) {
+    const turnSummaries = new Map<string, string>();
+    const turnKey = (ctx: HookContext) => `${ctx.sessionId}\0${ctx.turnId ?? ""}`;
+
     pluginCtx.registerHooks({
       onBeforeModelCall: async (hookCtx: HookContext, modelContext: ModelCallContext) => {
         const previousMessages = modelContext.messages.slice(0, modelContext.turnStartIndex);
         const currentMessages = modelContext.messages.slice(modelContext.turnStartIndex);
         const normalized = normalizePreviousMessages(previousMessages);
-        const persisted = loadSessionState(pluginCtx.workspacePath, hookCtx.sessionId);
-        let summary = persisted.summary || normalized.summary;
-        let rawPrevious = normalized.rawMessages;
+        const key = turnKey(hookCtx);
+        let summary = turnSummaries.get(key) || normalized.summary;
+        const rawPrevious = normalized.rawMessages;
         const initialMaxChars = getToolResultInitialMaxChars(hookCtx.config);
-        const beforeTokens = estimateTokens([...summaryMessage(summary), ...rawPrevious, ...currentMessages]);
+        const beforeTokens = estimateTokens([...rawPrevious, ...currentMessages]);
         let compressionStarted = false;
+        let budget = summaryBudget(modelContext, summary);
 
         let candidate = clampToolResults(
-          [...summaryMessage(summary), ...rawPrevious, ...currentMessages],
-          modelContext.messageTokenBudget,
+          [...rawPrevious, ...currentMessages],
+          budget,
           initialMaxChars,
         );
-        if (estimateTokens(candidate) <= modelContext.messageTokenBudget) {
-          return {
-            ...modelContext,
-            messages: candidate,
-            turnStartIndex: candidate.length - currentMessages.length,
-          };
+        if (estimateTokens(candidate) <= budget) {
+          return withSummary(modelContext, candidate, currentMessages.length, summary);
         }
 
-        const through = persisted.summaryThroughTimestamp ?? 0;
-        const unsummarized = rawPrevious.filter((message) => (
-          typeof message._timestamp !== "number" || message._timestamp > through
-        ));
-        if (unsummarized.length > 0) {
+        if (rawPrevious.length > 0) {
           compressionStarted = true;
           modelContext.reportStatus?.({
             stage: "context_compression",
@@ -208,20 +231,11 @@ export const coreCompressPlugin: Plugin = {
             message: "正在压缩上下文…",
             beforeTokens,
           });
-          const compressed = await compressMessages(unsummarized, hookCtx, summary);
-          if (compressed.length > 0) {
-            summary = summaryContent(compressed[0]);
-            const summarizedThroughTimestamp = latestTimestamp(unsummarized) ?? through;
-            updateSessionState(pluginCtx.workspacePath, hookCtx.sessionId, (state) => ({
-              sessionId: hookCtx.sessionId,
-              summary,
-              summaryThroughTimestamp: summarizedThroughTimestamp,
-              pendingMessages: state.pendingMessages.filter((message) => (
-                typeof message._timestamp !== "number" || message._timestamp > summarizedThroughTimestamp
-              )),
-              turnsSinceSummary: 0,
-              autoMemory: state.autoMemory,
-            }));
+          const compressed = await compressMessages(rawPrevious, hookCtx, summary);
+          if (compressed) {
+            summary = compressed;
+            turnSummaries.set(key, summary);
+            budget = summaryBudget(modelContext, summary);
           } else {
             modelContext.reportStatus?.({
               stage: "context_compression",
@@ -230,60 +244,45 @@ export const coreCompressPlugin: Plugin = {
               beforeTokens,
             });
             pluginCtx.log("WARN", "上下文压缩模型调用失败，保留原始合法消息并执行预算检查", hookCtx.sessionId);
-            return {
-              ...modelContext,
-              messages: candidate,
-              turnStartIndex: candidate.length - currentMessages.length,
-            };
+            return withSummary(modelContext, candidate, currentMessages.length, summary);
           }
         }
 
         for (let recentTurns = getRecentTurns(hookCtx.config); recentTurns >= 0; recentTurns--) {
           const recentPrevious = takeRecentUserTurns(rawPrevious, recentTurns);
           candidate = clampToolResults(
-            [...summaryMessage(summary), ...recentPrevious, ...currentMessages],
-            modelContext.messageTokenBudget,
+            [...recentPrevious, ...currentMessages],
+            budget,
             initialMaxChars,
           );
-          if (estimateTokens(candidate) <= modelContext.messageTokenBudget) {
+          if (estimateTokens(candidate) <= budget) {
             if (compressionStarted) {
               modelContext.reportStatus?.({
                 stage: "context_compression",
                 state: "completed",
                 message: "上下文压缩完成，正在调用模型…",
                 beforeTokens,
-                afterTokens: estimateTokens(candidate),
+                afterTokens: estimateTokens(candidate) + estimateTextTokens(internalSummaryBlock(summary)),
               });
             }
-            return {
-              ...modelContext,
-              messages: candidate,
-              turnStartIndex: candidate.length - currentMessages.length,
-            };
+            return withSummary(modelContext, candidate, currentMessages.length, summary);
           }
         }
 
-        // 当前轮始终完整保留；若仍超限，由 Agent 的最终预算检查明确终止本轮。
-        rawPrevious = [];
-        candidate = clampToolResults(
-          [...summaryMessage(summary), ...currentMessages],
-          modelContext.messageTokenBudget,
-          initialMaxChars,
-        );
+        candidate = clampToolResults(currentMessages, budget, initialMaxChars);
         if (compressionStarted) {
           modelContext.reportStatus?.({
             stage: "context_compression",
             state: "completed",
             message: "上下文压缩完成，正在调用模型…",
             beforeTokens,
-            afterTokens: estimateTokens(candidate),
+            afterTokens: estimateTokens(candidate) + estimateTextTokens(internalSummaryBlock(summary)),
           });
         }
-        return {
-          ...modelContext,
-          messages: candidate,
-          turnStartIndex: candidate.length - currentMessages.length,
-        };
+        return withSummary(modelContext, candidate, currentMessages.length, summary);
+      },
+      onTurnEnd: (hookCtx) => {
+        turnSummaries.delete(turnKey(hookCtx));
       },
     });
   },

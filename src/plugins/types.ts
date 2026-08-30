@@ -97,6 +97,10 @@ export type TurnEndReason = "completed" | "approval_required" | "iteration_limit
 
 export interface ModelCallContext {
   messages: Message[];
+  /** Temporary derived context inserted after history and before the current turn; never persisted. */
+  derivedContext?: string;
+  /** 仅用于当前模型调用的内部系统提示后缀，不写入消息历史。 */
+  systemPromptSuffix?: string;
   /** 当前用户轮次在 messages 中的起始位置。 */
   turnStartIndex: number;
   /** 扣除系统提示词、工具定义和最大输出后，可供 messages 使用的 token 预算。 */
@@ -122,6 +126,8 @@ export interface HookContext {
   history: MessageHistory;
   sessionContext: SessionContext;
   executionMode: ExecutionMode;
+  /** 上报不写入历史的插件生命周期状态。 */
+  reportStatus?: (status: AgentStatusUpdate) => void;
   turnStartIndex: number;
   getToolDefinitions(): ToolDefinition[];
   getTool(name: string): Tool | undefined;

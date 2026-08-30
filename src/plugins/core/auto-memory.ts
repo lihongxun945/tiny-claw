@@ -12,8 +12,9 @@ import {
   type PersistedSessionState,
 } from "../../session-state.js";
 import { listSessionMetas } from "../../session-store.js";
-import { listMemoryRecords } from "../../tools/memory.js";
+import { getMemoryRecord, listMemoryRecords } from "../../tools/memory.js";
 import { appendLog } from "../../workspace/logger.js";
+import { memoryScopeForSession, sessionContextForMemoryScope } from "../../memory/scope.js";
 
 const DEFAULT_TURN_THRESHOLD = 10;
 const DEFAULT_MAX_CANDIDATES = 5;
@@ -71,6 +72,7 @@ export interface AutoMemoryTurn {
   assistant: string;
   at: string;
   sessionId?: string;
+  memoryScope?: string;
 }
 
 export interface AutoMemoryAnalysisResult {
@@ -209,7 +211,8 @@ function collectWorkspaceAutoMemoryTurns(workspacePath: string, includeSessionId
   snapshots: Array<{ sessionId: string; turnIds: string[] }>;
 } {
   const sessionIds = new Set<string>(includeSessionIds);
-  for (const meta of listSessionMetas(workspacePath)) {
+  const metas = new Map(listSessionMetas(workspacePath).map((meta) => [meta.id, meta]));
+  for (const meta of metas.values()) {
     if (!isSubAgentSession(meta.id)) sessionIds.add(meta.id);
   }
 
@@ -224,7 +227,11 @@ function collectWorkspaceAutoMemoryTurns(workspacePath: string, includeSessionId
       turnIds: state.autoMemory.pendingTurns.map((turn) => turn.id),
     });
     for (const turn of state.autoMemory.pendingTurns) {
-      turns.push({ ...turn, sessionId });
+      turns.push({
+        ...turn,
+        sessionId,
+        memoryScope: turn.memoryScope ?? memoryScopeForSession(metas.get(sessionId)?.context),
+      });
     }
   }
 
@@ -292,7 +299,7 @@ function filterToolDefinitions(definitions: ToolDefinition[], mode: AutoMemoryMo
   return definitions.filter((definition) => allowed.has(definition.name));
 }
 
-function buildUserPrompt(workspacePath: string, config: Config, turns: AutoMemoryTurn[]): string {
+function buildUserPrompt(workspacePath: string, config: Config, turns: AutoMemoryTurn[], memoryScope: string): string {
   const mode = getMode(config);
   const modeRule = mode === "auto"
     ? "auto：可以自动保存、更新和删除高确定性的长期记忆。"
@@ -301,7 +308,9 @@ function buildUserPrompt(workspacePath: string, config: Config, turns: AutoMemor
       : "suggest：只能读取记忆并在最终文本中提出建议，不要保存、更新或删除。";
 
   const maxBatchChars = getMaxBatchChars(config);
-  const memoryRecords = listMemoryRecords(workspacePath, { includeDisabled: true });
+  const allowedScopes = memoryScope === "global" ? new Set(["global"]) : new Set(["global", memoryScope]);
+  const memoryRecords = listMemoryRecords(workspacePath, { includeDisabled: true })
+    .filter((memory) => allowedScopes.has(memory.scope));
   const memories = memoryRecords.length > 0
     ? memoryRecords.map((memory) => `- ${memory.name}: ${memory.summary} [${memory.tags.join(", ")}] status=${memory.status} updated=${memory.updatedAt}`).join("\n")
     : "暂无已保存长期记忆。";
@@ -311,6 +320,7 @@ function buildUserPrompt(workspacePath: string, config: Config, turns: AutoMemor
 
   return [
     `当前模式：${modeRule}`,
+    `当前记忆作用域：${memoryScope}`,
     `最多 memory 工具调用次数：${getMaxCandidates(config)}`,
     `单条记忆正文最大字符数：${getMaxMemoryChars(config)}`,
     `所有启用记忆正文总字符上限：${config.memory?.maxTotalChars ?? 80000}`,
@@ -347,10 +357,11 @@ function toolResultsToUserMessage(results: ToolResultBlock[]): Message {
   };
 }
 
-function normalizeToolInput(toolCall: ToolUseBlock, config: Config): Record<string, unknown> {
+function normalizeToolInput(toolCall: ToolUseBlock, config: Config, memoryScope: string): Record<string, unknown> {
   if (toolCall.name !== "memory_save" && toolCall.name !== "profile_save") return toolCall.input;
   const input = { ...toolCall.input };
   input.source = "auto";
+  if (toolCall.name === "memory_save") input.scope = memoryScope;
   return input;
 }
 
@@ -376,13 +387,29 @@ async function executeMemoryTool(options: {
   toolCall: ToolUseBlock;
   tool: Tool;
   config: Config;
+  workspacePath: string;
   sessionId: string;
   actor?: AgentActor;
+  memoryScope: string;
 }): Promise<string> {
-  const input = normalizeToolInput(options.toolCall, options.config);
+  const input = normalizeToolInput(options.toolCall, options.config, options.memoryScope);
+  if (options.toolCall.name === "memory_save" || options.toolCall.name === "memory_delete") {
+    const names = [input.name, ...(Array.isArray(input.supersedes) ? input.supersedes : [])]
+      .filter((name): name is string => typeof name === "string" && Boolean(name));
+    for (const name of names) {
+      const record = getMemoryRecord(options.workspacePath, name);
+      if (record && record.scope !== options.memoryScope) {
+        return JSON.stringify({
+          error: "memory_scope_forbidden",
+          message: `自动记忆不能修改其他作用域的记忆: ${record.scope}`,
+        });
+      }
+    }
+  }
   return options.tool.execute(input, {
     sessionId: options.sessionId,
     actor: options.actor,
+    sessionContext: sessionContextForMemoryScope(options.memoryScope),
   });
 }
 
@@ -395,9 +422,11 @@ export async function runAutoMemoryAnalysis(options: {
   getToolDefinitions: () => ToolDefinition[];
   getTool: (name: string) => Tool | undefined;
   actor?: AgentActor;
+  memoryScope?: string;
   onToolCall?: (toolCall: ToolUseBlock, input: Record<string, unknown>) => void;
 }): Promise<AutoMemoryAnalysisResult> {
   const turnsToAnalyze = options.turns.filter((turn) => turn.user.trim() && turn.assistant.trim());
+  const memoryScope = options.memoryScope ?? options.turns[0]?.memoryScope ?? "global";
   const empty = {
     saved: 0,
     updated: 0,
@@ -420,7 +449,7 @@ export async function runAutoMemoryAnalysis(options: {
     };
   }
 
-  const messages: Message[] = [{ role: "user", content: buildUserPrompt(options.workspacePath, options.config, turnsToAnalyze) }];
+  const messages: Message[] = [{ role: "user", content: buildUserPrompt(options.workspacePath, options.config, turnsToAnalyze, memoryScope) }];
   const maxToolCalls = getMaxCandidates(options.config);
   let toolCalls = 0;
   let saved = 0;
@@ -444,13 +473,15 @@ export async function runAutoMemoryAnalysis(options: {
       if (!tool) {
         result = `工具不可用或不允许自动记忆调用：${toolCall.name}`;
       } else {
-        options.onToolCall?.(toolCall, normalizeToolInput(toolCall, options.config));
+        options.onToolCall?.(toolCall, normalizeToolInput(toolCall, options.config, memoryScope));
         result = await executeMemoryTool({
           toolCall,
           tool,
           config: options.config,
+          workspacePath: options.workspacePath,
           sessionId: options.sessionId,
           actor: options.actor,
+          memoryScope,
         });
         executed = true;
       }
@@ -533,28 +564,57 @@ export async function runWorkspaceAutoMemoryAnalysis(options: {
       `[AUTO_MEMORY] 开始整理 trigger=${trigger} sessions=${snapshots.length} turns=${turns.length} maxMemoryChars=${getMaxMemoryChars(options.config)} maxTotalChars=${options.config.memory?.maxTotalChars ?? 80000}`,
       options.triggerSessionId,
     );
-    const result = await runAutoMemoryAnalysis({
-      workspacePath: options.workspacePath,
-      config: options.config,
-      client: options.client,
-      sessionId: options.triggerSessionId,
-      turns,
-      getToolDefinitions: options.getToolDefinitions,
-      getTool: options.getTool,
-      actor: options.actor,
-      onToolCall: (toolCall, input) => {
-        const name = typeof input.name === "string" ? input.name : "-";
-        options.log?.(
-          "INFO",
-          `[AUTO_MEMORY] 调用工具 trigger=${trigger} tool=${toolCall.name} name=${name}`,
-          options.triggerSessionId,
-        );
-      },
-    });
-
-    if (!result.requiresConfirmation) {
-      markWorkspaceAutoMemoryAnalyzed(options.workspacePath, snapshots, result);
+    const groups = new Map<string, AutoMemoryTurn[]>();
+    for (const turn of turns) {
+      const scope = turn.memoryScope ?? "global";
+      groups.set(scope, [...(groups.get(scope) ?? []), turn]);
     }
+    if (groups.size === 0) groups.set("global", []);
+    const results: AutoMemoryAnalysisResult[] = [];
+    const failures: unknown[] = [];
+    for (const [memoryScope, scopedTurns] of groups) {
+      let result: AutoMemoryAnalysisResult;
+      try {
+        result = await runAutoMemoryAnalysis({
+          workspacePath: options.workspacePath,
+          config: options.config,
+          client: options.client,
+          sessionId: options.triggerSessionId,
+          turns: scopedTurns,
+          memoryScope,
+          getToolDefinitions: options.getToolDefinitions,
+          getTool: options.getTool,
+          actor: options.actor,
+          onToolCall: (toolCall, input) => {
+            const name = typeof input.name === "string" ? input.name : "-";
+            options.log?.("INFO", `[AUTO_MEMORY] 调用工具 trigger=${trigger} scope=${memoryScope} tool=${toolCall.name} name=${name}`, options.triggerSessionId);
+          },
+        });
+      } catch (error) {
+        failures.push(error);
+        options.log?.("WARN", `[AUTO_MEMORY] scope 整理失败 trigger=${trigger} scope=${memoryScope} turns=${scopedTurns.length} error=${error instanceof Error ? error.message : String(error)}`, options.triggerSessionId);
+        continue;
+      }
+      results.push(result);
+      if (!result.requiresConfirmation) {
+        const turnIds = new Set(scopedTurns.map((turn) => turn.id));
+        markWorkspaceAutoMemoryAnalyzed(options.workspacePath, snapshots.map((snapshot) => ({
+          sessionId: snapshot.sessionId,
+          turnIds: snapshot.turnIds.filter((id) => turnIds.has(id)),
+        })).filter((snapshot) => snapshot.turnIds.length > 0), result);
+      }
+    }
+    if (failures.length > 0 && results.length === 0) throw failures[0];
+    const result: AutoMemoryAnalysisResult = {
+      saved: results.reduce((sum, item) => sum + item.saved, 0),
+      updated: results.reduce((sum, item) => sum + item.updated, 0),
+      deleted: results.reduce((sum, item) => sum + item.deleted, 0),
+      pending: 0,
+      toolCalls: results.reduce((sum, item) => sum + item.toolCalls, 0),
+      analyzedTurns: results.reduce((sum, item) => sum + item.analyzedTurns, 0),
+      finalText: results.map((item) => item.finalText).filter(Boolean).join("\n"),
+      requiresConfirmation: results.some((item) => item.requiresConfirmation),
+    };
 
     const finalResult = {
       ...result,
@@ -685,6 +745,7 @@ export const coreAutoMemoryPlugin: Plugin = {
             user: findCurrentUserInput(hookCtx),
             assistant,
             at: new Date().toISOString(),
+            memoryScope: memoryScopeForSession(hookCtx.sessionContext),
           }, getTurnThreshold(hookCtx) * 2);
           return {
             sessionId: sessionState.sessionId,

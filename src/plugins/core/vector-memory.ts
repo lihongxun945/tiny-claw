@@ -3,11 +3,10 @@ import { loadConfig } from "../../config.js";
 import { VectorMemoryService, formatRetrievedMemories } from "../../memory/service.js";
 import { incrementMemoryTurn } from "../../memory/state.js";
 import { runMemoryMaintenance } from "../../tools/memory.js";
+import { memoryScopeForSession, resolveMemoryWriteScope } from "../../memory/scope.js";
 
 function scopeFor(ctx: HookContext): string {
-  return ctx.sessionContext.mode === "project" && ctx.sessionContext.project
-    ? `project:${ctx.sessionContext.project.root}`
-    : "global";
+  return memoryScopeForSession(ctx.sessionContext);
 }
 
 export const coreVectorMemoryPlugin: Plugin = {
@@ -68,14 +67,16 @@ export const coreVectorMemoryPlugin: Plugin = {
         type: "object",
         properties: {
           query: { type: "string", description: "完整、明确的检索问题" },
-          scope: { type: "string", description: "可选作用域，默认 global" },
+          scope: { type: "string", description: "可选作用域；普通会话默认 global，项目会话默认当前项目" },
         },
         required: ["query"],
       },
-      async execute(args) {
+      async execute(args, toolContext) {
         const query = String(args.query ?? "").trim();
         if (!query) return JSON.stringify({ error: "query 不能为空" });
-        const results = await service().search(query, typeof args.scope === "string" ? args.scope : "global");
+        const scope = resolveMemoryWriteScope(args.scope, toolContext?.sessionContext);
+        if (!scope) return JSON.stringify({ error: "memory_scope_forbidden", message: `当前会话不能访问记忆作用域: ${String(args.scope ?? "")}` });
+        const results = await service().search(query, scope);
         return JSON.stringify({
           memories: results.map((result) => ({
             name: result.memory.name,

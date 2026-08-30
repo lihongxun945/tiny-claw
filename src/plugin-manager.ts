@@ -17,6 +17,7 @@ import type {
   ExecuteChatCommandOptions,
   TurnEndReason,
   ModelCallContext,
+  AgentStatusUpdate,
 } from "./plugins/types.js";
 import type { Config, Tool, ToolDefinition, Message, ChatResponse, SessionContext, ExecutionMode } from "./types.js";
 import type { ModelClient } from "./model/index.js";
@@ -323,7 +324,7 @@ export class PluginManager {
     }
   }
 
-  private buildHookContext(iteration: number, sessionId: string, turnStartIndex = 0): HookContext {
+  private buildHookContext(iteration: number, sessionId: string, turnStartIndex = 0, reportStatus?: (status: AgentStatusUpdate) => void): HookContext {
     const deps = this.runtimeDepsBySession.get(sessionId);
     const config = deps?.config ?? this.config;
     const client = deps?.client ?? this.client;
@@ -342,6 +343,7 @@ export class PluginManager {
       sessionContext: deps?.sessionContext ?? { mode: "chat" },
       executionMode: this.executionModesBySession.get(sessionId) ?? "normal",
       getToolDefinitions: () => this.registry.getDefinitions(deps?.sessionContext, this.executionModesBySession.get(sessionId) ?? "normal"),
+      reportStatus,
       getTool: (name) => this.getTool(name),
     };
   }
@@ -467,11 +469,11 @@ export class PluginManager {
     }
   }
 
-  async callOnTurnEnd(reason: TurnEndReason, iteration: number, sessionId: string): Promise<void> {
+  async callOnTurnEnd(reason: TurnEndReason, iteration: number, sessionId: string, reportStatus?: (status: AgentStatusUpdate) => void): Promise<void> {
     for (const hooks of this.hooks) {
       if (hooks.onTurnEnd) {
         await hooks.onTurnEnd(
-          this.buildHookContext(iteration, sessionId),
+          this.buildHookContext(iteration, sessionId, 0, reportStatus),
           reason,
         );
       }

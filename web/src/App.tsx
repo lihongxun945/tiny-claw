@@ -15,6 +15,7 @@ type View = "chat" | "project" | "memory" | "logs" | "config";
 
 interface SessionUiState {
   messages: Message[];
+  summaryNotice?: { state: "completed" | "failed"; message: string };
   streamingText: string;
   streamingStatus: string;
   streamingToolCalls: ToolCallInfo[];
@@ -128,6 +129,12 @@ export default function App() {
             ...state,
             streamingStatus: typeof d.message === "string" ? d.message : "正在处理",
           }));
+          if (d.stage === "session_summary" && (d.state === "completed" || d.state === "failed")) {
+            updateSessionState(sourceSessionId, (state) => ({
+              ...state,
+              summaryNotice: { state: d.state as "completed" | "failed", message: String(d.message ?? "") },
+            }));
+          }
           break;
         case "text_delta":
           fullText += (d.text as string) ?? "";
@@ -295,6 +302,7 @@ export default function App() {
       streamingToolCalls: [],
       streamingApprovalId: undefined,
       loaded: true,
+      summaryNotice: undefined,
       plan: executionMode === "plan" ? null : state.plan,
       planLoaded: executionMode === "plan" ? true : state.planLoaded,
     }));
@@ -647,6 +655,7 @@ export default function App() {
               streamingApprovalId={activeState.streamingApprovalId}
               isStreaming={activeState.isStreaming}
               activeSessionId={activeSessionId}
+              summaryNotice={activeState.summaryNotice}
               isRefreshing={isRefreshingMessages}
               onRefreshMessages={handleRefreshMessages}
               onApproveAndResume={handleApproveAndResume}

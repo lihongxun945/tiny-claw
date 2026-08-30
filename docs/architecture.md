@@ -119,11 +119,16 @@ workspace/
 │       ├── messages.jsonl
 │       ├── meta.json
 │       ├── state.json
+│       ├── summary/
+│       │   ├── current.json # 结构化 Checkpoint + Delta 当前状态（启用后生成）
+│       │   └── archive/     # 后续 Checkpoint 归档目录
 │       ├── plans/          # 按对话轮次持久化的结构化任务计划与步骤进度
 │       └── attachments/   # 图片文件及附件元数据
 └── logs/              # 执行日志，[时间] [级别] 消息，每日轮转
     └── 2026-05-19.log
 ```
+
+新写入的 Session 消息带有稳定的 `_messageId` 和从 1 开始单调递增的 `_sequence`，并在按 Session 串行的异步写锁内完成 JSONL 追加和 `meta.json.lastMessageSequence` 原子更新。旧消息读取时生成确定性兼容 ID，不改写原始 JSONL。结构化摘要 Store 使用独立的 `summary/current.json`、原子替换和 revision 乐观校验；归档位于 `summary/archive/`。运行时已完全使用该 Store，`state.json.summary` 仅作为一次性旧数据迁移入口。
 
 ## 项目开发模式
 
@@ -291,7 +296,7 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 
 ### autoMemory 配置
 
-`core-auto-memory` 插件在主会话最终回复后记录完整对话轮数，默认 workspace 内累计 10 轮后触发一次模型整理。它不会每轮额外调用模型；每轮最终问答会先按 session 持久化到 `workspace/sessions/<session>/state.json` 的 `autoMemory.pendingTurns`。达到阈值时，整理任务在后台运行，不阻塞当前回复完成和下一轮用户输入；用户执行 `/dream` 时则同步等待整理结果。两种入口都会聚合所有主会话的待整理增量，把已保存长期记忆全文、增量对话和配置的长度限制交给模型，并通过受限的 memory 工具调用链路整理长期记忆。
+`core-auto-memory` 插件在主会话最终回复后记录完整对话轮数，默认 workspace 内累计 10 轮后触发一次模型整理。它不会每轮额外调用模型；每轮最终问答会连同 `global` 或 `project:<项目根目录>` 作用域按 session 持久化到 `workspace/sessions/<session>/state.json` 的 `autoMemory.pendingTurns`。达到阈值时，整理任务在后台运行，不阻塞当前回复完成和下一轮用户输入；用户执行 `/dream` 时则同步等待整理结果。两种入口都会聚合所有主会话的待整理增量，再按 scope 分批调用模型；每批只看到全局与当前项目允许的记忆，自动写入被宿主强制限定到该批 scope。
 
 ```json
 {
@@ -319,7 +324,7 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 - `memory.maxItemChars`：单条记忆正文最大字符数，默认 20000
 - `memory.maxTotalChars`：所有启用记忆正文的总字符上限，默认 80000
 
-自动记忆会跳过 `sub:` 开头的 sub-agent 会话，也会跳过模型中间工具调用，只在最终回复时计入一轮。每条 pending turn 持有稳定 ID；整理开始时冻结待处理 ID 快照，成功后通过 Session 状态原子更新只删除本次处理的 ID，整理期间新增的轮次不会丢失。workspace 级文件锁避免多进程并发整理，Session 状态锁避免会话摘要和自动记忆整文件覆盖。整理失败或触发权限审批时保留 pending。即使没有新增对话，`/dream` 也会运行一次 workspace 级整理。后台整理和 `/dream` 都通过 `[AUTO_MEMORY]` 日志记录排队、开始、工具操作、完成、跳过和失败状态；日志只记录 memory 名称和计数，不记录对话或记忆正文。记忆写入统一校验 `memory.maxItemChars` 和 `memory.maxTotalChars`，超限时返回可重试错误，不会静默截断后落盘。
+自动记忆会跳过 `sub:` 开头的 sub-agent 会话，也会跳过模型中间工具调用，只在最终回复时计入一轮。每条 pending turn 持有稳定 ID 和记忆 scope；旧状态缺少 scope 时从 Session 元数据补算。整理开始时冻结待处理 ID 快照，每个 scope 成功后通过 Session 状态原子更新只删除该批处理的 ID，其他 scope 失败时仍保留待重试内容，整理期间新增的轮次也不会丢失。workspace 级文件锁避免多进程并发整理，Session 状态锁避免会话摘要和自动记忆整文件覆盖。即使没有新增对话，`/dream` 也会运行一次 workspace 级整理。后台整理和 `/dream` 都通过 `[AUTO_MEMORY]` 日志记录排队、开始、工具操作、完成、跳过和失败状态；日志只记录 memory 名称和计数，不记录对话或记忆正文。记忆写入统一校验 `memory.maxItemChars` 和 `memory.maxTotalChars`，超限时返回可重试错误，不会静默截断后落盘。
 
 ### 图片附件
 
@@ -352,7 +357,7 @@ AgentSession 初始化 → PluginManager.setRuntimeDeps()
 │       ↓                                          │
 │  response = { text, toolCalls }                   │
 │       ↓                                          │
-│  onChatResponse 钩子 → 会话摘要 / 自动记忆整理    │
+│  onChatResponse 钩子 → 响应后处理                  │
 │       ↓                                          │
 │  push assistant message + appendHistory           │
 │       ↓                                          │
@@ -456,8 +461,8 @@ Gateway 在聊天和审批续跑的 SSE 响应空闲期间发送注释心跳，�
 
 上下文压缩逻辑位于 `plugins/core/compress.ts`，通过结构化的 `onBeforeModelCall` 上下文执行。Agent 先从模型上下文窗口中扣除系统提示词、工具定义和最大输出空间，再取 `contextCompressionThreshold` 与硬输入上限中的较小值作为消息预算：
 
-1. **只压缩历史轮次**：`turnStartIndex` 之前尚未进入摘要的消息用于增量更新唯一的 `[当前会话摘要]`；当前用户轮次及其中完整工具链不参与摘要或任意切分。
-2. **摘要和游标持久化**：摘要正文与 `summaryThroughTimestamp` 原子写入 `sessions/<session>/state.json`，刷新、切换会话或 Gateway 重启后继续增量压缩，不重复摘要已覆盖消息。
+1. **只压缩历史轮次**：`turnStartIndex` 之前的消息可生成当前 turn 的临时派生摘要；当前用户轮次及其中完整工具链不参与摘要或任意切分。
+2. **临时摘要不持久化**：压缩结果只作为本次模型调用的内部 system prompt 后缀，结束 turn 后清除，不写入消息历史或 Session Store。
 3. **近期原文按完整用户轮次保留**：压缩后从配置的 `sessionSummary.recentTurns` 开始逐轮缩减，直到满足预算；不会从轮次中间截断消息。
 4. **工具结果受控截断**：仅缩短 `tool_result.content`，保留 `tool_use` / `tool_result` 协议结构；最终调用模型前再次校验工具消息链。
 5. **失败显式终止**：压缩模型失败时保留原始合法上下文，不静默丢弃历史；若仍超预算，Agent 返回明确错误而不调用主模型。
@@ -465,33 +470,15 @@ Gateway 在聊天和审批续跑的 SSE 响应空闲期间发送注释心跳，�
 
 token 估算采用统一粗略规则，只用于预算保护。压缩使用 `client.complete()` 非流式调用，摘要字符硬上限由 `contextCompressionMaxChars` 控制，模型输出 token 上限由 `contextCompressionMaxOutputTokens` 控制。
 
-### 会话滚动摘要
+### 会话结构化摘要与原文召回
 
-核心插件 `core-session-summary` 为每个普通会话维护一份滚动摘要，减少旧消息原文进入模型上下文。摘要默认每 5 个完整对话轮次更新一次，不会每轮额外调用模型；摘要状态默认持久化到 `workspace/sessions/<session>/state.json`，以便刷新、切换会话或 Gateway 重启后恢复：
+`core-session-summary` 在 `onTurnEnd` 阶段读取已持久化的完整轮次，达到 `turnThreshold` 后生成严格 JSON Delta。校验器要求 revision 与连续 sequence 范围正确，且每个操作只能引用本批真实 `messageId`；代码随后补全来源序号和 turnId、生成确定性 ID，并用纯 Reducer 执行 add/supersede/resolve。达到 Delta 数量或存储字符阈值时，旧 revision 先归档，再固化新 Checkpoint。
 
-1. `onBeforeModelCall`：移除旧摘要消息；如果已有摘要，优先保留上次摘要后尚未沉淀的增量消息和当前轮消息，并将摘要合并进下一条 user 消息前部。没有未沉淀增量时，回退保留最近 `recentTurns` 轮原文。
-2. 摘要尚未生成时，不会因为 `recentTurns` 提前裁掉历史，仍由 `historyWindowSize` 控制底层历史窗口。
-3. `onChatResponse`：当模型给出最终回复（没有 tool_calls）后，累计本轮增量消息；达到 `turnThreshold` 后调用 `client.complete()`，用“已有摘要 + 累计增量上下文”更新会话摘要。
-4. `onTurnEnd`：Agent 因迭代上限停止时，把本轮原始用户问题、可读助手进度和停止提示写入待摘要状态，不保存工具调用与工具结果；审批暂停不计为完整轮次。
-5. `sub:` 开头的临时 sub-agent 会话跳过摘要，避免额外模型调用。
+模型调用时，摘要被序列化为带 `data-kind="derived-summary"` 和 `role="internal"` 的临时派生上下文，插在保留的历史消息之后、当前用户轮次之前。Agent 使用跨 Anthropic、OpenAI 与本地模型均支持的 `assistant` 协议角色承载该上下文，但标签和正文明确声明它不是历史助手回复、用户消息或新指令；摘要只存在于本次模型请求，不写入内存历史或 Session Store。基础 System Prompt 因此不再随摘要 revision 变化，可完整保持稳定以提高前缀缓存命中率。近期 `recentTurns` 轮原文继续作为普通消息保留；旧版自由文本摘要只在首次读取时迁移，并带 `legacy_summary` 来源。
 
-默认配置：
+`core-session-recall` 单独注册只读工具 `session_history_recall`。工具只能读取执行上下文中的当前 session，可按摘要来源 messageId、sequence 范围或关键词查询 `messages.jsonl`，返回稳定 ID、序号、turnId、角色、时间和原文。条数、查询长度和输出字符上限由 `sessionSummary.recallMaxResults`、`recallMaxQueryChars`、`recallMaxOutputChars` 控制。
 
-```json
-{
-  "sessionSummary": {
-    "enabled": true,
-    "persistent": true,
-    "turnThreshold": 5,
-    "recentTurns": 3,
-    "maxChars": 4000
-  }
-}
-```
-
-其中 `turnThreshold` 是摘要刷新频率，`recentTurns` 是已有摘要后仍保留的近期原文窗口，二者不需要和 `historyWindowSize` 相同。
-
-完整原始消息写入 `workspace/sessions/<session>/messages.jsonl`，会话列表来自 `workspace/sessions/<session>/meta.json`；滚动摘要写入 `workspace/sessions/<session>/state.json`，只作为会话级模型上下文状态，不写入长期 memory，也不污染 UI 历史回放。
+摘要开始、完成和失败通过通用 Hook 状态回调进入 SSE，WebUI 显示明确的整理提示；状态不写入消息历史。摘要失败保留当前 Checkpoint 并继续完成用户对话。临时上下文压缩摘要同样只作为当前模型调用的内部系统后缀，不写入 Session Store。
 
 ### 工具注册：插件化
 
@@ -619,6 +606,7 @@ Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prom
 - **Profile 读路径**：`core-profile-memory` 每次模型调用前读取所有启用 Profile 并固定注入全文，不参与向量检索和时间遗忘
 - **Memory 写路径**：`memory_save` 和 `memory_append` 写入 `workspace/memory/*.md`
 - **Memory 读路径**：`core-vector-memory` 根据当前用户问题执行混合检索，最终从 Markdown 读取命中正文并按字符预算注入
+- **作用域**：普通会话只访问 `global`；项目会话访问 `global` 与当前项目 scope，默认写当前项目、显式指定时可写 `global`，禁止访问其他项目
 - **文件格式**：带 frontmatter 的 Markdown，名称语义化（如 `user-preferences.md`、`project-context.md`）
 - **安全**：文件名仅允许字母、数字、下划线、连字符，防止路径遍历
 - **启停控制**：`disabled: true` 的内容保留在磁盘中，但不固定注入或参与默认向量召回

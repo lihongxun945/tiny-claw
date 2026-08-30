@@ -9,6 +9,7 @@ interface Props {
   streamingText: string;
   streamingStatus: string;
   streamingToolCalls: ToolCallInfo[];
+  summaryNotice?: { state: "completed" | "failed"; message: string };
   streamingApprovalId?: string;
   isStreaming: boolean;
   activeSessionId: string | null;
@@ -23,6 +24,7 @@ export default function ChatView({
   streamingText,
   streamingStatus,
   streamingToolCalls,
+  summaryNotice,
   streamingApprovalId,
   isStreaming,
   activeSessionId,
@@ -68,6 +70,12 @@ export default function ChatView({
         </button>
       </div>
       <div className="chat-view">
+        {summaryNotice && (
+          <div className={`summary-lifecycle-notice summary-${summaryNotice.state}`} role="status">
+            <span aria-hidden="true">{summaryNotice.state === "completed" ? "✓" : "!"}</span>
+            <span>{summaryNotice.message}</span>
+          </div>
+        )}
         {displayedMessages.length === 0 && !isStreaming && (
           <div className="chat-empty-state">
             <img className="empty-mark" src="/icon.png" alt="" aria-hidden="true" />

@@ -237,37 +237,38 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 
 ### 会话摘要配置
 
-`core-session-summary` 插件会为每个普通会话维护滚动摘要，模型调用时注入摘要并只保留最近几轮原文，避免历史消息持续膨胀。摘要默认持久化到 `workspace/sessions/<session>/state.json`，刷新、切换会话或重启 Gateway 后仍可恢复：
+`core-session-summary` 为普通会话维护可追溯的 Checkpoint + Delta 结构化摘要，持久化到 `workspace/sessions/<session>/summary/current.json`。模型只输出带 `sourceMessageIds` 的变更意图，代码负责来源校验、ID 生成、Reducer 合并、revision 冲突检测和 Checkpoint 归档。摘要作为明确标记的临时派生上下文插在历史消息之后、当前用户轮次之前，不会伪装成用户消息、写入消息历史或改动稳定的 System Prompt；旧版 `state.json.summary` 会一次性迁移为带 legacy 来源的事实条目。
 
-```json
-{
-  "sessionSummary": {
-    "enabled": true,
-    "persistent": true,
-    "turnThreshold": 5,
-    "recentTurns": 3,
-    "maxChars": 4000
-  }
-}
-```
+`sub:` 开头的临时 sub-agent 会话默认不生成摘要。完整原始消息始终保存在 `messages.jsonl`；需要核对摘要来源或引用被压缩的原文时，模型可调用只读工具 `session_history_recall`，按 messageId、序号范围或关键词从当前会话取回。
 
-`sub:` 开头的临时 sub-agent 会话默认不生成摘要，避免额外消耗。完整原始消息按会话写入 `workspace/sessions/<session>/messages.jsonl`，持久摘要只作为模型上下文状态，不影响 UI 历史回放。
+| 配置项 | 默认值 | 说明 |
+|---|---:|---|
+| `sessionSummary.enabled` | `true` | 是否启用结构化会话摘要 |
+| `sessionSummary.persistent` | `true` | 是否持久化到 `summary/current.json` |
+| `sessionSummary.turnThreshold` | `5` | 累积多少个完整用户轮次后生成 Delta |
+| `sessionSummary.recentTurns` | `3` | 模型上下文仍保留的最近原文轮数 |
+| `sessionSummary.maxInputChars` | `40000` | 单次 Delta 提取输入字符上限 |
+| `sessionSummary.maxOutputTokens` | `10000` | Delta 提取模型输出上限 |
+| `sessionSummary.maxOperations` | `32` | 单个 Delta 最大操作数 |
+| `sessionSummary.maxItemChars` | `1000` | 单个摘要条目最大字符数 |
+| `sessionSummary.maxSourcesPerOperation` | `8` | 单个操作最多引用的原始消息数 |
+| `sessionSummary.checkpointDeltaThreshold` | `20` | 达到该 Delta 数量后固化 Checkpoint |
+| `sessionSummary.checkpointMaxChars` | `50000` | 达到该结构化存储大小后固化 Checkpoint |
+| `sessionSummary.recallMaxResults` | `20` | 单次原文召回最大消息数 |
+| `sessionSummary.recallMaxOutputChars` | `20000` | 单次原文召回最大输出字符数 |
+| `sessionSummary.recallMaxQueryChars` | `500` | 原文召回关键词最大字符数 |
 
-| 配置项 | 默认值 | 示例 | 说明 |
-|---|---:|---|---|
-| `sessionSummary.enabled` | `true` | `true` | 是否启用会话滚动摘要 |
-| `sessionSummary.persistent` | `true` | `true` | 是否把摘要持久化到 session 状态文件 |
-| `sessionSummary.turnThreshold` | `5` | `5` | 累积多少轮后更新一次摘要 |
-| `sessionSummary.recentTurns` | `3` | `3` | 模型上下文中保留的最近原文轮数 |
-| `sessionSummary.maxChars` | `4000` | `4000` | 会话滚动摘要最大字符数 |
+摘要更新通过 SSE 上报 `session_summary` 的 started/completed/failed 状态，WebUI 会明确显示整理进度及结果；状态不写入聊天历史。
 
 ### 自动记忆配置
 
 跨会话记忆分为两类：`workspace/profile/*.md` 保存稳定用户身份、称呼、语言和长期交互约束，由 `core-profile-memory` 每轮固定注入全文；`workspace/memory/*.md` 保存项目事实、历史决策和经验，由 `core-vector-memory` 按当前问题相关性召回。Profile 不进入向量数据库，也不会因长时间未使用而自动遗忘。
 
-`core-auto-memory` 可以在多轮对话后同时整理 Profile 和向量长期记忆。每轮最终问答会先按 session 持久化到 `state.json`，达到阈值或执行 `/dream` 时聚合全部主会话的待整理增量。Markdown 文件仍是可读、可备份的事实源，LanceDB 索引保存在 `workspace/memory/vector/`，只负责向量长期记忆的语义候选召回和 metadata 过滤。
+`core-auto-memory` 可以在多轮对话后同时整理 Profile 和向量长期记忆。每轮最终问答会连同记忆作用域按 session 持久化到 `state.json`；达到阈值或执行 `/dream` 时聚合全部主会话的待整理增量，再按 `global` 或 `project:<项目根目录>` 分批分析，避免不同项目相互污染。Markdown 文件仍是可读、可备份的事实源，LanceDB 索引保存在 `workspace/memory/vector/`，只负责向量长期记忆的语义候选召回和 metadata 过滤。
 
 每次用户提问时，`core-vector-memory` 会自动执行向量与关键词混合检索，只把少量高相关记忆注入当前轮 Prompt；不再把全部记忆全文发送给模型。自动召回不足时，Agent 可以调用 `memory_search` 深度搜索，再用 `memory_read` 读取指定记忆。Embedding 不可用或索引损坏时会退化为关键词检索，不阻断正常聊天。
+
+普通会话只访问 `global` 记忆；项目会话访问 `global` 和当前 `project:<项目根目录>`。项目会话调用 `memory_save` 时默认写入当前项目，也可以显式指定 `global` 保存跨项目规则，但不能访问其他项目的 scope。后台自动整理不能把项目记忆提升为全局，也不能覆盖或删除其他 scope 的记忆。
 
 新事实默认追加；明确替代旧状态时通过 `supersedes` 将旧记忆标记为 `superseded`，保留历史而不静默覆盖。删除会把记忆移入 `workspace/memory/trash/`。普通记忆只有在未使用轮次和未使用天数同时达到阈值后才标记为 `stale`；读取会刷新使用状态并增强记忆。回收站超过保留期后才物理清理。
 
@@ -317,7 +318,7 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 | `memory.maintenance.inactiveDays` | `30` | `30` | 成为 stale 候选所需的未使用自然天数；与轮数条件同时满足 |
 | `memory.maintenance.trashRetentionDays` | `30` | `30` | 回收站物理清理前的保留天数 |
 
-自动记忆整理会把“Profile 摘要索引 + 长期记忆摘要索引 + workspace 内新增最终问答 + 配置限制”交给整理模型，不包含工具过程、工具结果或调试日志。稳定用户偏好使用 `profile_*` 工具维护；项目事实和历史经验使用 `memory_*` 工具维护。达到阈值后的整理在后台运行；`/dream` 同步等待结果。整理成功后只推进本次快照的增量游标，失败则保留待重试内容。
+自动记忆整理会按 scope 把“Profile 摘要索引 + 当前可见的长期记忆摘要索引 + workspace 内新增最终问答 + 配置限制”交给整理模型，不包含工具过程、工具结果或调试日志。稳定用户偏好使用 `profile_*` 工具维护；项目事实和历史经验使用 `memory_*` 工具维护。达到阈值后的整理在后台运行；`/dream` 同步等待结果。每个 scope 成功后只推进对应快照的增量游标，失败则保留该 scope 的待重试内容。
 
 ### 聊天命令
 

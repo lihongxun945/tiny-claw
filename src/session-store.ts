@@ -1,5 +1,8 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { withSessionLock } from "./session-lock.js";
 import type { ExecutionMode, Message, SessionContext } from "./types.js";
 
 const META_VERSION = 1;
@@ -16,6 +19,7 @@ export interface SessionMeta {
   pinned: boolean;
   context: SessionContext;
   preferences: { executionMode: ExecutionMode };
+  lastMessageSequence: number;
 }
 
 export function readSessionMeta(workspacePath: string, sessionId: string): SessionMeta | undefined {
@@ -50,8 +54,9 @@ export function createSessionMeta(
     pinned: false,
     context,
     preferences: { executionMode: "normal" },
+    lastMessageSequence: 0,
   };
-  writeFileSync(path, `${JSON.stringify(meta, null, 2)}\n`, "utf-8");
+  writeJsonAtomicSync(path, meta);
   return meta;
 }
 
@@ -81,11 +86,26 @@ export function sessionStateFilePath(workspacePath: string, sessionId: string): 
   return resolve(sessionDir(workspacePath, sessionId), "state.json");
 }
 
-export function appendSessionMessage(workspacePath: string, sessionId: string, message: Message): void {
-  const dir = sessionDir(workspacePath, sessionId);
-  mkdirSync(dir, { recursive: true });
-  appendFileSync(sessionMessagesPath(workspacePath, sessionId), `${JSON.stringify(message)}\n`, "utf-8");
-  updateSessionMeta(workspacePath, sessionId, message);
+export async function appendSessionMessage(
+  workspacePath: string,
+  sessionId: string,
+  message: Message,
+): Promise<Message> {
+  return withSessionLock(workspacePath, sessionId, async () => {
+    const dir = sessionDir(workspacePath, sessionId);
+    await mkdir(dir, { recursive: true });
+    const existing = readSessionMeta(workspacePath, sessionId);
+    const lastSequence = existing?.lastMessageSequence
+      || getLastMessageSequence(workspacePath, sessionId);
+    const persisted: Message = {
+      ...message,
+      _messageId: message._messageId ?? `msg_${randomUUID()}`,
+      _sequence: lastSequence + 1,
+    };
+    await appendFile(sessionMessagesPath(workspacePath, sessionId), `${JSON.stringify(persisted)}\n`, "utf-8");
+    await updateSessionMeta(workspacePath, sessionId, persisted);
+    return persisted;
+  });
 }
 
 export function readSessionMessages(workspacePath: string, sessionId: string): Message[] {
@@ -93,14 +113,24 @@ export function readSessionMessages(workspacePath: string, sessionId: string): M
   if (!existsSync(path)) return [];
 
   const messages: Message[] = [];
+  let sequence = 0;
   for (const line of readFileSync(path, "utf-8").split("\n").filter(Boolean)) {
     try {
       const record = JSON.parse(line) as Partial<Message>;
       if (record.role !== "user" && record.role !== "assistant") continue;
       if (typeof record.content !== "string" && !Array.isArray(record.content)) continue;
+      sequence++;
       messages.push({
         role: record.role,
         content: record.content,
+        _messageId: typeof record._messageId === "string" && record._messageId
+          ? record._messageId
+          : legacyMessageId(sessionId, sequence, record.role, record.content),
+        _sequence: typeof record._sequence === "number"
+          && Number.isInteger(record._sequence)
+          && record._sequence > 0
+          ? record._sequence
+          : sequence,
         _timestamp: typeof record._timestamp === "number" ? record._timestamp : undefined,
         _turnId: typeof record._turnId === "string" ? record._turnId : undefined,
       });
@@ -149,11 +179,11 @@ export function updateSessionExecutionMode(
     updatedAt: new Date().toISOString(),
     preferences: { ...meta.preferences, executionMode },
   };
-  writeFileSync(path, `${JSON.stringify(updated, null, 2)}\n`, "utf-8");
+  writeJsonAtomicSync(path, updated);
   return updated;
 }
 
-function updateSessionMeta(workspacePath: string, sessionId: string, message: Message): void {
+async function updateSessionMeta(workspacePath: string, sessionId: string, message: Message): Promise<void> {
   const dir = sessionDir(workspacePath, sessionId);
   const path = resolve(dir, "meta.json");
   const now = new Date(message._timestamp ?? Date.now());
@@ -171,8 +201,9 @@ function updateSessionMeta(workspacePath: string, sessionId: string, message: Me
     pinned: existing?.pinned ?? false,
     context: existing?.context ?? { mode: "chat" },
     preferences: existing?.preferences ?? { executionMode: "normal" },
+    lastMessageSequence: message._sequence ?? existing?.lastMessageSequence ?? 0,
   };
-  writeFileSync(path, `${JSON.stringify(meta, null, 2)}\n`, "utf-8");
+  await writeJsonAtomic(path, meta);
 }
 
 function readSessionMetaPath(path: string): SessionMeta | undefined {
@@ -193,6 +224,11 @@ function readSessionMetaPath(path: string): SessionMeta | undefined {
       preferences: {
         executionMode: parsed.preferences?.executionMode === "plan" ? "plan" : "normal",
       },
+      lastMessageSequence: typeof parsed.lastMessageSequence === "number"
+        && Number.isInteger(parsed.lastMessageSequence)
+        && parsed.lastMessageSequence >= 0
+        ? parsed.lastMessageSequence
+        : 0,
     };
   } catch {
     return undefined;
@@ -227,4 +263,34 @@ function countMessageRecords(path: string): number {
     if (line.trim()) count++;
   }
   return count;
+}
+
+function getLastMessageSequence(workspacePath: string, sessionId: string): number {
+  return readSessionMessages(workspacePath, sessionId)
+    .reduce((max, message) => Math.max(max, message._sequence ?? 0), 0);
+}
+
+function legacyMessageId(
+  sessionId: string,
+  sequence: number,
+  role: Message["role"],
+  content: Message["content"],
+): string {
+  const digest = createHash("sha256")
+    .update(`${sessionId}\0${sequence}\0${role}\0${JSON.stringify(content)}`)
+    .digest("hex")
+    .slice(0, 24);
+  return `legacy_${digest}`;
+}
+
+async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+  const tmpPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
+  await rename(tmpPath, path);
+}
+
+function writeJsonAtomicSync(path: string, value: unknown): void {
+  const tmpPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
+  renameSync(tmpPath, path);
 }

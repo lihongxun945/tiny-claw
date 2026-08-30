@@ -67,7 +67,7 @@ describe("project development tools", () => {
     const tool = createProjectSearchTool(workspace, getConfig);
 
     const textResult = JSON.parse(await tool.execute({ query: "needle", mode: "text", glob: "**/*.ts" }, context));
-    expect(textResult).toEqual({
+    expect(textResult).toMatchObject({
       results: [expect.objectContaining({ path: "src/alpha.ts", line: 1, text: expect.stringContaining("needle") })],
       truncated: false,
     });

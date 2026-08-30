@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Config, Tool } from "../types.js";
+import type { Config, Tool, ToolExecutionContext } from "../types.js";
 import { checkDangerousToolPermission } from "./permission.js";
 import { loadMemoryState } from "../memory/state.js";
+import { allowedMemoryScopes, canAccessMemoryScope, memoryScopeForSession, resolveMemoryWriteScope } from "../memory/scope.js";
 
 // === 文件操作 ===
 
@@ -549,9 +550,10 @@ export function runMemoryMaintenance(
   return { stale, purged };
 }
 
-export function listMemories(workspacePath: string): string {
+export function listMemories(workspacePath: string, scopes?: string[]): string {
+  const allowed = scopes ? new Set(scopes) : undefined;
   const entries = listMemoryEntries(workspacePath)
-    .filter((entry) => !entry.meta.disabled);
+    .filter((entry) => !entry.meta.disabled && (!allowed || allowed.has(entry.meta.scope)));
 
   if (entries.length === 0) return "暂无记忆";
 
@@ -619,6 +621,17 @@ function memoryErrorResult(error: MemoryCapacityError): string {
   });
 }
 
+function memoryScopeError(scope: string): string {
+  return JSON.stringify({ error: "memory_scope_forbidden", message: `当前会话不能访问记忆作用域: ${scope}` });
+}
+
+function canAccessRecord(workspacePath: string, name: string, context?: ToolExecutionContext): string | null {
+  const record = getMemoryRecord(workspacePath, name);
+  return record && !canAccessMemoryScope(record.scope, context?.sessionContext)
+    ? memoryScopeError(record.scope)
+    : null;
+}
+
 // === 工具定义 ===
 
 export function createMemorySaveTool(workspacePath: string, getConfig: () => Config): Tool {
@@ -643,7 +656,7 @@ export function createMemorySaveTool(workspacePath: string, getConfig: () => Con
         },
         scope: {
           type: "string",
-          description: "作用域，如 global、project、user，默认 global",
+          description: "作用域；普通会话默认 global，项目会话默认当前项目，也可显式指定 global",
         },
         summary: {
           type: "string",
@@ -681,10 +694,20 @@ export function createMemorySaveTool(workspacePath: string, getConfig: () => Con
       const name = String(args.name ?? "");
       const content = String(args.content ?? "");
       try {
+        const existing = getMemoryRecord(workspacePath, name);
+        const requestedScope = typeof args.scope === "string" ? args.scope : existing?.scope;
+        const scope = resolveMemoryWriteScope(requestedScope, context?.sessionContext);
+        if (!scope) return memoryScopeError(String(args.scope ?? ""));
+        const denied = canAccessRecord(workspacePath, name, context);
+        if (denied) return denied;
         const supersedes = Array.isArray(args.supersedes) ? args.supersedes.map(String).filter(Boolean) : undefined;
+        for (const previousName of supersedes ?? []) {
+          const supersededDenied = canAccessRecord(workspacePath, previousName, context);
+          if (supersededDenied) return supersededDenied;
+        }
         const result = saveMemory(workspacePath, name, content, {
           tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
-          scope: typeof args.scope === "string" ? args.scope : undefined,
+          scope,
           summary: typeof args.summary === "string" ? args.summary : undefined,
           source: args.source === "auto" ? "auto" : undefined,
           supersedes,
@@ -743,6 +766,14 @@ export function createMemoryAppendTool(workspacePath: string, getConfig: () => C
       const name = String(args.name ?? "");
       const content = String(args.content ?? "");
       try {
+        const denied = canAccessRecord(workspacePath, name, context);
+        if (denied) return denied;
+        if (!getMemoryRecord(workspacePath, name)) {
+          return saveMemory(workspacePath, name, content, {
+            scope: memoryScopeForSession(context?.sessionContext),
+            limits: getMemoryLimits(getConfig()),
+          });
+        }
         return appendMemory(workspacePath, name, content, getMemoryLimits(getConfig()));
       } catch (error) {
         if (error instanceof MemoryCapacityError) return memoryErrorResult(error);
@@ -761,8 +792,8 @@ export function createMemoryListTool(workspacePath: string): Tool {
       type: "object" as const,
       properties: {},
     },
-    execute: async (): Promise<string> => {
-      return listMemories(workspacePath);
+    execute: async (_args, context): Promise<string> => {
+      return listMemories(workspacePath, allowedMemoryScopes(context?.sessionContext));
     },
   };
 }
@@ -782,8 +813,10 @@ export function createMemoryReadTool(workspacePath: string): Tool {
       },
       required: ["name"],
     },
-    execute: async (args: Record<string, unknown>): Promise<string> => {
-      return readMemory(workspacePath, String(args.name ?? ""));
+    execute: async (args: Record<string, unknown>, context): Promise<string> => {
+      const name = String(args.name ?? "");
+      const denied = canAccessRecord(workspacePath, name, context);
+      return denied ?? readMemory(workspacePath, name);
     },
   };
 }
@@ -814,8 +847,9 @@ export function createMemoryDeleteTool(workspacePath: string, getConfig: () => C
         cwd: memoryDir(workspacePath),
       });
       if (!permission.allowed) return permission.result;
-
-      return deleteMemory(workspacePath, String(args.name ?? ""));
+      const name = String(args.name ?? "");
+      const denied = canAccessRecord(workspacePath, name, context);
+      return denied ?? deleteMemory(workspacePath, name);
     },
   };
 }

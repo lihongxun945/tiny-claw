@@ -746,6 +746,24 @@ summary:focus-visible {
 .processing-dots span:nth-child(3) { animation-delay: 0.32s; }
 
 /* Tool execution */
+.summary-lifecycle-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  margin: 8px auto 14px;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.summary-lifecycle-notice.summary-failed {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
 .tool-call-group {
   margin: 9px 0;
   overflow: hidden;

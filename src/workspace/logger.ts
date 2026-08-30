@@ -15,14 +15,14 @@ function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true });
 }
 
-export function appendHistory(workspacePath: string, message: unknown, sessionId?: string): void {
+export async function appendHistory(workspacePath: string, message: unknown, sessionId?: string): Promise<Message> {
   if (sessionId) {
-    appendSessionMessage(workspacePath, sessionId, message as Message);
-    return;
+    return appendSessionMessage(workspacePath, sessionId, message as Message);
   }
   const dir = resolve(workspacePath, "sessions");
   ensureDir(dir);
   appendFileSync(resolve(dir, "unscoped.jsonl"), JSON.stringify(message) + "\n", "utf-8");
+  return message as Message;
 }
 
 export function appendLog(workspacePath: string, level: string, message: string, sessionId?: string): void {
