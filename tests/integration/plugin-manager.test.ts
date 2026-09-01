@@ -23,7 +23,7 @@ function modelClient(): ModelClient {
 }
 
 function addHooks(manager: PluginManager, hooks: PluginHooks): void {
-  (manager as unknown as { hooks: PluginHooks[] }).hooks.push(hooks);
+  createContext(manager, "test-hooks").registerHooks(hooks);
 }
 
 function createContext(manager: PluginManager, pluginName: string): PluginContext {
@@ -323,6 +323,34 @@ describe("PluginManager hook lifecycle", () => {
     ]);
   });
 
+  it("isolates active turns by session and releases their scoped resources", async () => {
+    const disposeMainTurn = vi.fn();
+    const disposeSecondTurn = vi.fn();
+    const disposeSecondSession = vi.fn();
+    manager.setRuntimeDeps(loadConfig(workspacePath), modelClient(), new MessageHistory(), "second");
+
+    const mainTurn = await manager.beginTurn("main", "turn-main", "plan");
+    const secondTurn = await manager.beginTurn("second", "turn-second", "normal");
+    mainTurn.disposables.add({ dispose: disposeMainTurn });
+    secondTurn.disposables.add({ dispose: disposeSecondTurn });
+    manager.createSessionScope("second").disposables.add({ dispose: disposeSecondSession });
+
+    expect(manager.getTurnId("main")).toBe("turn-main");
+    expect(manager.getExecutionMode("main")).toBe("plan");
+    expect(manager.getTurnId("second")).toBe("turn-second");
+
+    await manager.endTurn("main", "turn-main");
+    expect(disposeMainTurn).toHaveBeenCalledOnce();
+    expect(manager.getTurnId("main")).toBeUndefined();
+    expect(manager.getExecutionMode("main")).toBe("normal");
+    expect(manager.getTurnId("second")).toBe("turn-second");
+
+    await manager.clearRuntimeDeps("second");
+    expect(disposeSecondTurn).toHaveBeenCalledOnce();
+    expect(disposeSecondSession).toHaveBeenCalledOnce();
+    expect(manager.getTurnId("second")).toBeUndefined();
+  });
+
   it("registers core tools and applies tool permission filters", async () => {
     const filteredManager = new PluginManager(workspacePath, {
       allowedTools: ["web_search", "memory_list"],
@@ -336,17 +364,51 @@ describe("PluginManager hook lifecycle", () => {
   });
 
   it("lets plugins filter tool definitions for a specific session", () => {
-    const registry = (manager as unknown as {
-      registry: { register(tool: { name: string; description: string; inputSchema: { type: "object"; properties: Record<string, never> } }): void };
-    }).registry;
-    registry.register({ name: "first", description: "first", inputSchema: { type: "object", properties: {} } });
-    registry.register({ name: "second", description: "second", inputSchema: { type: "object", properties: {} } });
+    const context = createContext(manager, "test-tools");
+    context.registerTool({ name: "first", description: "first", inputSchema: { type: "object", properties: {} } });
+    context.registerTool({ name: "second", description: "second", inputSchema: { type: "object", properties: {} } });
     addHooks(manager, {
       onFilterToolDefinitions: (_ctx, definitions) => definitions.filter((definition) => definition.name === "second"),
     });
 
     expect(manager.getToolDefinitions(undefined, "normal").map((tool) => tool.name)).toEqual(["first", "second"]);
     expect(manager.getToolDefinitions(undefined, "normal", "main").map((tool) => tool.name)).toEqual(["second"]);
+  });
+
+  it("restores overridden tools and commands when later registrations are disposed", async () => {
+    const first = createContext(manager, "first-plugin");
+    const second = createContext(manager, "second-plugin");
+    const firstTool = { name: "shared", description: "first", inputSchema: { type: "object" as const, properties: {} } };
+    const secondTool = { name: "shared", description: "second", inputSchema: { type: "object" as const, properties: {} } };
+    first.registerTool(firstTool);
+    const toolOverride = second.registerTool(secondTool);
+    first.registerChatCommand({ name: "shared", aliases: ["alias"], description: "first", execute: () => ({ text: "first" }) });
+    const commandOverride = second.registerChatCommand({ name: "shared", aliases: ["alias"], description: "second", execute: () => ({ text: "second" }) });
+
+    expect(manager.getTool("shared")).toBe(secondTool);
+    await expect(manager.executeChatCommand("/alias", { sessionId: "main", channel: "web" })).resolves.toEqual({ text: "second" });
+
+    await toolOverride.dispose();
+    await commandOverride.dispose();
+    expect(manager.getTool("shared")).toBe(firstTool);
+    await expect(manager.executeChatCommand("/shared", { sessionId: "main", channel: "web" })).resolves.toEqual({ text: "first" });
+  });
+
+  it("uses a stable hook snapshot and applies disposal to the next dispatch", async () => {
+    const calls: string[] = [];
+    const context = createContext(manager, "disposable-hooks");
+    let firstRegistration: { dispose(): void | Promise<void> };
+    firstRegistration = context.registerHooks({
+      onBeforeChat: () => {
+        calls.push("first");
+        void firstRegistration.dispose();
+      },
+    });
+    context.registerHooks({ onBeforeChat: () => { calls.push("second"); } });
+
+    await manager.callOnBeforeChat("one", "main");
+    await manager.callOnBeforeChat("two", "main");
+    expect(calls).toEqual(["first", "second", "second"]);
   });
 
   it("persists model debug events, sanitizes image data, and exposes trace routes", async () => {
@@ -421,21 +483,21 @@ describe("PluginManager hook lifecycle", () => {
     }));
   });
 
-  it("provides routes, prompt sections, session factory and plugin config through context", () => {
+  it("provides routes, prompt sections, session factory and plugin config through context", async () => {
     const session = {} as AgentSession;
     const getOrCreateSession = vi.fn(() => session);
-    const deleteSession = vi.fn(() => true);
+    const deleteSession = vi.fn(async () => true);
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     manager.setPluginConfigs({ custom: { enabled: true } });
     manager.setSessionFactory({ getOrCreateSession, deleteSession });
     const ctx = createContext(manager, "custom");
 
-    ctx.registerRoute({
+    const routeRegistration = ctx.registerRoute({
       method: "GET",
       path: "/custom",
       handler: async () => {},
     });
-    ctx.extendPrompt({ title: "custom", content: "section", priority: 1 });
+    const promptRegistration = ctx.extendPrompt({ title: "custom", content: "section", priority: 1 });
     ctx.log("INFO", "hello", "main");
 
     expect(ctx.config).toEqual({ enabled: true });
@@ -446,10 +508,15 @@ describe("PluginManager hook lifecycle", () => {
       { title: "custom", content: "section", priority: 1 },
     ]);
     expect(ctx.getOrCreateSession("id", "prefix")).toBe(session);
-    expect(ctx.deleteSession("id")).toBe(true);
+    await expect(ctx.deleteSession("id")).resolves.toBe(true);
     expect(getOrCreateSession).toHaveBeenCalledWith("id", "prefix");
     expect(deleteSession).toHaveBeenCalledWith("id");
     expect(log).toHaveBeenCalledWith(expect.stringContaining("[custom] [main] hello"));
+
+    await routeRegistration.dispose();
+    await promptRegistration.dispose();
+    expect(manager.getRoutes()).toEqual([]);
+    expect(manager.getPromptSections()).toEqual([]);
   });
 
   it("destroys plugins without stopping after a plugin failure", async () => {

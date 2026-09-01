@@ -183,6 +183,8 @@ describe("loadConfig", () => {
     [{ sessionSummary: { checkpointMaxChars: 999 } }, "配置字段 sessionSummary.checkpointMaxChars 超出允许范围"],
     [{ enabledPlugins: "feishu" }, "配置字段 enabledPlugins 必须是字符串数组"],
     [{ plugins: [] }, "配置字段 plugins 必须是对象"],
+    [{ pluginStates: [] }, "配置字段 pluginStates 必须是对象"],
+    [{ pluginStates: { demo: { enabled: "yes" } } }, "配置字段 pluginStates.demo.enabled 必须是布尔值"],
   ])("rejects invalid configuration", (overrides, message) => {
     const workspacePath = createTempWorkspace(overrides);
     workspaces.push(workspacePath);

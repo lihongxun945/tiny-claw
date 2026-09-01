@@ -4,6 +4,10 @@ import type { MessageHistory } from "../history.js";
 import type { Tool, ToolDefinition, Config, Message, ChatResponse, AgentActor, SessionContext, ExecutionMode } from "../types.js";
 import type { ModelClient } from "../model/index.js";
 import type { ModelDebugEvent } from "../model/types.js";
+import type { ApplicationScope } from "../kernel/scope.js";
+import type { CapabilityRegistry } from "../kernel/registry.js";
+import type { Disposable } from "../kernel/disposable.js";
+import type { PluginManifest, PluginPermissionDeclaration } from "../kernel/plugin.js";
 
 // === 插件接口 ===
 
@@ -16,16 +20,20 @@ export interface Plugin {
 // === 宿主提供给插件的 API ===
 
 export interface PluginContext {
-  config: Record<string, unknown>;
+  readonly manifest: PluginManifest;
+  readonly permissions: Readonly<PluginPermissionDeclaration>;
+  applicationScope: ApplicationScope;
+  capabilities: CapabilityRegistry;
+  readonly config: Readonly<Record<string, unknown>>;
   workspacePath: string;
-  registerRoute(route: RouteDefinition): void;
-  registerTool(tool: Tool): void;
-  registerChatCommand(command: ChatCommand): void;
+  registerRoute(route: RouteDefinition): Disposable;
+  registerTool(tool: Tool): Disposable;
+  registerChatCommand(command: ChatCommand): Disposable;
   executeChatCommand(input: string, options: ExecuteChatCommandOptions): Promise<ChatCommandResult | undefined>;
-  registerHooks(hooks: PluginHooks): void;
-  extendPrompt(section: PromptSection): void;
+  registerHooks(hooks: PluginHooks): Disposable;
+  extendPrompt(section: PromptSection): Disposable;
   getOrCreateSession(id: string, prefix?: string): AgentSession;
-  deleteSession(id: string): boolean;
+  deleteSession(id: string): Promise<boolean>;
   log(level: "INFO" | "WARN" | "ERROR", message: string, sessionId?: string): void;
 }
 

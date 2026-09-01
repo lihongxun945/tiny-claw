@@ -157,6 +157,9 @@
   },
   "enabledPlugins": ["feishu"],
   "externalPlugins": [],
+  "pluginStates": {
+    "feishu": { "enabled": true }
+  },
   "plugins": {
     "feishu": {
       "appId": "cli_xxx",

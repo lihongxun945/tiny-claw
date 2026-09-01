@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 import { startTestGateway, type TestGateway } from "../helpers/start-gateway.js";
@@ -78,6 +78,87 @@ describe("Gateway HTTP API", () => {
         },
       },
     });
+  });
+
+  it("exposes plugin metadata and safely updates declared plugin config", async () => {
+    await gateway.stop();
+    const pluginDir = resolve(workspacePath, "plugins", "configured");
+    mkdirSync(pluginDir, { recursive: true });
+    writeFileSync(resolve(pluginDir, "index.ts"), `
+      export default {
+        manifest: {
+          id: "configured",
+          version: "1.0.0",
+          kind: "workspace",
+          description: "Configured plugin",
+          config: { fields: {
+            endpoint: { type: "string", title: "Endpoint", required: true },
+            token: { type: "string", title: "Token", required: true, secret: true }
+          } },
+          permissions: { tools: ["configured_tool"] }
+        },
+        setup(ctx) {
+          ctx.registerTool({ name: "configured_tool", description: "test", inputSchema: { type: "object", properties: {} } });
+        }
+      };
+    `, "utf-8");
+    const configPath = resolve(workspacePath, "config.json");
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    config.plugins.configured = { endpoint: "https://old.example", token: "private-token" };
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+    gateway = await startTestGateway(workspacePath);
+
+    const list = await json(`${gateway.apiUrl}/plugins`);
+    expect(list.status).toBe(200);
+    expect(list.body.plugins).toContainEqual(expect.objectContaining({ id: "configured", state: "active" }));
+
+    const before = await json(`${gateway.apiUrl}/plugins/configured/config`);
+    expect(before.body).toMatchObject({ config: { endpoint: "https://old.example", token: "priv***" }, valid: true });
+
+    const saved = await json(`${gateway.apiUrl}/plugins/configured/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ endpoint: "https://new.example", token: "priv***" }),
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.plugin).toMatchObject({ id: "configured", state: "active" });
+    expect(JSON.parse(readFileSync(configPath, "utf-8")).plugins.configured).toEqual({
+      endpoint: "https://new.example",
+      token: "private-token",
+    });
+
+    const invalid = await json(`${gateway.apiUrl}/plugins/configured/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ endpoint: 1, token: "private-token" }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.issues).toContainEqual(expect.objectContaining({ path: "endpoint", severity: "error" }));
+
+    const disabled = await json(`${gateway.apiUrl}/plugins/configured/state`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(disabled.status).toBe(200);
+    expect(disabled.body.plugin).toMatchObject({ id: "configured", enabled: false, state: "stopped" });
+    expect(JSON.parse(readFileSync(configPath, "utf-8")).pluginStates.configured).toEqual({ enabled: false });
+
+    await gateway.stop();
+    gateway = await startTestGateway(workspacePath);
+    const afterRestart = await json(`${gateway.apiUrl}/plugins`);
+    expect(afterRestart.body.plugins).toContainEqual(expect.objectContaining({
+      id: "configured",
+      enabled: false,
+    }));
+
+    const enabled = await json(`${gateway.apiUrl}/plugins/configured/state`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(enabled.status).toBe(200);
+    expect(enabled.body.plugin).toMatchObject({ id: "configured", enabled: true, state: "active" });
   });
 
   it("starts with a generated first-run config when config.json is missing", async () => {

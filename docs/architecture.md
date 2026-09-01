@@ -22,6 +22,19 @@ src/
 ├── gateway-sse.ts    # SSE 心跳生命周期管理
 ├── agent.ts          # AgentSession 类（核心 Agent Loop，仅编排流程+调用钩子）
 ├── plugin-manager.ts # 插件管理器（生命周期、工具注册、钩子调度）
+├── kernel/          # 类型化插件内核（Capability、作用域与资源释放）
+│   ├── capability.ts # Capability Token 与单例/多实例声明
+│   ├── registry.ts # 支持优先级和父级继承的 Capability Registry
+│   ├── disposable.ts # 可逆序释放的资源集合
+│   ├── scope.ts # Application / Session / Turn 三级作用域
+│   ├── runtime-values.ts # Session 运行依赖与 Turn 状态 Token
+│   ├── plugin.ts # 新插件 manifest 与内核上下文类型
+│   ├── plugin-graph.ts # Manifest、SemVer 依赖与拓扑排序
+│   ├── plugin-container.ts # 单插件状态机与资源代
+│   ├── plugin-host.ts # 插件发现后的统一启停与故障隔离
+│   ├── plugin-config.ts # 插件私有配置默认值、校验、冻结与 Secret 处理
+│   ├── plugin-permissions.ts # Manifest 权限声明检查与注册边界
+│   └── builtin-capabilities.ts # 工具、命令、路由、钩子和提示词 Capability
 ├── config.ts         # 配置加载（从 workspace 读取）
 ├── client.ts         # 模型客户端兼容导出
 ├── model/            # 模型协议适配层
@@ -42,7 +55,7 @@ src/
 │   └── sub_agent.md  # sub-agent 任务提示词模板
 ├── plugins/          # 插件系统
 │   ├── types.ts      # Plugin、PluginContext、PluginHooks、HookContext 接口
-│   ├── loader.ts     # 插件加载器（内置/外部动态加载）
+│   ├── loader.ts     # 插件发现器（只导入和标准化，不直接启动）
 │   ├── core/         # 核心插件包（始终启用）
 │   │   ├── index.ts  # 聚合导出所有核心插件
 │   │   ├── tools.ts  # 基础工具注册插件（文件、搜索、记忆、技能等）
@@ -60,7 +73,7 @@ src/
 │       ├── client.ts # FeishuClient
 │       └── handler.ts # 事件处理
 ├── tools/            # 工具实现（工厂函数，供核心插件导入）
-│   ├── registry.ts   # 工具注册中心（由 PluginManager 内部持有）
+│   ├── registry.ts   # 独立工具注册表（保留给独立场景，PluginManager 使用 Capability）
 │   ├── search.ts     # 网络搜索（多 provider）
 │   ├── web_fetch.ts  # 网页内容获取
 │   ├── bash.ts       # Shell 命令执行
@@ -88,6 +101,10 @@ desktop/                # Electron macOS 桌面壳
 ├── workspace.ts        # 桌面 workspace 首次初始化
 └── tsconfig.json       # 桌面主进程独立编译配置
 ```
+
+插件 Manifest 可以声明私有配置 Schema 和权限需求。`plugins.<id>` 是插件配置的持久化位置，`pluginStates.<id>.enabled` 保存用户插件的启用状态；未配置时默认启用，核心插件始终启用且不可切换。禁用插件仍会被发现并显示在管理页，但不会执行 `setup()` 或注册任何能力；停用必需依赖时，宿主会拒绝操作并列出仍在运行的依赖者。宿主在 `setup()` 前完成默认值合并、类型校验和深度冻结；配置错误使用户插件进入 `blocked`，不会影响无依赖的其他插件。Secret 字段由 Manifest 标记，插件管理 API 和 WebUI 只返回掩码，掩码回写时保留磁盘中的真实值。WebUI 插件页可查看状态、依赖、配置问题与权限，并启停用户插件或在保存配置后只重载目标插件。
+
+权限声明和运行时审批分层：新式 builtin、workspace、external 插件注册工具或 Gateway 路由时必须先声明对应能力，但声明不代表授权；危险工具仍进入 `security.mode`、工具级覆盖、自动风险判断和用户审批链路。旧 Plugin 接口在迁移期继续适配。由于插件与宿主仍在同一 Node.js 进程中，Manifest 权限是治理与审计边界，不是进程级安全沙箱。
 
 跨会话记忆拆分为两个独立模块。`core-profile-memory` 管理 `workspace/profile/*.md`，保存稳定用户身份、偏好和长期约束，并在每次模型调用前通过 `onBuildTurnPrompt` 固定注入全文；Profile 不进入向量数据库，也不按时间衰减。`core-vector-memory` 管理 `workspace/memory/*.md`，Markdown 是可读、可恢复的事实源，嵌入式 LanceDB 是可重建的检索索引；每轮用户消息触发语义向量、关键词和 metadata 过滤的混合检索，只把达到阈值的少量结果加入 Prompt。Embedding 或向量索引故障时退化为关键词检索，不阻断 Agent Loop。
 
@@ -201,6 +218,7 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 | enabledPlugins | 启用的内置插件列表 | [] |
 | externalPlugins | 外部插件模块路径列表 | [] |
 | plugins | 插件配置（按插件名命名空间） | {} |
+| pluginStates | 用户插件启用状态（按插件 ID 命名空间） | {} |
 | subAgent | Sub-agent 配置（工具权限、迭代数、并发数） | 见下文 |
 
 ### identity.md
@@ -482,9 +500,9 @@ token 估算采用统一粗略规则，只用于预算保护。压缩使用 `cli
 
 ### 工具注册：插件化
 
-工具通过 `ToolRegistry.register(tool)` 注册，由 `PluginManager` 内部持有 `ToolRegistry` 实例。核心插件 `plugins/core/tools.ts` 在初始化时通过 `ctx.registerTool()` 注册基础内置工具，`plugins/core/sub-agent.ts` 单独注册 `sub_agent_run`。
+工具通过 `PluginContext.registerTool()` 注册到 `TOOL_CAPABILITY`。核心插件 `plugins/core/tools.ts` 在初始化时注册基础内置工具，`plugins/core/sub-agent.ts` 单独注册 `sub_agent_run`。
 
-插件也可以注册自己的工具，通过 `PluginContext.registerTool()` 方法。所有插件的工具统一合并到 PluginManager 的 ToolRegistry 中，模型调用时通过 `getTool(name)` 查找执行。新增工具只需：1) 在任意插件中实现 Tool 接口 2) 在插件 init 中注册。
+所有插件的工具由 PluginManager 从 Capability Registry 动态合并，模型调用时通过 `getTool(name)` 查找执行。同名工具后注册者覆盖前注册者，卸载覆盖项后自动回退。新增工具只需：1) 在任意插件中实现 Tool 接口 2) 在插件 init 中注册。
 
 `PluginManager` 支持工具白名单/黑名单过滤（`allowedTools` / `disabledTools`），用于 sub-agent 等需要收敛权限的场景。工具在注册阶段被过滤，模型看不到被禁用的工具定义，也无法调用这些工具。文件工具支持 workspace 外路径；危险操作默认使用自动审批，可通过 `security.mode` 或 `security.tools.<tool>.mode` 配置为 `ask`、`auto` 或 `allow`。灾难性操作由自动审批策略在内部直接拒绝，不作为用户可选模式。
 
@@ -727,6 +745,18 @@ tiny-claw 采用插件化架构，主框架（AgentSession）只负责编排 Age
 
 **核心原则：** 插件通过注册钩子介入流程，框架通过 PluginManager 统一调度。
 
+**类型化插件内核（第一阶段）：** `src/kernel/` 提供 Capability Registry 和 Application / Session / Turn 三级作用域。Capability Token 显式声明单例或多实例语义；单例能力按优先级选择，同优先级冲突直接报错，多实例能力按优先级有序聚合。子作用域继承父级能力与作用域数据，又可以在本地隔离 Session 和 Turn 状态；销毁作用域时会递归、逆序释放已注册资源。
+
+第三阶段已将 Capability Registry 切换为唯一能力数据源。`PluginManager` 不再维护工具、命令、路由、Prompt Section 和 Hook 的重复容器；Agent Loop、Gateway 和命令分发都通过对应 Capability 快照读取。工具和命令重名时保持“后注册覆盖前注册”语义，覆盖项卸载后会自动回退到上一个贡献。Hook 每次调度开始时获取稳定快照，调度中发生的卸载从下一次生命周期调用起生效。
+
+旧 `registerTool` / `registerChatCommand` / `registerRoute` / `registerHooks` / `extendPrompt` API 仍保留，但只向 Capability Registry 写入，并返回幂等 `Disposable`。现有插件可继续忽略返回值；需要动态卸载单项能力时可调用 `dispose()`，ApplicationScope 销毁时仍会兜底释放全部注册。
+
+第二阶段已将会话运行状态迁入 Scope：`PluginManager` 只保留 `sessionId -> SessionScope` 定位索引，`Config`、`ModelClient`、`MessageHistory` 和 `SessionContext` 存储于 SessionScope，`turnId` 和 `executionMode` 存储于当前 TurnScope。普通完成、错误和取消会释放 TurnScope；等待审批时保留原 TurnScope，批准后复用它继续执行。Gateway 重启后仍以 `events.jsonl` 为恢复事实源，并用持久化的 turn ID 和执行模式重建 Scope，不依赖旧内存对象。Session 删除、超时回收、配置刷新和 Gateway 退出都等待 SessionScope 递归释放。
+
+第四阶段引入 `PluginHost`、`PluginGraph` 和 `PluginContainer`。Loader 先只发现并导入插件，再由 PluginHost 在全部注册后校验 Manifest、SemVer 依赖和循环依赖，按拓扑顺序启动、反向顺序停止。每个插件容器独立持有 `DisposableStore`；启动失败会回滚该插件已注册的所有能力，停用后工具、命令、路由和 Hook 立即消失，重新启动时创建新的资源代。核心插件校验或启动失败会终止宿主启动；用户插件失败只标记自身 `failed` 并将必需依赖者标记为 `blocked`，独立插件继续启动。
+
+新插件可实现带 `manifest` 和 `setup()` 的 `KernelPlugin`；现有 `{ name, init, destroy }` 插件由适配器转为版本 `0.0.0` 的 KernelPlugin，无霋立即改造。PluginManager 对内提供插件状态列表以及启动、停用和重载方法；workspace 插件重载时使用唯一 import URL 绕过 ESM 模块缓存，重新校验导出 ID 后创建新容器。本阶段不暴露 HTTP 管理 API，也不修改配置格式。
+
 **Plugin 接口：**
 
 ```typescript
@@ -737,20 +767,35 @@ interface Plugin {
 }
 ```
 
+**KernelPlugin Manifest：**
+
+```typescript
+interface PluginManifest {
+  id: string;
+  version: string;
+  kind: "core" | "builtin" | "workspace" | "external";
+  requires?: Record<string, string>;
+  optional?: Record<string, string>;
+  provides?: string[];
+}
+```
+
 **PluginContext（宿主提供）：**
 
 | 方法/属性 | 说明 |
 |-----------|------|
 | `config` | 插件专属配置（来自 `plugins.<name>`） |
 | `workspacePath` | 工作目录路径 |
-| `registerRoute(route)` | 注册 HTTP 路由 |
-| `registerTool(tool)` | 注册工具到全局 ToolRegistry |
-| `registerChatCommand(command)` | 注册用户显式触发的斜杠聊天命令 |
+| `applicationScope` | 宿主级作用域，统一管理 Capability 和可释放资源 |
+| `capabilities` | ApplicationScope 的类型化 Capability Registry |
+| `registerRoute(route)` | 注册 HTTP 路由并返回 `Disposable` |
+| `registerTool(tool)` | 注册工具 Capability 并返回 `Disposable` |
+| `registerChatCommand(command)` | 注册用户显式触发的斜杠聊天命令并返回 `Disposable` |
 | `executeChatCommand(input, options)` | 执行已注册聊天命令，供平台插件复用 |
-| `registerHooks(hooks)` | 注册生命周期钩子 |
-| `extendPrompt(section)` | 注册提示词片段（追加到系统提示词） |
+| `registerHooks(hooks)` | 注册生命周期钩子并返回 `Disposable` |
+| `extendPrompt(section)` | 注册提示词片段并返回 `Disposable` |
 | `getOrCreateSession(id, prefix?)` | 获取/创建 AgentSession |
-| `deleteSession(id)` | 删除会话 |
+| `deleteSession(id)` | 异步删除会话并等待 SessionScope 资源释放 |
 | `log(level, message, sessionId?)` | 插件日志 |
 
 **插件分类：**
@@ -793,9 +838,9 @@ interface Plugin {
 `PluginManager` 是插件系统的核心，负责：
 - 加载核心插件（始终启用）
 - 加载用户插件（从配置读取）
-- 维护 `ToolRegistry`（所有插件的工具合并注册）
-- 维护钩子列表（负责调度）
-- 维护路由注册表（Gateway 使用）
+- 通过 Capability Registry 查询工具、命令、路由、Prompt Section 和 Hook
+- 按稳定快照串行调度 Hook
+- 委托 PluginHost 管理 Manifest 校验、依赖顺序、故障隔离与插件级资源
 - 提供 `setRuntimeDeps()` 在 AgentSession 创建后注入 `Config` 和 `ModelClient`
 
 **路由注册表：** Gateway 启动时通过 PluginManager 加载插件，插件通过 `registerRoute()` 注册路由。请求匹配时插件路由优先于核心路由。
@@ -871,7 +916,7 @@ npm run test:all      # 类型检查 + coverage + WebUI build + E2E
 - 长期记忆：CRUD、禁用过滤、旧文件兼容、工具包装器
 - 配置加载：默认值、搜索配置、必填字段校验
 - 搜索 provider：Ollama、DuckDuckGo、Brave、SearXNG、动态 key 刷新
-- `ToolRegistry`：注册、定义导出、同名覆盖
+- `TOOL_CAPABILITY`：注册、定义导出、同名覆盖与卸载回退
 - `PluginManager`：生命周期管道、阻断、结果修改、多 session 隔离、工具权限过滤
 - 插件加载器：外部插件加载、非法插件拒绝、销毁容错
 - `AgentSession`：直接回复、工具回环、未知工具、工具异常、模型异常、最大迭代次数

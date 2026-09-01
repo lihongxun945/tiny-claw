@@ -52,6 +52,7 @@ tiny-claw 更关注 Agent 核心机制的可读性和可扩展性，适合学习
 - 点击“新对话”创建新会话；历史会话会显示在左侧列表中。
 - 在“记忆”页面查看、编辑、禁用或删除长期记忆。
 - 在“日志”页面查看运行日志、模型调用错误和工具审计记录。
+- 在“插件”页面查看插件状态、依赖和权限声明，并编辑插件自己声明的私有配置；保存后会自动重载目标插件。
 - 在“配置”页面修改模型、上下文、搜索、权限、Sub-agent、插件和调试设置。
 - 当工具需要审批时，在聊天消息的工具块中点击“批准”或“拒绝”；批准后原任务会自动继续执行。
 - 项目模式的 `project_search` 会优先使用系统 `rg` 加速；未安装 ripgrep 时会自动使用内置搜索实现。
@@ -199,6 +200,7 @@ WebUI 支持浅色和深色主题，可在左侧栏底部切换。首次打开�
 | `enabledPlugins` | `[]` | `["feishu"]` | 启用的内置插件列表 |
 | `externalPlugins` | `[]` | `["./workspace/plugins/foo/index.ts"]` | 额外加载的外部插件入口 |
 | `plugins` | `{}` | `{ "feishu": { "appId": "cli_xxx" } }` | 插件私有配置 |
+| `pluginStates` | `{}` | `{ "feishu": { "enabled": false } }` | 用户插件启用状态；未配置时默认启用，核心插件不可禁用 |
 | `subAgent` | 见下文 | `{ "maxConcurrency": 3 }` | Sub-agent 工具权限与并发配置 |
 | `sessionSummary` | 见下文 | `{ "enabled": true }` | 会话滚动摘要与持久化配置 |
 | `autoMemory` | 见下文 | `{ "mode": "hybrid" }` | 自动长期记忆配置 |

@@ -181,10 +181,9 @@ export class AgentSession {
     }
     const controller = new AbortController();
     this.activeController = controller;
-    this.pluginManager.setExecutionMode(this.id, executionMode);
-    this.pluginManager.setTurnId(this.id, turnId);
 
     try {
+      await this.pluginManager.beginTurn(this.id, turnId, executionMode);
       this.lastActivity = Date.now();
 
       // 1. Before Chat Hook：日志记录 + 可能的阻断或输入修改
@@ -210,8 +209,7 @@ export class AgentSession {
       yield { type: "error", message: error.message };
     } finally {
       clearTurnApproval(this.workspacePath, this.id, actor);
-      this.pluginManager.clearExecutionMode(this.id);
-      this.pluginManager.clearTurnId(this.id);
+      await this.pluginManager.endTurn(this.id, turnId, this.pendingApprovals.size > 0);
       if (this.activeController === controller) this.activeController = undefined;
     }
   }
@@ -232,11 +230,10 @@ export class AgentSession {
 
     const controller = new AbortController();
     this.activeController = controller;
-    this.pluginManager.setExecutionMode(this.id, pending.executionMode);
-    this.pluginManager.setTurnId(this.id, pending.turnId);
     let agentIteration = pending.iteration;
 
     try {
+      await this.pluginManager.beginTurn(this.id, pending.turnId, pending.executionMode);
       this.lastActivity = Date.now();
       if (!this.systemPrompt) {
         this.systemPrompt = await this.pluginManager.callOnBuildPrompt("", this.id);
@@ -261,8 +258,7 @@ export class AgentSession {
       yield { type: "error", message: error.message };
     } finally {
       clearTurnApproval(this.workspacePath, this.id, actor);
-      this.pluginManager.clearExecutionMode(this.id);
-      this.pluginManager.clearTurnId(this.id);
+      await this.pluginManager.endTurn(this.id, pending.turnId, this.pendingApprovals.size > 0);
       if (this.activeController === controller) this.activeController = undefined;
     }
   }

@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureConfigFile, loadConfig, validateConfig } from "./config.js";
@@ -35,6 +35,7 @@ import { inspectProject } from "./project.js";
 import type { ExecutionMode, SessionContext } from "./types.js";
 import { listSessionPlans, type SessionPlan } from "./plan-store.js";
 import { ensureWebBuild } from "./web-build.js";
+import { maskPluginConfig, restoreMaskedPluginConfig } from "./kernel/plugin-config.js";
 
 const SESSION_TIMEOUT = 30 * 60 * 1000;
 const DEFAULT_SSE_HEARTBEAT_INTERVAL_MS = 15_000;
@@ -325,6 +326,12 @@ function stripDeprecatedConfigFields(config: Record<string, unknown>): Record<st
   return { ...config, autoMemory: restAutoMemory };
 }
 
+function writeJSONAtomic(path: string, value: unknown): void {
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
+  renameSync(temporaryPath, path);
+}
+
 function isMemorySource(value: unknown): value is MemorySource {
   return value === "manual" || value === "tool" || value === "auto";
 }
@@ -405,17 +412,17 @@ function getOrCreateSession(sessionId: string | undefined, wp?: string, pm?: Plu
   return session;
 }
 
-function cleanupSessions(): void {
+async function cleanupSessions(): Promise<void> {
   const now = Date.now();
   for (const [id, session] of sessions) {
     if (!session.isBusy() && now - session.lastActivity > SESSION_TIMEOUT) {
       sessions.delete(id);
-      globalPluginManager?.clearRuntimeDeps(id);
+      await globalPluginManager?.clearRuntimeDeps(id);
     }
   }
 }
 
-const cleanupTimer = setInterval(cleanupSessions, 5 * 60 * 1000);
+const cleanupTimer = setInterval(() => { void cleanupSessions(); }, 5 * 60 * 1000);
 cleanupTimer.unref();
 
 // === HTTP 服务器 ===
@@ -441,10 +448,10 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
   // 为用户插件设置 Session 工厂（Gateway 特有）
   pm.setSessionFactory({
     getOrCreateSession: (id, prefix) => getOrCreateSession(prefix ? `${prefix}:${id}` : id, workspacePath, pm),
-    deleteSession: (id) => {
+    deleteSession: async (id) => {
       sessions.get(id)?.cancel();
       const deleted = sessions.delete(id);
-      pm.clearRuntimeDeps(id);
+      await pm.clearRuntimeDeps(id);
       return deleted;
     },
   });
@@ -452,6 +459,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     builtinPlugins: config.enabledPlugins,
     externalPlugins: config.externalPlugins,
     pluginConfigs: config.plugins,
+    pluginStates: config.pluginStates,
   });
 
   const pidPath = getPidPath(workspacePath);
@@ -830,7 +838,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const id = decodeURIComponent(url.pathname.slice("/sessions/".length));
       sessions.get(id)?.cancel();
       const deletedActive = sessions.delete(id);
-      pm.clearRuntimeDeps(id);
+      await pm.clearRuntimeDeps(id);
       const stored = deleteStoredSession(workspacePath, id);
       if (deletedActive || stored.deleted) {
         appendLog(workspacePath, "INFO", `会话已删除，历史记录 ${stored.deletedHistoryRecords} 条，会话记忆 ${stored.deletedSessionState ? "已删除" : "无"}`, id);
@@ -905,6 +913,109 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/plugins") {
+      sendJSON(res, 200, { plugins: pm.listPlugins() });
+      return;
+    }
+
+    const pluginStateMatch = url.pathname.match(/^\/plugins\/([^/]+)\/state$/);
+    if (pluginStateMatch && req.method === "PUT") {
+      const id = decodeURIComponent(pluginStateMatch[1]);
+      const plugin = pm.listPlugins().find((item) => item.id === id);
+      if (!plugin) {
+        sendJSON(res, 404, { error: `插件不存在: ${id}` });
+        return;
+      }
+      if (!plugin.canToggle) {
+        sendJSON(res, 400, { error: `核心插件 ${id} 不可修改启用状态` });
+        return;
+      }
+      try {
+        const body = JSON.parse(await readBody(req)) as { enabled?: unknown };
+        if (typeof body.enabled !== "boolean") throw new Error("enabled 必须是布尔值");
+        await pm.setPluginEnabled(id, body.enabled);
+        const configPath = resolve(workspacePath, "config.json");
+        const raw = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+        const pluginStates = raw.pluginStates && typeof raw.pluginStates === "object" && !Array.isArray(raw.pluginStates)
+          ? { ...raw.pluginStates as Record<string, { enabled?: boolean }> }
+          : {};
+        pluginStates[id] = { enabled: body.enabled };
+        const next = { ...raw, pluginStates };
+        validateConfig(next);
+        writeJSONAtomic(configPath, next);
+        sendJSON(res, 200, { plugin: pm.listPlugins().find((item) => item.id === id) });
+      } catch (error) {
+        sendJSON(res, 400, { error: `更新插件状态失败: ${error instanceof Error ? error.message : String(error)}` });
+      }
+      return;
+    }
+
+    const pluginConfigMatch = url.pathname.match(/^\/plugins\/([^/]+)\/config$/);
+    if (pluginConfigMatch && req.method === "GET") {
+      const id = decodeURIComponent(pluginConfigMatch[1]);
+      const pluginConfig = pm.getPluginConfig(id);
+      if (!pluginConfig) {
+        sendJSON(res, 404, { error: `插件不存在: ${id}` });
+        return;
+      }
+      sendJSON(res, 200, {
+        pluginId: id,
+        schema: pluginConfig.declaration,
+        config: maskPluginConfig(pluginConfig.declaration, pluginConfig.value as Record<string, unknown>),
+        valid: pluginConfig.valid,
+        issues: pluginConfig.issues,
+      });
+      return;
+    }
+
+    if (pluginConfigMatch && req.method === "PUT") {
+      const id = decodeURIComponent(pluginConfigMatch[1]);
+      const manifest = pm.getPluginManifest(id);
+      if (!manifest) {
+        sendJSON(res, 404, { error: `插件不存在: ${id}` });
+        return;
+      }
+      if (!manifest.config) {
+        sendJSON(res, 400, { error: `插件 ${id} 未声明可编辑配置` });
+        return;
+      }
+      try {
+        const body = JSON.parse(await readBody(req)) as unknown;
+        if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("插件配置必须是 JSON 对象");
+        const configPath = resolve(workspacePath, "config.json");
+        const raw = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+        const plugins = raw.plugins && typeof raw.plugins === "object" && !Array.isArray(raw.plugins)
+          ? { ...raw.plugins as Record<string, Record<string, unknown>> }
+          : {};
+        const existing = plugins[id] ?? {};
+        const restored = restoreMaskedPluginConfig(manifest.config, body as Record<string, unknown>, existing);
+        const validation = pm.validatePluginConfig(id, restored)!;
+        if (!validation.valid) {
+          sendJSON(res, 400, { error: "插件配置校验失败", issues: validation.issues });
+          return;
+        }
+        plugins[id] = restored;
+        const next = { ...raw, plugins };
+        validateConfig(next);
+        writeJSONAtomic(configPath, next);
+        pm.setPluginConfigs(plugins);
+        const snapshot = pm.listPlugins().find((item) => item.id === id);
+        if (snapshot?.enabled) await pm.reloadPlugin(id);
+        const latest = pm.getPluginConfig(id)!;
+        sendJSON(res, 200, {
+          pluginId: id,
+          schema: latest.declaration,
+          config: maskPluginConfig(latest.declaration, latest.value as Record<string, unknown>),
+          valid: latest.valid,
+          issues: latest.issues,
+          plugin: pm.listPlugins().find((item) => item.id === id),
+        });
+      } catch (error) {
+        sendJSON(res, 400, { error: `更新插件配置失败: ${error instanceof Error ? error.message : String(error)}` });
+      }
+      return;
+    }
+
     // PUT /config — 更新配置
     if (req.method === "PUT" && url.pathname === "/config") {
       try {
@@ -913,11 +1024,12 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         const updates = restoreMaskedSecrets(JSON.parse(await readBody(req)), existing) as Record<string, unknown>;
         const merged = stripDeprecatedConfigFields({ ...existing, ...updates });
         validateConfig(merged);
-        writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n", "utf-8");
+        writeJSONAtomic(configPath, merged);
+        pm.setPluginConfigs((merged.plugins as Record<string, Record<string, unknown>> | undefined) ?? {});
         for (const [sessionId, session] of sessions) {
           if (session.isBusy()) continue;
           sessions.delete(sessionId);
-          pm.clearRuntimeDeps(sessionId);
+          await pm.clearRuntimeDeps(sessionId);
         }
         sendJSON(res, 200, { config: maskConfigSecrets(merged) });
       } catch (err) {
@@ -974,7 +1086,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const url = new URL(req.url ?? "/", `http://localhost:${webPort}`);
 
       // 代理 API 请求到 gateway
-      if (url.pathname === "/chat" || url.pathname === "/plan" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname.startsWith("/projects/") || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/memory" || url.pathname === "/profile" || url.pathname === "/profile/get" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname === "/local-models" || url.pathname === "/local-models/download" || url.pathname === "/models/test" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
+      if (url.pathname === "/chat" || url.pathname === "/plan" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname.startsWith("/projects/") || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/plugins" || url.pathname.startsWith("/plugins/") || url.pathname === "/memory" || url.pathname === "/profile" || url.pathname === "/profile/get" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname === "/local-models" || url.pathname === "/local-models/download" || url.pathname === "/models/test" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
         let proxyIsSSE = false;
         try {
           const hasRequestBody = req.method !== "GET" && req.method !== "HEAD"

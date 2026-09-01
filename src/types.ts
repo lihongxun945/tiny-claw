@@ -70,6 +70,7 @@ export interface Config {
   enabledPlugins?: string[];
   externalPlugins?: string[];
   plugins?: Record<string, Record<string, unknown>>;
+  pluginStates?: Record<string, { enabled?: boolean }>;
   subAgent?: SubAgentConfig;
   sessionSummary?: SessionSummaryConfig;
   autoMemory?: AutoMemoryConfig;

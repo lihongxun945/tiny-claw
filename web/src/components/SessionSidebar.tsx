@@ -3,7 +3,7 @@ import type { Session } from "../types.js";
 import { fetchHistorySessions, deleteSession } from "../lib/api.js";
 import type { Theme } from "../lib/theme.js";
 
-type View = "chat" | "project" | "memory" | "logs" | "config";
+type View = "chat" | "project" | "memory" | "logs" | "plugins" | "config";
 type SidebarMode = "chat" | "project";
 
 interface Props {
@@ -207,6 +207,10 @@ export default function SessionSidebar({ activeSessionId, currentView, sidebarMo
           className={`nav-btn ${currentView === "logs" ? "active" : ""}`}
           onClick={() => onViewChange("logs")}
         ><span aria-hidden="true">▤</span>日志</button>
+        <button
+          className={`nav-btn ${currentView === "plugins" ? "active" : ""}`}
+          onClick={() => onViewChange("plugins")}
+        ><span aria-hidden="true">◆</span>插件</button>
         <button
           className={`nav-btn ${currentView === "config" ? "active" : ""}`}
           onClick={() => onViewChange("config")}

@@ -1,4 +1,4 @@
-import type { Session, Message, MemoryRecord, ProfileRecord, ApprovalRequest, ChatCommand, Attachment, ModelCallSummary, ModelCallTrace, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionContext, SessionPlan, ExecutionMode } from "../types.js";
+import type { Session, Message, MemoryRecord, ProfileRecord, ApprovalRequest, ChatCommand, Attachment, ModelCallSummary, ModelCallTrace, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionContext, SessionPlan, ExecutionMode, PluginSnapshot, PluginConfigView } from "../types.js";
 
 export { streamChat, streamApprovalResume } from "./sse-client.js";
 
@@ -6,6 +6,32 @@ export async function fetchSessions(): Promise<Session[]> {
   const res = await fetch("/sessions");
   const data = await res.json();
   return data.sessions ?? [];
+}
+
+export async function fetchPlugins(): Promise<PluginSnapshot[]> {
+  const data = await parseJSON<{ plugins: PluginSnapshot[] }>(await fetch("/plugins"));
+  return data.plugins ?? [];
+}
+
+export async function fetchPluginConfig(id: string): Promise<PluginConfigView> {
+  return parseJSON<PluginConfigView>(await fetch(`/plugins/${encodeURIComponent(id)}/config`));
+}
+
+export async function updatePluginConfig(id: string, config: Record<string, unknown>): Promise<PluginConfigView> {
+  return parseJSON<PluginConfigView>(await fetch(`/plugins/${encodeURIComponent(id)}/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(config),
+  }));
+}
+
+export async function updatePluginState(id: string, enabled: boolean): Promise<PluginSnapshot> {
+  const data = await parseJSON<{ plugin: PluginSnapshot }>(await fetch(`/plugins/${encodeURIComponent(id)}/state`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  }));
+  return data.plugin;
 }
 
 export async function deleteSession(id: string): Promise<void> {

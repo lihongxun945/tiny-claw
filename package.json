@@ -1,6 +1,6 @@
 {
   "name": "tiny-claw",
-  "version": "0.1.0-beta.18",
+  "version": "0.1.0-beta.19",
   "description": "一个自主规划、执行任务的 Agent",
   "type": "module",
   "main": "desktop-dist/main.js",
@@ -30,6 +30,7 @@
   "devDependencies": {
     "@playwright/test": "^1.56.1",
     "@types/node": "^25.9.0",
+    "@types/semver": "^7.8.0",
     "@vitest/coverage-v8": "^4.1.8",
     "electron": "^37.2.0",
     "electron-builder": "25.1.8",
@@ -41,6 +42,7 @@
     "@lancedb/lancedb": "^0.33.0",
     "@larksuiteoapi/node-sdk": "^1.65.0",
     "node-llama-cpp": "^3.19.1",
+    "semver": "^7.8.5",
     "tsx": "^4.22.2"
   },
   "build": {

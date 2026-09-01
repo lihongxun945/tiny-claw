@@ -7,12 +7,13 @@ import ChatInput from "./components/ChatInput.js";
 import SessionSidebar from "./components/SessionSidebar.js";
 import LogViewer from "./components/LogViewer.js";
 import ConfigEditor from "./components/ConfigEditor.js";
+import PluginManagerView from "./components/PluginManagerView.js";
 import MemoryManager from "./components/MemoryManager.js";
 import ProjectView from "./components/ProjectView.js";
 import PlanProgress from "./components/PlanProgress.js";
 import { readInitialTheme, saveTheme, type Theme } from "./lib/theme.js";
 
-type View = "chat" | "project" | "memory" | "logs" | "config";
+type View = "chat" | "project" | "memory" | "logs" | "plugins" | "config";
 
 interface SessionUiState {
   messages: Message[];
@@ -712,6 +713,7 @@ export default function App() {
         )}
         {view === "memory" && <MemoryManager />}
         {view === "logs" && <LogViewer />}
+        {view === "plugins" && <PluginManagerView />}
         {view === "config" && <ConfigEditor />}
       </div>
     </div>

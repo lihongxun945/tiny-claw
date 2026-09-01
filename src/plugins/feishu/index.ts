@@ -1,5 +1,5 @@
 import { WSClient, EventDispatcher } from "@larksuiteoapi/node-sdk";
-import type { Plugin, PluginContext } from "../types.js";
+import type { KernelPlugin } from "../../kernel/plugin.js";
 import { FeishuClient } from "./client.js";
 import { processFeishuMessage } from "./handler.js";
 import type { AgentActor } from "../../types.js";
@@ -10,20 +10,30 @@ interface FeishuConfig {
   verificationToken?: string;
 }
 
-let wsClient: WSClient | null = null;
+const feishuPlugin: KernelPlugin = {
+  manifest: {
+    id: "feishu",
+    version: "1.0.0",
+    kind: "builtin",
+    description: "通过飞书长连接收发消息",
+    config: {
+      fields: {
+        appId: { type: "string", title: "App ID", description: "飞书自建应用 App ID", required: true },
+        appSecret: { type: "string", title: "App Secret", description: "飞书自建应用 App Secret", required: true, secret: true },
+        verificationToken: { type: "string", title: "Verification Token", description: "事件订阅 Verification Token", secret: true },
+      },
+    },
+    permissions: {
+      network: { hosts: ["open.feishu.cn"] },
+    },
+  },
 
-const feishuPlugin: Plugin = {
-  name: "feishu",
-
-  async init(ctx: PluginContext): Promise<void> {
+  async setup(ctx) {
     const cfg = ctx.config as FeishuConfig;
+    const appId = cfg.appId!;
+    const appSecret = cfg.appSecret!;
 
-    if (!cfg.appId || !cfg.appSecret) {
-      ctx.log("WARN", "缺少 appId 或 appSecret，飞书插件已加载但不可用");
-      return;
-    }
-
-    const feishuClient = new FeishuClient(cfg.appId, cfg.appSecret);
+    const feishuClient = new FeishuClient(appId, appSecret);
 
     const eventDispatcher = new EventDispatcher({
       verificationToken: cfg.verificationToken ?? "",
@@ -77,9 +87,9 @@ const feishuPlugin: Plugin = {
       },
     });
 
-    wsClient = new WSClient({
-      appId: cfg.appId,
-      appSecret: cfg.appSecret,
+    const wsClient = new WSClient({
+      appId,
+      appSecret,
       onReady: () => {
         ctx.log("INFO", "飞书长连接已建立");
       },
@@ -96,13 +106,7 @@ const feishuPlugin: Plugin = {
 
     await wsClient.start({ eventDispatcher });
     ctx.log("INFO", "飞书插件已初始化（长连接模式）");
-  },
-
-  async destroy(): Promise<void> {
-    if (wsClient) {
-      wsClient.close();
-      wsClient = null;
-    }
+    return { dispose: () => wsClient.close() };
   },
 };
 

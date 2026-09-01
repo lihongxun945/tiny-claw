@@ -26,6 +26,66 @@ interface Plugin {
 - `init` — 插件初始化，注册工具、钩子、路由等
 - `destroy` — 可选，插件卸载时的清理逻辑
 
+现有 Plugin 接口会自动适配到新插件容器，无需修改。需要声明版本和依赖的新插件可以直接实现 `KernelPlugin`：
+
+```typescript
+import type { KernelPlugin } from "../../../src/kernel/plugin.js";
+
+export default {
+  manifest: {
+    id: "example",
+    version: "1.0.0",
+    kind: "workspace",
+    requires: { "another-plugin": "^1.0.0" },
+    optional: { "optional-plugin": "*" },
+    provides: ["agent.tools"],
+    config: {
+      fields: {
+        endpoint: { type: "string", title: "服务地址", required: true },
+        apiToken: { type: "string", title: "访问令牌", required: true, secret: true },
+      },
+    },
+    permissions: {
+      tools: ["example_tool"],
+      network: { hosts: ["api.example.com"] },
+    },
+  },
+  async setup(ctx) {
+    ctx.registerTool(/* ... */);
+    return { dispose: async () => { /* 插件自定义清理 */ } };
+  },
+} satisfies KernelPlugin;
+```
+
+- `requires`：必需插件及 SemVer 范围；缺失或版本不符时当前插件不启动
+- `optional`：可选插件；存在且版本符合时会先于当前插件启动
+- `provides`：仅用于描述插件贡献的 Capability，实际能力仍必须在 `setup()` 中注册
+- workspace 和外部插件失败不会阻止其他独立插件启动；必需依赖者会进入 `blocked`
+- workspace 插件通过内部 `reloadPlugin()` 重载时会重新 import 文件，而不是复用 ESM 缓存中的旧导出
+- 新式 builtin、workspace 和 external 插件必须声明 `permissions`；旧 `Plugin` 接口仅在迁移期兼容
+
+## 插件配置
+
+新式插件通过 Manifest 声明自己的扁平配置 Schema。支持 `string`、`number`、`boolean`、`select` 和 `json` 字段；默认值在插件启动前合并，校验失败时插件进入 `blocked`，不会执行 `setup()`。`secret: true` 字段通过 Gateway 和 WebUI 读取时只返回掩码，保存未修改的掩码不会覆盖磁盘中的真实值。
+
+配置仍存放在 `workspace/config.json` 的 `plugins.<plugin-id>` 下。插件只会在 `ctx.config` 中获得自己的已校验配置，不能通过 PluginContext 读取其他插件配置。可以在 WebUI 的“插件”页面查看和编辑声明过的字段；保存成功后只重载目标插件。
+
+用户插件的启用状态保存在 `pluginStates.<plugin-id>.enabled`。未配置时默认启用；禁用后插件仍会出现在管理页，但其工具、命令、路由、Hook 和提示词片段都会随资源容器一起卸载。核心插件不可禁用，仍被活动插件依赖的插件也不能直接停用。
+
+## 权限声明
+
+Manifest 可声明以下权限：
+
+| 字段 | 说明 |
+|------|------|
+| `tools` | 插件允许注册的工具名 |
+| `filesystem.read/write` | `workspace`、`project`、`plugin-data` 路径范围 |
+| `network.hosts` | 插件预计访问的主机列表 |
+| `shell` | 是否需要 Shell 能力 |
+| `gatewayRoutes` | 是否允许注册 Gateway HTTP 路由 |
+
+新式用户插件注册工具或路由时，宿主会校验 Manifest 声明。权限声明只描述插件的能力上限，不是运行授权：`bash`、文件写入等危险操作仍会经过 `security.mode`、工具覆盖、自动风险判断和用户审批。插件与 Gateway 运行在同一 Node.js 进程中，因此这一机制用于治理、最小权限和审计，不等同于阻止插件直接调用 Node.js API 的安全沙箱。
+
 ## PluginContext API
 
 `init(ctx)` 中的 `ctx` 提供以下能力：
@@ -34,15 +94,21 @@ interface Plugin {
 |-----|------|
 | `config` | 插件专属配置（来自 `plugins.<name>`） |
 | `workspacePath` | 工作目录路径 |
-| `registerTool(tool)` | 注册工具到全局 ToolRegistry |
-| `registerChatCommand(command)` | 注册用户显式触发的斜杠聊天命令 |
+| `applicationScope` | 宿主级作用域，用于管理 Capability 和可释放资源 |
+| `capabilities` | 类型化 Capability Registry |
+| `registerTool(tool)` | 注册工具 Capability，返回 `Disposable` |
+| `registerChatCommand(command)` | 注册用户显式触发的斜杠聊天命令，返回 `Disposable` |
 | `executeChatCommand(input, options)` | 执行已注册聊天命令，供平台插件复用 |
-| `registerHooks(hooks)` | 注册生命周期钩子 |
-| `registerRoute(route)` | 注册 HTTP 路由（Gateway 模式） |
-| `extendPrompt(section)` | 注册提示词片段（追加到系统提示词） |
+| `registerHooks(hooks)` | 注册生命周期钩子，返回 `Disposable` |
+| `registerRoute(route)` | 注册 HTTP 路由（Gateway 模式），返回 `Disposable` |
+| `extendPrompt(section)` | 注册提示词片段，返回 `Disposable` |
 | `getOrCreateSession(id, prefix?)` | 获取/创建 AgentSession（Gateway 模式） |
-| `deleteSession(id)` | 删除会话 |
+| `deleteSession(id)` | 异步删除会话并释放作用域，返回 `Promise<boolean>` |
 | `log(level, message, sessionId?)` | 插件日志 |
+
+调用 `deleteSession(id)` 时必须使用 `await`，确保该会话的 TurnScope、SessionScope 和其中注册的资源已经释放。
+
+所有 `register*` 和 `extendPrompt` 返回的 `Disposable` 都可以幂等释放对应能力；忽略返回值时，ApplicationScope 会在 Gateway 关闭时统一释放。
 
 ## 生命周期钩子
 
@@ -78,16 +144,26 @@ modelContext.reportStatus?.({
 在 `workspace/plugins/greeter/index.ts` 中编写：
 
 ```typescript
-import type { Plugin, PluginContext } from "../../../src/plugins/types.js";
+import type { KernelPlugin } from "../../../src/kernel/plugin.js";
 
 interface GreeterConfig {
   greeting?: string;
 }
 
 export default {
-  name: "greeter",
-  async init(ctx: PluginContext) {
-    const cfg = ctx.config as GreeterConfig;
+  manifest: {
+    id: "greeter",
+    version: "1.0.0",
+    kind: "workspace",
+    config: {
+      fields: {
+        greeting: { type: "string", title: "问候语", default: "你好" },
+      },
+    },
+    permissions: {},
+  },
+  async setup(ctx) {
+    const cfg = ctx.config as Readonly<GreeterConfig>;
     const greeting = cfg.greeting || "你好";
 
     // 注入系统提示词
@@ -108,7 +184,7 @@ export default {
       },
     });
   },
-} satisfies Plugin;
+} satisfies KernelPlugin;
 ```
 
 ### 2. 添加配置（可选）
@@ -133,7 +209,7 @@ export default {
 npm run gateway
 ```
 
-控制台会显示 `插件已加载: greeter (workspace/plugins/)`。
+控制台会显示 `插件已加载: greeter (workspace/plugins/)`。如果 Manifest 校验、依赖或启动失败，日志会记录插件 ID 和具体原因。
 
 ## 注册工具
 

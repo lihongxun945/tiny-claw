@@ -90,8 +90,7 @@ describe("session plans", () => {
     const manager = new PluginManager(workspace);
     await manager.loadCorePlugins();
     manager.setRuntimeDeps(loadConfig(workspace), new FakeModelClient([]), new MessageHistory(), "plan-session");
-    manager.setExecutionMode("plan-session", "plan");
-    manager.setTurnId("plan-session", turnId);
+    await manager.beginTurn("plan-session", turnId, "plan");
     const names = () => manager.getToolDefinitions({ mode: "chat" }, "plan", "plan-session").map((tool) => tool.name);
 
     try {

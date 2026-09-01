@@ -154,6 +154,7 @@ export function createDefaultConfig(): Record<string, unknown> {
     enabledPlugins: [],
     externalPlugins: [],
     plugins: {},
+    pluginStates: {},
   };
 }
 
@@ -248,6 +249,13 @@ export function validateConfig(raw: Record<string, unknown>): void {
   assertOptionalStringArray(raw.enabledPlugins, "enabledPlugins");
   assertOptionalStringArray(raw.externalPlugins, "externalPlugins");
   if (raw.plugins !== undefined) assertObject(raw.plugins, "plugins");
+  if (raw.pluginStates !== undefined) {
+    assertObject(raw.pluginStates, "pluginStates");
+    for (const [id, state] of Object.entries(raw.pluginStates)) {
+      assertObject(state, `pluginStates.${id}`);
+      assertOptionalBoolean(state.enabled, `pluginStates.${id}.enabled`);
+    }
+  }
 
   if (raw.subAgent !== undefined) {
     assertObject(raw.subAgent, "subAgent");
@@ -481,6 +489,7 @@ export function loadConfig(workspacePath: string): Config {
     enabledPlugins: raw.enabledPlugins as string[] | undefined,
     externalPlugins: raw.externalPlugins as string[] | undefined,
     plugins: raw.plugins as Record<string, Record<string, unknown>> | undefined,
+    pluginStates: raw.pluginStates as Record<string, { enabled?: boolean }> | undefined,
     subAgent: raw.subAgent as Config["subAgent"] | undefined,
     sessionSummary: raw.sessionSummary as Config["sessionSummary"] | undefined,
     autoMemory: normalizeAutoMemoryConfig(raw.autoMemory),

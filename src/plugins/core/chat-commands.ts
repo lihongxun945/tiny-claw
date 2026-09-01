@@ -95,7 +95,7 @@ function formatHelp(ctx: ChatCommandContext): string {
   ].join("\n");
 }
 
-function newConversation(pluginCtx: Parameters<Plugin["init"]>[0], ctx: ChatCommandContext): { text: string; sessionId?: string; clearMessages?: boolean } {
+async function newConversation(pluginCtx: Parameters<Plugin["init"]>[0], ctx: ChatCommandContext): Promise<{ text: string; sessionId?: string; clearMessages?: boolean }> {
   if (ctx.channel === "web") {
     const session = pluginCtx.getOrCreateSession(randomUUID());
     return {
@@ -106,7 +106,7 @@ function newConversation(pluginCtx: Parameters<Plugin["init"]>[0], ctx: ChatComm
   }
 
   if (ctx.channel === "feishu") {
-    pluginCtx.deleteSession(ctx.sessionId);
+    await pluginCtx.deleteSession(ctx.sessionId);
     deleteStoredSession(ctx.workspacePath, ctx.sessionId);
     pluginCtx.getOrCreateSession(ctx.sessionId);
     return { text: "已重置当前飞书会话上下文。下一条消息会从新上下文开始。" };

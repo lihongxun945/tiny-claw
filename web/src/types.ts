@@ -70,6 +70,56 @@ export type ModelDebugPhase = "request" | "response" | "parsed_response" | "erro
 
 export type PermissionMode = "ask" | "auto" | "allow";
 
+export type PluginState = "registered" | "starting" | "active" | "stopping" | "stopped" | "failed" | "blocked";
+export type PluginKind = "core" | "builtin" | "workspace" | "external";
+
+export type PluginConfigField =
+  | { type: "string"; title: string; description?: string; required?: boolean; default?: string; secret?: boolean; minLength?: number; maxLength?: number }
+  | { type: "number"; title: string; description?: string; required?: boolean; default?: number; min?: number; max?: number; integer?: boolean }
+  | { type: "boolean"; title: string; description?: string; required?: boolean; default?: boolean }
+  | { type: "select"; title: string; description?: string; required?: boolean; default?: string; options: Array<{ value: string; label: string }> }
+  | { type: "json"; title: string; description?: string; required?: boolean; default?: unknown };
+
+export interface PluginConfigIssue {
+  path: string;
+  code: string;
+  message: string;
+  severity: "error" | "warning";
+}
+
+export interface PluginSnapshot {
+  id: string;
+  version: string;
+  kind: PluginKind;
+  state: PluginState;
+  enabled: boolean;
+  canToggle: boolean;
+  description?: string;
+  error?: string;
+  requires: Record<string, string>;
+  optional: Record<string, string>;
+  config: { valid: boolean; issues: PluginConfigIssue[] };
+  permissions: {
+    declared: {
+      tools?: string[];
+      filesystem?: { read?: string[]; write?: string[] };
+      network?: { hosts: string[] };
+      shell?: boolean;
+      gatewayRoutes?: boolean;
+    };
+    issues: Array<{ capability: string; message: string; severity: "error" | "warning" }>;
+  };
+}
+
+export interface PluginConfigView {
+  pluginId: string;
+  schema?: { fields: Record<string, PluginConfigField> };
+  config: Record<string, unknown>;
+  valid: boolean;
+  issues: PluginConfigIssue[];
+  plugin?: PluginSnapshot;
+}
+
 export interface ModelCallSummary {
   requestId: string;
   sessionId?: string;

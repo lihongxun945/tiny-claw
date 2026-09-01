@@ -13,6 +13,7 @@ import { approveTurnRequest, hasTurnApproval, listApprovals } from "../../src/to
 import { checkDangerousToolPermission } from "../../src/tools/permission.js";
 import type { ChatResponse, Message, Tool, ToolDefinition } from "../../src/types.js";
 import { runAutoMemoryAnalysis, runWorkspaceAutoMemoryAnalysis } from "../../src/plugins/core/auto-memory.js";
+import type { PluginContext, PluginHooks } from "../../src/plugins/types.js";
 import { readSessionPlan } from "../../src/plan-store.js";
 import { loadSessionSummary } from "../../src/session-memory/store.js";
 import { FakeModelClient } from "../helpers/fake-model-client.js";
@@ -25,14 +26,17 @@ async function collect(events: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]
 }
 
 function registerTool(manager: PluginManager, tool: Tool): void {
-  const registry = (manager as unknown as {
-    registry: { register(tool: Tool): void };
-  }).registry;
-  registry.register(tool);
+  createPluginContext(manager).registerTool(tool);
 }
 
-function addHooks(manager: PluginManager, hooks: { onError?: (ctx: unknown, error: Error) => void }): void {
-  (manager as unknown as { hooks: unknown[] }).hooks.push(hooks);
+function addHooks(manager: PluginManager, hooks: PluginHooks): void {
+  createPluginContext(manager).registerHooks(hooks);
+}
+
+function createPluginContext(manager: PluginManager): PluginContext {
+  return (manager as unknown as {
+    createPluginContext: (name: string) => PluginContext;
+  }).createPluginContext("test-agent-loop");
 }
 
 class SummaryModelClient implements ModelClient {
@@ -1291,6 +1295,8 @@ describe("AgentSession loop", () => {
     const session = new AgentSession("approval-resume", workspacePath, manager, {}, client);
 
     await collect(session.chat("run"));
+    const suspendedTurnId = manager.getTurnId("approval-resume");
+    expect(suspendedTurnId).toBeDefined();
     expect(await collect(session.chat("new task before approval"))).toEqual([
       { type: "error", message: "当前会话有待审批的工具调用。请先批准或拒绝最新审批，再继续发送新任务。" },
     ]);
@@ -1303,6 +1309,7 @@ describe("AgentSession loop", () => {
     expect(client.calls).toHaveLength(2);
     expect(gatedTool).toHaveBeenCalledTimes(2);
     expect(laterTool).not.toHaveBeenCalled();
+    expect(manager.getTurnId("approval-resume")).toBeUndefined();
   });
 
   it("allows all ask-mode tools for the resumed turn and clears the grant afterwards", async () => {
