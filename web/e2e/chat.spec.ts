@@ -1,5 +1,42 @@
 import { expect, test } from "@playwright/test";
 
+test("reconnects a busy turn and replaces its partial history with one streaming answer", async ({ page }) => {
+  let busy = true;
+  let release!: () => void;
+  const pause = new Promise<void>((resolve) => { release = resolve; });
+  let finishing = false;
+  await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [
+    { id: "reconnect", lastActivity: Date.now(), preview: "恢复输出", context: { mode: "chat" }, busy },
+  ] } }));
+  await page.route("**/history/sessions/reconnect/messages", (route) => route.fulfill({ json: { messages: [
+    { role: "user", text: "执行任务", toolCalls: [], turnId: "turn-live", timestamp: 1 },
+    { role: "assistant", text: busy ? "刷新前输出" : "刷新前输出，刷新后继续输出", toolCalls: [], turnId: "turn-live", timestamp: 2 },
+  ] } }));
+  await page.route("**/plan?*", async (route) => {
+    if (finishing) await pause;
+    await route.fulfill({ json: { plans: [], activePlan: null } });
+  });
+  await page.route("**/sessions/reconnect/events", async (route) => {
+    finishing = true;
+    await route.fulfill({ contentType: "text/event-stream", body: [
+      'event: snapshot\ndata: {"turnId":"turn-live","text":"刷新前输出","status":"执行中","toolCalls":[]}\n\n',
+      'event: text_delta\ndata: {"text":"，刷新后继续输出"}\n\n',
+      'event: done\ndata: {"text":"刷新前输出，刷新后继续输出","session_id":"reconnect","reason":"completed"}\n\n',
+    ].join("") });
+  });
+  await page.goto("/#sid=reconnect");
+  await expect(page.locator(".chat-view .message.assistant")).toHaveCount(1);
+  await expect(page.locator(".chat-view .message.assistant")).toContainText("刷新前输出，刷新后继续输出");
+  await expect(page.locator(".streaming-cursor")).toBeVisible();
+  await expect(page.locator("textarea")).toBeDisabled();
+  await expect(page.getByText("正在后台执行", { exact: true })).toHaveCount(0);
+  busy = false;
+  release();
+  await expect(page.locator("textarea")).toBeEnabled();
+  await expect(page.locator(".chat-view .message.assistant")).toHaveCount(1);
+  await expect(page.locator(".streaming-cursor")).toHaveCount(0);
+});
+
 test("persists the approval mode from the chat composer", async ({ page }) => {
   let config: Record<string, unknown> = {
     security: { mode: "auto", tools: {} },
@@ -53,6 +90,75 @@ test("renders markdown tables from persisted messages", async ({ page }) => {
   await expect(table).toBeVisible();
   await expect(table.getByRole("cell", { name: "名称" })).toBeVisible();
   await expect(table.getByRole("cell", { name: "web_search" })).toBeVisible();
+});
+
+test("shows and refreshes busy session state in the sidebar", async ({ page }) => {
+  let busy = true;
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({
+      json: {
+        sessions: [{
+          id: "busy-session",
+          lastActivity: Date.now(),
+          preview: "long task",
+          context: { mode: "chat" },
+          executionMode: "normal",
+          busy,
+        }],
+      },
+    });
+  });
+  await page.route("**/history/sessions/busy-session/messages", async (route) => {
+    await route.fulfill({ json: { messages: [] } });
+  });
+
+  await page.goto("/");
+
+  await expect(page.locator(".session-item.is-busy")).toBeVisible();
+  await expect(page.locator(".session-busy-badge")).toHaveText("执行中");
+  busy = false;
+  await expect(page.locator(".session-item.is-busy")).toHaveCount(0, { timeout: 5000 });
+});
+
+test("locks the active composer and refreshes messages while the active session is busy", async ({ page }) => {
+  let busy = true;
+  let messages = [{ role: "user", text: "开始长任务", toolCalls: [], timestamp: Date.now() }];
+  await page.route("**/history/sessions", async (route) => {
+    await route.fulfill({
+      json: {
+        sessions: [{
+          id: "busy-session",
+          lastActivity: Date.now(),
+          preview: "long task",
+          context: { mode: "chat" },
+          executionMode: "normal",
+          busy,
+        }],
+      },
+    });
+  });
+  await page.route("**/history/sessions/busy-session/messages", async (route) => {
+    await route.fulfill({ json: { messages } });
+  });
+  await page.route("**/sessions/busy-session/cancel", async (route) => {
+    busy = false;
+    messages = [
+      ...messages,
+      { role: "assistant", text: "任务已停止", toolCalls: [], timestamp: Date.now() },
+    ];
+    await route.fulfill({ json: { cancelled: true } });
+  });
+
+  await page.goto("/#sid=busy-session");
+
+  await expect(page.getByText("正在后台执行")).toBeVisible();
+  await expect(page.locator(".processing-indicator .streaming-cursor")).toBeVisible();
+  await expect(page.getByRole("textbox")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "停止" })).toBeVisible();
+
+  await page.getByRole("button", { name: "停止" }).click();
+  await expect(page.getByRole("textbox")).toBeEnabled();
+  await expect(page.getByText("任务已停止")).toBeVisible();
 });
 
 test("syntax highlights fenced code in assistant messages", async ({ page }) => {
@@ -505,11 +611,12 @@ test("deletes a persisted session and keeps it gone after refresh", async ({ pag
   expect(deletePath).toBe("/sessions/session%3Fspecial%23id");
 });
 
-test("sends plan execution mode and restores structured progress", async ({ page }) => {
+test("sends plan execution mode and preserves structured progress in history", async ({ page }) => {
   let requestedMode = "";
   let sessionId = "";
   const plan = {
     id: "plan-1",
+    goal: "让任务执行过程清晰可见",
     turnId: "",
     status: "executing",
     createdAt: new Date().toISOString(),
@@ -549,8 +656,131 @@ test("sends plan execution mode and restores structured progress", async ({ page
   await expect.poll(() => sessionId.length > 0).toBe(true);
   await expect(page.getByLabel("任务计划进度")).toBeVisible();
   await expect(page.getByLabel("任务计划进度")).toContainText("1 / 3");
+  const record = page.locator(".plan-history");
+  await expect(record.locator("summary")).toContainText("任务记录 · 未完成");
+  await expect(record.locator("summary")).toContainText(plan.goal);
+  await expect(record.locator(".plan-step-list")).not.toBeVisible();
+  await expect(record.locator(".plan-progress-track")).toHaveCount(0);
+  await expect(record).toHaveCSS("box-shadow", "none");
+  await expect(record).toHaveCSS("border-top-width", "0px");
+  await record.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(record.locator(".plan-step-list")).toBeVisible();
   await expect(page.getByLabel("任务计划进度")).toContainText("2. 修改代码");
   await expect(page.getByLabel("任务计划进度")).toContainText("执行中");
+  await expect(page.locator(".plan-progress").filter({ has: page.locator(".plan-step") })).toHaveCount(1);
+  await expect(page.locator(".chat-view .plan-progress")).toBeVisible();
+  await record.locator("summary").click();
+  await expect(record.locator(".plan-step-list")).not.toBeVisible();
+});
+
+for (const mode of ["normal", "plan"]) {
+  test(`does not restore a paused task above the composer after an unrelated ${mode} turn`, async ({ page }) => {
+    const plan = {
+      id: "old-plan", turnId: "old-turn", status: "executing", currentStepId: "step-1",
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      steps: [{ id: "step-1", title: "旧任务待确认", status: "waiting_user" }, { id: "step-2", title: "旧任务后续", status: "pending" }],
+    };
+    const messages = [{ role: "assistant", text: "等待确认", toolCalls: [], timestamp: Date.now(), turnId: "old-turn", plan }];
+    await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [
+      { id: "paused-session", lastActivity: Date.now(), preview: "旧任务", context: { mode: "chat" }, executionMode: mode },
+    ] } }));
+    await page.route("**/history/sessions/paused-session/messages", (route) => route.fulfill({ json: { messages } }));
+    await page.route("**/commands", (route) => route.fulfill({ json: { commands: [] } }));
+    await page.route("**/plan?*", (route) => route.fulfill({ json: { plans: [plan], activePlan: null } }));
+    await page.route("**/chat", (route) => {
+      expect(route.request().postDataJSON().execution_mode).toBe(mode);
+      return route.fulfill({ contentType: "text/event-stream", body: 'event: done\ndata: {"text":"这是新问题的回答","session_id":"paused-session","reason":"completed"}\n\n' });
+    });
+    await page.goto("/#sid=paused-session");
+    await expect(page.locator(".chat-view .plan-progress")).toBeVisible();
+    await expect(page.locator(".plan-progress")).toHaveCount(1);
+    await page.locator("textarea").fill("解释另一个问题");
+    await page.locator("textarea").press("Enter");
+    await expect(page.getByText("这是新问题的回答", { exact: true })).toBeVisible();
+    await expect(page.locator(".plan-progress")).toHaveCount(1);
+    await expect(page.locator(".chat-view .plan-progress")).toBeVisible();
+    await page.reload();
+    await expect(page.locator(".chat-view .plan-progress")).toBeVisible();
+    await expect(page.locator(".plan-progress")).toHaveCount(1);
+  });
+}
+
+for (const mode of ["chat", "project"]) {
+test(`deduplicates a resumed plan on reload and moves it into history in ${mode} mode`, async ({ page }) => {
+  let busy = true;
+  const plan = {
+    id: "running-plan", turnId: "create-turn", relatedTurnIds: ["resume-turn"], status: "executing",
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    steps: [{ id: "step-1", title: "当前执行步骤", status: "in_progress" }, { id: "step-2", title: "验证", status: "pending" }],
+  };
+  const oldPlan = { ...plan, steps: plan.steps.map((step, index) => ({ ...step, status: index === 0 ? "waiting_approval" : "pending" })) };
+  await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [
+    { id: "running-session", lastActivity: Date.now(), preview: "执行任务", context: { mode, ...(mode === "project" ? { project: { root: "/tmp/plan-project", name: "plan-project" } } : {}) }, busy },
+  ] } }));
+  await page.route("**/history/sessions/running-session/messages", (route) => route.fulfill({ json: { messages: [
+    { role: "assistant", text: "原轮次回答", turnId: "create-turn", timestamp: Date.now() - 2, toolCalls: [], plan: oldPlan },
+    { role: "user", text: "继续任务", turnId: "resume-turn", timestamp: Date.now() - 1, toolCalls: [] },
+    ...(!busy ? [{ role: "assistant", text: "请确认后续操作", turnId: "resume-turn", timestamp: Date.now(), toolCalls: [], plan }] : []),
+  ] } }));
+  await page.route("**/commands", (route) => route.fulfill({ json: { commands: [] } }));
+  await page.route("**/plan?*", (route) => route.fulfill({ json: {
+    plans: [plan], activePlan: busy ? plan : null, currentTurnId: busy ? "resume-turn" : undefined,
+  } }));
+  await page.goto("/#sid=running-session");
+  await expect(page.locator(".plan-progress")).toHaveCount(1);
+  await expect(page.locator(".chat-view .plan-progress")).toHaveCount(0);
+  await expect(page.locator(".plan-progress")).toContainText("执行中");
+  await expect(page.locator("textarea")).toBeDisabled();
+  await page.reload();
+  await expect(page.getByText("原轮次回答", { exact: true })).toBeVisible();
+  await expect(page.locator(".plan-progress")).toHaveCount(1);
+  await expect(page.locator(".chat-view .plan-progress")).toHaveCount(0);
+  await expect(page.locator(".plan-progress")).toContainText("当前执行步骤");
+  await expect(page.locator("textarea")).toBeDisabled();
+  plan.steps[0].status = "waiting_user";
+  busy = false;
+  await expect(page.locator("textarea")).toBeEnabled();
+  await expect(page.locator(".chat-area > .plan-progress")).toHaveCount(0);
+  await expect(page.locator(".chat-view .plan-progress")).toContainText("等待用户");
+  await expect(page.locator(".plan-progress")).toHaveCount(1);
+  await page.reload();
+  await expect(page.locator(".plan-progress")).toHaveCount(1);
+  await expect(page.locator(".chat-view .plan-progress")).toContainText("等待用户");
+});
+}
+
+test("ignores an old plan response that arrives after a new message", async ({ page }) => {
+  let releaseOld!: () => void;
+  const oldResponse = new Promise<void>((resolve) => { releaseOld = resolve; });
+  let requestStarted = false;
+  const plan = {
+    id: "stale-plan", turnId: "old-turn", status: "executing",
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    steps: [{ id: "step-1", title: "过期任务", status: "in_progress" }],
+  };
+  await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [
+    { id: "race-session", lastActivity: Date.now(), preview: "竞态测试", context: { mode: "chat" } },
+  ] } }));
+  await page.route("**/history/sessions/race-session/messages", (route) => route.fulfill({ json: { messages: [] } }));
+  await page.route("**/commands", (route) => route.fulfill({ json: { commands: [] } }));
+  await page.route("**/plan?*", async (route) => {
+    if (!requestStarted) {
+      requestStarted = true;
+      await oldResponse;
+      await route.fulfill({ json: { plans: [plan], activePlan: plan, currentTurnId: "old-turn" } });
+    } else await route.fulfill({ json: { plans: [plan], activePlan: null } });
+  });
+  await page.route("**/chat", (route) => route.fulfill({ contentType: "text/event-stream", body: 'event: done\ndata: {"text":"新回答","session_id":"race-session","reason":"completed"}\n\n' }));
+  await page.goto("/#sid=race-session");
+  await expect.poll(() => requestStarted).toBe(true);
+  await page.locator("textarea").fill("新问题");
+  await page.locator("textarea").press("Enter");
+  await expect(page.getByText("新回答", { exact: true })).toBeVisible();
+  const response = page.waitForResponse((res) => res.url().includes("/plan?"));
+  releaseOld();
+  await response;
+  await expect(page.locator(".plan-progress")).toHaveCount(0);
 });
 
 test("keeps spacing between a historical plan and the next message", async ({ page }) => {

@@ -31,6 +31,7 @@ import { ensureWorkspace } from "./workspace/workspace.js";
 import { attachmentLimits, attachmentToImageBlock, readAttachment } from "./attachments.js";
 import type { ImageBlock, Message } from "./types.js";
 import { startSSEHeartbeat } from "./gateway-sse.js";
+import { GatewayStream } from "./gateway-streams.js";
 import { inspectProject } from "./project.js";
 import type { ExecutionMode, SessionContext } from "./types.js";
 import { listSessionPlans, type SessionPlan } from "./plan-store.js";
@@ -205,7 +206,9 @@ function isSubAgentSessionId(id: string): boolean {
 }
 
 function buildMessageListFromMessages(msgs: Message[], sessionId: string, workspacePath: string): FormattedMessage[] {
-  const plansByTurn = new Map(listSessionPlans(workspacePath, sessionId).map((plan) => [plan.turnId, plan]));
+  const plansByTurn = new Map(listSessionPlans(workspacePath, sessionId).flatMap((plan) => (
+    [plan.turnId, ...(plan.relatedTurnIds ?? [])].map((turnId) => [turnId, plan] as const)
+  )));
   // 第一步：解析原始消息，将 tool_result 合并到前一条 assistant
   const parsed: FormattedMessage[] = [];
   for (const m of msgs) {
@@ -264,7 +267,7 @@ function buildMessageListFromMessages(msgs: Message[], sessionId: string, worksp
   }
   for (const message of result) {
     const plan = message.turnId ? plansByTurn.get(message.turnId) : undefined;
-    if (message.role === "assistant" && plan && (plan.status === "completed" || plan.status === "failed")) {
+    if (message.role === "assistant" && plan) {
       message.plan = plan;
     }
   }
@@ -360,6 +363,13 @@ function sendAgentEventSSE(res: ServerResponse, event: AgentEvent, sessionId?: s
         after_tokens: event.afterTokens,
       });
       break;
+    case "context_usage":
+      sendSSE(res, "context_usage", {
+        usage: event.usage,
+        iteration: event.iteration,
+        attempt: event.attempt,
+      });
+      break;
     case "text_delta":
       sendSSE(res, "text_delta", { text: event.text });
       break;
@@ -441,6 +451,26 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
   const gatewayHost = parseHostArg() || config.security?.gateway?.host || "127.0.0.1";
   const gatewayToken = config.security?.gateway?.token;
   const pm = new PluginManager(workspacePath);
+  const streams = new Map<string, GatewayStream>();
+  const attachStream = (res: ServerResponse, sessionId: string, stream: GatewayStream) => {
+    sendSSE(res, "snapshot", stream.snapshot);
+    const unsubscribe = stream.subscribe((event) => {
+      if (!res.destroyed && !res.writableEnded) sendAgentEventSSE(res, event, sessionId);
+    });
+    res.once("close", unsubscribe);
+    void stream.finished.then(() => {
+      unsubscribe();
+      res.removeListener("close", unsubscribe);
+      if (!res.destroyed) res.end();
+    });
+  };
+  const runStream = async (res: ServerResponse, sessionId: string, turnId: string, events: AsyncIterable<AgentEvent>, approvalId?: string) => {
+    const stream = new GatewayStream(turnId, approvalId);
+    streams.set(sessionId, stream);
+    attachStream(res, sessionId, stream);
+    await stream.consume(events);
+    if (streams.get(sessionId) === stream) streams.delete(sessionId);
+  };
   globalPluginManager = pm;
   pm.setPluginConfigs(config.plugins ?? {});
   await pm.loadCorePlugins();
@@ -506,6 +536,17 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         }
         return;
       }
+    }
+
+    const eventsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/events$/);
+    if (req.method === "GET" && eventsMatch) {
+      const sessionId = decodeURIComponent(eventsMatch[1]);
+      const stream = streams.get(sessionId);
+      if (!stream) { res.writeHead(204); res.end(); return; }
+      sendSSEHeader(res);
+      startSSEHeartbeat(res, config.security?.gateway?.sseHeartbeatIntervalMs ?? DEFAULT_SSE_HEARTBEAT_INTERVAL_MS);
+      attachStream(res, sessionId, stream);
+      return;
     }
 
     // POST /chat
@@ -582,15 +623,12 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
               ...imageBlocks,
             ]
           : undefined;
-        const cancelOnDisconnect = () => {
-          if (!res.writableEnded) session.cancel();
-        };
-        res.once("close", cancelOnDisconnect);
-
-        for await (const event of session.chat(message, undefined, userContent, executionMode, turnId)) sendAgentEventSSE(res, event, session.id);
-
-        res.removeListener("close", cancelOnDisconnect);
-        res.end();
+        if (streams.has(session.id) || session.isBusy()) {
+          sendSSE(res, "error", { message: "会话正在执行中，请等待完成或先取消当前任务" });
+          res.end();
+          return;
+        }
+        await runStream(res, session.id, turnId, session.chat(message, undefined, userContent, executionMode, turnId));
       } catch (err) {
         if (!res.headersSent) {
           sendJSON(res, 500, { error: err instanceof Error ? err.message : String(err) });
@@ -713,8 +751,12 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         config.security?.gateway?.sseHeartbeatIntervalMs ?? DEFAULT_SSE_HEARTBEAT_INTERVAL_MS,
       );
       try {
-        for await (const event of session.resumeApproval(approval.id)) sendAgentEventSSE(res, event, session.id);
-        res.end();
+        if (streams.has(session.id) || session.isBusy()) {
+          sendSSE(res, "error", { message: "会话正在执行中，请等待完成或先取消当前任务" });
+          res.end();
+          return;
+        }
+        await runStream(res, session.id, pm.getTurnId(session.id) ?? randomUUID(), session.resumeApproval(approval.id), approval.id);
       } finally {
         if (approveTurnAndResume) clearTurnApproval(workspacePath, approval.sessionId, approval.actor);
       }
@@ -1040,11 +1082,12 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 
     // GET /history/sessions — 从 session 元数据 + 活跃会话合并
     if (req.method === "GET" && url.pathname === "/history/sessions") {
-      const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string; context: SessionContext; executionMode: ExecutionMode }>();
+      const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string; context: SessionContext; executionMode: ExecutionMode; busy?: boolean }>();
 
       for (const meta of listSessionMetas(workspacePath)) {
         if (isSubAgentSessionId(meta.id) || meta.archived) continue;
-        sessionMap.set(meta.id, { id: meta.id, lastActivity: meta.lastActivity, preview: meta.preview, context: meta.context, executionMode: meta.preferences.executionMode });
+        const active = sessions.get(meta.id);
+        sessionMap.set(meta.id, { id: meta.id, lastActivity: meta.lastActivity, preview: meta.preview, context: meta.context, executionMode: meta.preferences.executionMode, busy: active?.isBusy() ?? false });
       }
 
       // 合并活跃会话（新创建的但还未写入历史文件的）
@@ -1052,7 +1095,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         if (isSubAgentSessionId(id)) continue;
         if (!sessionMap.has(id)) {
           const meta = readSessionMeta(workspacePath, id);
-          sessionMap.set(id, { id, lastActivity: session.lastActivity, preview: "", context: meta?.context ?? { mode: "chat" }, executionMode: meta?.preferences.executionMode ?? "normal" });
+          sessionMap.set(id, { id, lastActivity: session.lastActivity, preview: "", context: meta?.context ?? { mode: "chat" }, executionMode: meta?.preferences.executionMode ?? "normal", busy: session.isBusy() });
         }
       }
 
@@ -1086,7 +1129,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const url = new URL(req.url ?? "/", `http://localhost:${webPort}`);
 
       // 代理 API 请求到 gateway
-      if (url.pathname === "/chat" || url.pathname === "/plan" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname.startsWith("/projects/") || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/plugins" || url.pathname.startsWith("/plugins/") || url.pathname === "/memory" || url.pathname === "/profile" || url.pathname === "/profile/get" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname === "/local-models" || url.pathname === "/local-models/download" || url.pathname === "/models/test" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
+      if (url.pathname === "/chat" || url.pathname === "/plan" || url.pathname === "/context" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname.startsWith("/projects/") || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/plugins" || url.pathname.startsWith("/plugins/") || url.pathname === "/memory" || url.pathname === "/profile" || url.pathname === "/profile/get" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname === "/local-models" || url.pathname === "/local-models/download" || url.pathname === "/models/test" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
         let proxyIsSSE = false;
         try {
           const hasRequestBody = req.method !== "GET" && req.method !== "HEAD"

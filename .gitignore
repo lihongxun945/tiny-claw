@@ -9,6 +9,7 @@ workspace/history/
 workspace/logs/
 workspace/debug/
 workspace/memory/
+workspace/profile/
 workspace/sessions/
 workspace/skills/
 web/dist/

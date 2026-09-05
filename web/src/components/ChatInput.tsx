@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from "react";
-import { fetchChatCommands } from "../lib/api.js";
-import type { ChatCommand, PermissionMode } from "../types.js";
+import { fetchChatCommands, fetchContextSnapshot } from "../lib/api.js";
+import type { ChatCommand, ContextSnapshot, ContextTokenUsage, PermissionMode } from "../types.js";
 import type { ExecutionMode } from "../types.js";
+import ContextViewer from "./ContextViewer.js";
 
 interface Props {
   onSend: (text: string, files: File[]) => void;
@@ -13,6 +14,8 @@ interface Props {
   onPermissionModeChange: (mode: PermissionMode) => void;
   permissionSaving?: boolean;
   permissionError?: string;
+  activeSessionId: string | null;
+  contextUsage?: ContextTokenUsage;
 }
 
 export default function ChatInput({
@@ -25,6 +28,8 @@ export default function ChatInput({
   onPermissionModeChange,
   permissionSaving = false,
   permissionError,
+  activeSessionId,
+  contextUsage,
 }: Props) {
   const [text, setText] = useState("");
   const [commands, setCommands] = useState<ChatCommand[]>([]);
@@ -35,10 +40,19 @@ export default function ChatInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imagesRef = useRef(images);
   const isComposingRef = useRef(false);
+  const [snapshot, setSnapshot] = useState<ContextSnapshot | null>(null);
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
 
   useEffect(() => {
     fetchChatCommands().then(setCommands).catch(() => setCommands([]));
   }, []);
+
+  useEffect(() => {
+    setSnapshot(null);
+    setSnapshotOpen(false);
+    if (activeSessionId) fetchContextSnapshot(activeSessionId).then(setSnapshot).catch(() => setSnapshot(null));
+  }, [activeSessionId]);
 
   useEffect(() => {
     if (!disabled) textareaRef.current?.focus();
@@ -134,6 +148,20 @@ export default function ChatInput({
       el.style.height = Math.min(el.scrollHeight, 120) + "px";
     }
   };
+
+  const openContext = async () => {
+    if (!activeSessionId) return;
+    setSnapshotLoading(true);
+    try {
+      const latest = await fetchContextSnapshot(activeSessionId);
+      setSnapshot(latest);
+      if (latest) setSnapshotOpen(true);
+    } finally {
+      setSnapshotLoading(false);
+    }
+  };
+
+  const visibleUsage = contextUsage ?? snapshot?.usage;
 
   return (
     <div className="chat-input">
@@ -235,6 +263,16 @@ export default function ChatInput({
             <span>Enter 发送 · Shift+Enter 换行</span>
           </div>
           <div className="composer-actions">
+            {visibleUsage && <button
+              type="button"
+              className={`context-usage-trigger ${visibleUsage && visibleUsage.percent >= 80 ? "danger" : visibleUsage && visibleUsage.percent >= 60 ? "warning" : ""}`}
+              disabled={!activeSessionId || snapshotLoading || !visibleUsage}
+              aria-busy={snapshotLoading}
+              title="查看上下文统计"
+              onClick={() => void openContext()}
+            >
+              {`上下文 ${visibleUsage.percent}%`}
+            </button>}
             <label className="permission-mode-select" title={permissionError || "工具自定义权限配置优先"}>
               <select
                 aria-label="审批模式"
@@ -256,6 +294,7 @@ export default function ChatInput({
           </div>
         </div>
       </div>
+      {snapshotOpen && snapshot && <ContextViewer snapshot={snapshot} onClose={() => setSnapshotOpen(false)} />}
     </div>
   );
 }

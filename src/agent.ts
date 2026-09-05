@@ -14,11 +14,13 @@ import { randomUUID } from "node:crypto";
 import { calculateMessageTokenBudget } from "./context-budget.js";
 import { estimateTokens } from "./estimate-tokens.js";
 import type { AgentStatusUpdate } from "./plugins/types.js";
+import { createPreparedModelRequest } from "./context-snapshot.js";
 
 // === 事件类型 ===
 
 export type AgentEvent =
   | ({ type: "status" } & AgentStatusUpdate)
+  | { type: "context_usage"; usage: import("./plugins/types.js").ContextTokenUsage; iteration: number; attempt: number }
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; toolCallId: string; name: string; input: Record<string, unknown> }
   | { type: "tool_result"; toolCallId: string; name: string; result: string }
@@ -346,6 +348,19 @@ export class AgentSession {
         const retryPrompt = attempt === 0
           ? effectiveTurnPrompt
           : `${effectiveTurnPrompt}\n\n上一次模型响应为空。请继续完成当前任务，必须返回可见文本或有效工具调用。`;
+        const preparedRequest = createPreparedModelRequest({
+          config: this.config,
+          sessionId: this.id,
+          turnId: this.pluginManager.getTurnId(this.id),
+          iteration: agentIteration,
+          attempt: attempt + 1,
+          systemPrompt: retryPrompt,
+          messages: modelMessages,
+          tools: toolDefs,
+        });
+        await this.pluginManager.callOnModelRequestPrepared(preparedRequest, agentIteration, this.id);
+        yield { type: "context_usage", usage: preparedRequest.usage, iteration: agentIteration, attempt: attempt + 1 };
+        if (controller.signal.aborted) throw new Error("会话已取消");
         const chatPromise = this.client.chat(
           modelMessages.map(({
             _turnId: _ignoredTurnId,

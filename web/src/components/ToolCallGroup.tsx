@@ -51,6 +51,7 @@ export default function ToolCallGroup({ toolCalls, expanded: controlledExpanded,
         }}
       >
         <span className="tool-call-group-title">工具调用</span>
+        {stats.running > 0 && <span className="tool-running-spinner" aria-hidden="true" />}
         <span className="tool-call-group-summary">{summary}</span>
         <span className="tool-call-group-chevron" aria-hidden="true">⌄</span>
       </button>

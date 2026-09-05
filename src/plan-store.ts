@@ -15,7 +15,9 @@ export interface PlanStep {
 
 export interface SessionPlan {
   id: string;
+  goal?: string;
   turnId: string;
+  relatedTurnIds?: string[];
   status: PlanStatus;
   createdAt: string;
   updatedAt: string;
@@ -54,15 +56,26 @@ export function listSessionPlans(workspacePath: string, sessionId: string): Sess
 
 export function findActiveSessionPlan(workspacePath: string, sessionId: string, turnId: string): SessionPlan | undefined {
   return readSessionPlan(workspacePath, sessionId, turnId)
-    ?? listSessionPlans(workspacePath, sessionId).reverse().find((plan) => (
-      plan.status === "planning" || plan.status === "executing"
-    ));
+    ?? listSessionPlans(workspacePath, sessionId).find((plan) => plan.relatedTurnIds?.includes(turnId));
 }
 
-export function createSessionPlan(workspacePath: string, sessionId: string, turnId: string, titles: string[]): SessionPlan {
+export function resumeSessionPlan(workspacePath: string, sessionId: string, turnId: string, planId: string): SessionPlan {
+  if (findActiveSessionPlan(workspacePath, sessionId, turnId)) throw new Error("本轮已经绑定计划");
+  const plan = listSessionPlans(workspacePath, sessionId).find((item) => item.id === planId);
+  if (!plan) throw new Error("当前会话中不存在该计划");
+  if (plan.status === "completed" || plan.status === "failed") throw new Error("已结束的计划不能恢复");
+  if (plan.steps.some((step) => step.status === "waiting_approval")) throw new Error("请先处理原任务的工具审批");
+  plan.relatedTurnIds = [...(plan.relatedTurnIds ?? []), turnId];
+  plan.updatedAt = new Date().toISOString();
+  writeSessionPlan(workspacePath, sessionId, plan);
+  return plan;
+}
+
+export function createSessionPlan(workspacePath: string, sessionId: string, turnId: string, titles: string[], goal?: string): SessionPlan {
   const now = new Date().toISOString();
   const plan: SessionPlan = {
     id: randomUUID(),
+    goal: goal?.trim() || undefined,
     turnId,
     status: "planning",
     createdAt: now,

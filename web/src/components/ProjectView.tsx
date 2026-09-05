@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import type { ExecutionMode, Message, PermissionMode, ToolCallInfo, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionPlan } from "../types.js";
+import type { ContextTokenUsage, ExecutionMode, Message, PermissionMode, ToolCallInfo, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionPlan } from "../types.js";
 import { fetchConfig, fetchProjectDiff, fetchProjectInfo, fetchProjectStatus } from "../lib/api.js";
 import ChatView from "./ChatView.js";
 import ChatInput from "./ChatInput.js";
@@ -9,10 +9,12 @@ import DiffView from "./DiffView.js";
 interface Props {
   messages: Message[];
   streamingText: string;
+  streamingTurnId?: string;
   streamingStatus: string;
   streamingToolCalls: ToolCallInfo[];
   streamingApprovalId?: string;
   isStreaming: boolean;
+  backendBusy?: boolean;
   activeSessionId: string | null;
   isRefreshing?: boolean;
   onRefreshMessages: () => void;
@@ -30,15 +32,18 @@ interface Props {
   onPermissionModeChange: (mode: PermissionMode) => void;
   permissionSaving: boolean;
   permissionError: string;
+  contextUsage?: ContextTokenUsage;
 }
 
 export default function ProjectView({
   messages,
   streamingText,
+  streamingTurnId,
   streamingStatus,
   streamingToolCalls,
   streamingApprovalId,
   isStreaming,
+  backendBusy = false,
   activeSessionId,
   isRefreshing,
   onRefreshMessages,
@@ -56,6 +61,7 @@ export default function ProjectView({
   onPermissionModeChange,
   permissionSaving,
   permissionError,
+  contextUsage,
 }: Props) {
   const [pathInput, setPathInput] = useState(projectRoot ?? "");
   const [info, setInfo] = useState<ProjectInfo | null>(null);
@@ -322,11 +328,14 @@ export default function ProjectView({
           {/* 项目聊天视图 */}
           <ChatView
             messages={messages}
-            streamingText={streamingText}
+            activePlanId={plan?.id}
+          streamingText={streamingText}
+          streamingTurnId={streamingTurnId}
             streamingStatus={streamingStatus}
             streamingToolCalls={streamingToolCalls}
             streamingApprovalId={streamingApprovalId}
             isStreaming={isStreaming}
+            backendBusy={backendBusy}
             activeSessionId={activeSessionId}
             isRefreshing={isRefreshing}
             onRefreshMessages={onRefreshMessages}
@@ -337,13 +346,15 @@ export default function ProjectView({
           <ChatInput
             onSend={onSend}
             onStop={onStop}
-            disabled={isStreaming}
+            disabled={isStreaming || backendBusy}
             executionMode={executionMode}
             onExecutionModeChange={onExecutionModeChange}
             permissionMode={permissionMode}
             onPermissionModeChange={onPermissionModeChange}
             permissionSaving={permissionSaving}
             permissionError={permissionError}
+            activeSessionId={activeSessionId}
+            contextUsage={contextUsage}
           />
         </>
       )}

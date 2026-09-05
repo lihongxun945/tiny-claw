@@ -6,8 +6,10 @@ import {
   createSessionPlan,
   findActiveSessionPlan,
   readSessionPlan,
+  resumeSessionPlan,
   revisePendingPlanSteps,
   updateSessionPlanStep,
+  type SessionPlan,
 } from "../../src/plan-store.js";
 import { createPlanCreateTool, createPlanPauseTool, createPlanReviseTool } from "../../src/tools/plan.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
@@ -30,6 +32,23 @@ describe("session plans", () => {
     createSessionMeta(workspace, "plan-session", { mode: "chat" });
     return workspace;
   }
+
+  it("requires and persists a goal across revisions and resume", async () => {
+    const workspace = setup();
+    const tool = createPlanCreateTool(workspace, () => loadConfig(workspace));
+    const context = { executionMode: "plan" as const, sessionId: "plan-session", turnId };
+    for (const goal of [undefined, "   ", 42]) {
+      expect(JSON.parse(await tool.execute({ goal, steps: ["分析", "实现"] }, context)).error).toContain("goal");
+      expect(readSessionPlan(workspace, context.sessionId, turnId)).toBeUndefined();
+    }
+    const { plan } = JSON.parse(await tool.execute({ goal: "  刷新后持续接收回复  ", steps: ["分析", "实现"] }, context));
+    expect(readSessionPlan(workspace, context.sessionId, turnId)?.goal).toBe("刷新后持续接收回复");
+    expect(revisePendingPlanSteps(workspace, context.sessionId, turnId, ["修复", "验证"], 4).goal).toBe(plan.goal);
+    updateSessionPlanStep(workspace, context.sessionId, turnId, "step-3", "in_progress");
+    updateSessionPlanStep(workspace, context.sessionId, turnId, "step-3", "waiting_user");
+    expect(resumeSessionPlan(workspace, context.sessionId, "next-turn", plan.id).goal).toBe(plan.goal);
+    expect(findActiveSessionPlan(workspace, context.sessionId, "next-turn")?.goal).toBe(plan.goal);
+  });
 
   it("persists ordered progress and completes a plan", () => {
     const workspace = setup();
@@ -116,7 +135,7 @@ describe("session plans", () => {
     }
   });
 
-  it("persists a user pause and resolves it from a later turn", async () => {
+  it("only resolves a paused plan after an explicit persisted resume", async () => {
     const workspace = setup();
     createSessionPlan(workspace, "plan-session", turnId, ["设计方案", "实现"]);
     updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
@@ -127,7 +146,72 @@ describe("session plans", () => {
     ));
 
     expect(result.plan.steps[0].status).toBe("waiting_user");
-    expect(findActiveSessionPlan(workspace, "plan-session", "22222222-2222-4222-8222-222222222222")?.turnId).toBe(turnId);
+    const nextTurn = "22222222-2222-4222-8222-222222222222";
+    expect(findActiveSessionPlan(workspace, "plan-session", nextTurn)).toBeUndefined();
+    resumeSessionPlan(workspace, "plan-session", nextTurn, result.plan.id);
+    expect(findActiveSessionPlan(workspace, "plan-session", nextTurn)?.turnId).toBe(turnId);
+    expect(readSessionPlan(workspace, "plan-session", turnId)?.relatedTurnIds).toEqual([nextTurn]);
+    expect(() => resumeSessionPlan(workspace, "plan-session", nextTurn, result.plan.id)).toThrow("已经绑定");
+  });
+
+  it("allows a new task beside a paused plan and rejects invalid resumes", async () => {
+    const workspace = setup();
+    const old = createSessionPlan(workspace, "plan-session", turnId, ["旧任务", "验证"]);
+    updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
+    updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "waiting_user");
+    const tool = createPlanCreateTool(workspace, () => loadConfig(workspace));
+    const result = JSON.parse(await tool.execute({ goal: "完成新任务", steps: ["新任务", "验证新任务"] }, {
+      executionMode: "plan", sessionId: "plan-session", turnId: "new-turn",
+    }));
+    expect(result.plan.turnId).toBe("new-turn");
+    expect(readSessionPlan(workspace, "plan-session", turnId)?.steps[0].status).toBe("waiting_user");
+    expect(() => resumeSessionPlan(workspace, "other-session", "resume", old.id)).toThrow("不存在");
+    updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "failed");
+    expect(() => resumeSessionPlan(workspace, "plan-session", "resume", old.id)).toThrow("已结束");
+  });
+
+  it("exposes only the current execution, retains approvals and clears user pauses", async () => {
+    const workspace = setup();
+    const manager = new PluginManager(workspace);
+    await manager.loadCorePlugins();
+    manager.setRuntimeDeps(loadConfig(workspace), new FakeModelClient([]), new MessageHistory(), "plan-session");
+    const snapshot = async () => {
+      let data: { activePlan: SessionPlan | null; currentTurnId?: string } | undefined;
+      await manager.getRoutes().find((route) => route.path === "/plan")!.handler({} as never, {} as never, {
+        url: new URL("http://localhost/plan?session_id=plan-session"),
+        readBody: async () => "",
+        sendJSON: (_status, body) => { data = body as typeof data; },
+      });
+      return data!;
+    };
+    try {
+      const plan = createSessionPlan(workspace, "plan-session", turnId, ["设计", "执行"]);
+      updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
+      expect((await snapshot()).activePlan).toBeNull();
+      await manager.beginTurn("plan-session", turnId, "plan");
+      await manager.callOnBuildTurnPrompt("", 0, "plan-session");
+      expect((await snapshot()).activePlan?.id).toBe(plan.id);
+      await manager.callOnTurnEnd("approval_required", 1, "plan-session");
+      expect((await snapshot()).activePlan?.steps[0].status).toBe("waiting_approval");
+      updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
+      updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "waiting_user");
+      await manager.callOnTurnEnd("completed", 2, "plan-session");
+      expect((await snapshot()).activePlan).toBeNull();
+      await manager.endTurn("plan-session", turnId);
+      await manager.beginTurn("plan-session", "resume-turn", "plan");
+      await manager.callOnBuildTurnPrompt("", 0, "plan-session");
+      expect((await snapshot()).activePlan).toBeNull();
+      resumeSessionPlan(workspace, "plan-session", "resume-turn", plan.id);
+      updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
+      expect(await snapshot()).toMatchObject({ currentTurnId: "resume-turn", activePlan: { id: plan.id } });
+      await manager.callOnTurnEnd("approval_required", 1, "plan-session");
+      expect((await snapshot()).activePlan?.steps[0].status).toBe("waiting_approval");
+      await manager.callOnError(new Error("会话已取消"), 1, "plan-session");
+      expect((await snapshot()).activePlan).toBeNull();
+      expect(readSessionPlan(workspace, "plan-session", turnId)?.steps[0]).toMatchObject({ status: "failed", summary: "会话已取消" });
+    } finally {
+      await manager.destroy();
+    }
   });
 
   it("replaces only pending plan steps and increments the revision", () => {

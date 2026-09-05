@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import type { ToolCallInfo } from "../types.js";
 import { approveCommand, rejectCommand } from "../lib/api.js";
@@ -70,14 +70,39 @@ export function isToolCallFailure(result: string | undefined): boolean {
   }
 }
 
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
 export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveTurnAndResume }: Props) {
   const approval = parseApprovalResult(toolCall.result);
   const [approvalStatus, setApprovalStatus] = useState<"pending" | "approved" | "rejected">("pending");
   const [approvalMessage, setApprovalMessage] = useState("");
   const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
+  const isRunning = toolCall.result === undefined;
+  const failed = isToolCallFailure(toolCall.result);
+  const [now, setNow] = useState(Date.now());
   const inputStr = JSON.stringify(toolCall.input, null, 2);
   const inputSummary = summarizeInput(toolCall.name, toolCall.input);
   const resultSummary = summarizeResult(toolCall.result);
+  const elapsedMs = toolCall.startedAt ? (toolCall.completedAt ?? now) - toolCall.startedAt : 0;
+  const statusLabel = approval
+    ? "待审批"
+    : isRunning
+      ? `执行中 · ${formatDuration(elapsedMs)}`
+      : failed
+        ? "失败"
+        : "成功";
+
+  useEffect(() => {
+    if (!isRunning || !toolCall.startedAt) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isRunning, toolCall.startedAt]);
 
   const handleApprove = async () => {
     if (!approval) return;
@@ -130,11 +155,12 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveT
   };
 
   return (
-    <details className="tool-block" open={approval ? true : undefined}>
+    <details className={`tool-block ${isRunning ? "is-running" : ""} ${failed ? "is-failed" : ""} ${approval ? "is-approval" : ""}`} open={approval || isRunning ? true : undefined}>
       <summary>
         <span className="tool-name">{toolCall.name}</span>
         {inputSummary && <span className="tool-input-summary">{inputSummary}</span>}
         {resultSummary && <span className="tool-result-summary">{resultSummary}</span>}
+        <span className="tool-status" role="status">{statusLabel}</span>
       </summary>
       <div className={`tool-body ${approval ? "tool-body-approval" : ""}`}>
         {approval ? (
@@ -177,6 +203,12 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveT
           <>
             <div><strong>Input:</strong></div>
             <div>{inputStr}</div>
+            {isRunning && (
+              <div className="tool-running-message">
+                <span className="tool-running-spinner" aria-hidden="true" />
+                <span>等待工具返回结果...</span>
+              </div>
+            )}
             {toolCall.result !== undefined && (
               <>
                 <div style={{ marginTop: 8 }}><strong>Result:</strong></div>

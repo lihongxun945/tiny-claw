@@ -17,11 +17,13 @@ import { coreProjectToolsPlugin } from "./project-tools.js";
 import { corePlanPlugin } from "./plan.js";
 import { coreVectorMemoryPlugin } from "./vector-memory.js";
 import { coreProfileMemoryPlugin } from "./profile-memory.js";
+import { coreContextInspectorPlugin } from "./context-inspector.js";
 
 export const corePlugins: Plugin[] = [
   coreChatCommandsPlugin,
   coreAttachmentsPlugin,
   coreDebugPlugin,
+  coreContextInspectorPlugin,
   coreLocalModelsPlugin,
   coreToolsPlugin,
   coreProfileMemoryPlugin,

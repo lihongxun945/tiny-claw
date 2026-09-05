@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "../../src/config.js";
@@ -14,6 +14,7 @@ import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-worksp
 import { getMemoryRecord, saveMemory } from "../../src/tools/memory.js";
 import { loadSessionState, saveSessionState } from "../../src/session-state.js";
 import { saveProfile } from "../../src/tools/profile.js";
+import { createSessionMeta, sessionDir } from "../../src/session-store.js";
 
 function modelClient(): ModelClient {
   return {
@@ -129,6 +130,50 @@ describe("PluginManager hook lifecycle", () => {
     const base = await manager.callOnBuildPrompt("", "main");
     expect(await manager.callOnBuildTurnPrompt(base, 1, "main")).toContain("每次回复以陛下开头。");
     expect(await manager.callOnBuildTurnPrompt(base, 2, "main")).toContain("每次回复以陛下开头。");
+  });
+
+  it("stores prepared model requests in the context inspector route", async () => {
+    createSessionMeta(workspacePath, "main", { mode: "chat" });
+    await manager.loadCorePlugins();
+    const request = {
+      sessionId: "main",
+      iteration: 1,
+      attempt: 1,
+      createdAt: new Date().toISOString(),
+      systemPrompt: "system",
+      messages: [{ role: "user" as const, content: "hello" }],
+      tools: [],
+      usage: {
+        systemPrompt: 2, messages: 3, tools: 0, outputReserved: 100,
+        input: 5, totalReserved: 105, maxContext: 1000, percent: 1,
+      },
+    };
+    await manager.callOnModelRequestPrepared(request, 1, "main");
+    await manager.callOnModelRequestPrepared({ ...request, systemPrompt: "latest" }, 2, "main");
+    request.systemPrompt = "latest";
+    await manager.destroy();
+    manager = new PluginManager(workspacePath);
+    await manager.loadCorePlugins();
+    const route = manager.getRoutes().find((item) => item.path === "/context");
+    let response: { status: number; data: unknown } | undefined;
+    await route?.handler({} as never, {} as never, {
+      url: new URL("http://localhost/context?session_id=main"),
+      readBody: async () => "",
+      sendJSON: (status, data) => { response = { status, data }; },
+    });
+    expect(response).toEqual({ status: 200, data: { snapshot: request } });
+    writeFileSync(resolve(sessionDir(workspacePath, "main"), "context-snapshot.json"), "{");
+    await route?.handler({} as never, {} as never, {
+      url: new URL("http://localhost/context?session_id=main"), readBody: async () => "",
+      sendJSON: (status, data) => { response = { status, data }; },
+    });
+    expect(response?.status).toBe(404);
+    rmSync(sessionDir(workspacePath, "main"), { recursive: true });
+    await route?.handler({} as never, {} as never, {
+      url: new URL("http://localhost/context?session_id=main"), readBody: async () => "",
+      sendJSON: (status, data) => { response = { status, data }; },
+    });
+    expect(response?.status).toBe(404);
   });
 
   it("supports aborting chat and tool execution", async () => {

@@ -58,7 +58,7 @@ WebUI 仍只监听本机回环地址，并由本地代理访问 Gateway。
 | `done` | 本轮完成、等待审批或达到迭代上限 |
 | `error` | 请求或 Agent 执行错误 |
 
-同一 Session 同时只能运行一个任务。客户端断开 SSE 时 Gateway 会取消该任务，也可以调用取消接口。
+同一 Session 同时只能运行一个任务。客户端断开 SSE 不会取消任务，可调用取消接口停止执行。刷新或重连时使用 `GET /sessions/:id/events`：先返回 `snapshot`（本轮 `turnId`、审批 ID、累计文本、工具调用及状态），再持续推送后续 SSE 事件；当前没有可订阅任务时返回 204，此时应刷新历史消息。快照只保留当前运行任务，不跨 Gateway 重启恢复执行。
 
 ## 主要接口
 
@@ -66,6 +66,7 @@ WebUI 仍只监听本机回环地址，并由本地代理访问 Gateway。
 |---|---|---|
 | `POST` | `/chat` | 发送消息并通过 SSE 接收结果 |
 | `GET` | `/sessions` | 列出进程中的活跃会话 |
+| `GET` | `/sessions/:id/events` | 恢复当前任务快照并订阅后续 SSE，无运行任务时返回 204 |
 | `POST` | `/sessions` | 创建普通或项目会话 |
 | `DELETE` | `/sessions/:id` | 删除会话及持久化数据 |
 | `POST` | `/sessions/:id/cancel` | 取消正在运行的任务 |

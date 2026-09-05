@@ -90,6 +90,8 @@ export interface PluginHooks {
   onUserMessage?: (ctx: HookContext, input: string, content?: Message["content"]) => void | Promise<void>;
   onBeforeModelCall?: (ctx: HookContext, modelContext: ModelCallContext) =>
     ModelCallContext | Promise<ModelCallContext> | void;
+  /** Observe the final request after prompt injection, compression, and tool filtering. */
+  onModelRequestPrepared?: (ctx: HookContext, request: PreparedModelRequest) => void | Promise<void>;
   onChatResponse?: (ctx: HookContext, response: ChatResponse) =>
     ChatResponse | Promise<ChatResponse> | void;
   onBeforeTool?: (ctx: HookContext, name: string, args: Record<string, unknown>) =>
@@ -102,6 +104,29 @@ export interface PluginHooks {
 }
 
 export type TurnEndReason = "completed" | "approval_required" | "iteration_limit";
+
+export interface ContextTokenUsage {
+  systemPrompt: number;
+  messages: number;
+  tools: number;
+  outputReserved: number;
+  input: number;
+  totalReserved: number;
+  maxContext: number;
+  percent: number;
+}
+
+export interface PreparedModelRequest {
+  sessionId: string;
+  turnId?: string;
+  iteration: number;
+  attempt: number;
+  createdAt: string;
+  systemPrompt: string;
+  messages: Message[];
+  tools: ToolDefinition[];
+  usage: ContextTokenUsage;
+}
 
 export interface ModelCallContext {
   messages: Message[];

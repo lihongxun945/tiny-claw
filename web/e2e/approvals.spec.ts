@@ -114,7 +114,7 @@ test("refreshes a waiting plan as soon as approved tool execution resumes", asyn
     const plan = planReads === 1
       ? waitingPlan
       : { ...waitingPlan, steps: [{ ...waitingPlan.steps[0], status: "in_progress" }] };
-    await route.fulfill({ json: { plans: [plan] } });
+    await route.fulfill({ json: { plans: [plan], activePlan: plan, currentTurnId: plan.turnId } });
   });
   await page.route("**/approvals/approval-plan-1/approve-and-resume", async (route) => route.fulfill({
     headers: { "content-type": "text/event-stream" },

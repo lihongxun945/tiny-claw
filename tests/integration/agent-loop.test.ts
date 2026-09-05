@@ -21,6 +21,14 @@ import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-worksp
 
 async function collect(events: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
   const result: AgentEvent[] = [];
+  for await (const event of events) {
+    if (event.type !== "context_usage") result.push(event);
+  }
+  return result;
+}
+
+async function collectAll(events: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
+  const result: AgentEvent[] = [];
   for await (const event of events) result.push(event);
   return result;
 }
@@ -163,6 +171,23 @@ describe("AgentSession loop", () => {
         content: [{ type: "text", text: "hello" }],
       }),
     ]);
+  });
+
+  it("emits context usage before invoking the model", async () => {
+    const client = new FakeModelClient([{ text: "hello", toolCalls: [] }]);
+    const session = new AgentSession("context-usage", workspacePath, manager, {}, client);
+
+    const events = await collectAll(session.chat("hi"));
+    expect(events[0]).toEqual(expect.objectContaining({
+      type: "context_usage",
+      iteration: 1,
+      attempt: 1,
+      usage: expect.objectContaining({
+        input: expect.any(Number),
+        maxContext: 128000,
+        outputReserved: 16384,
+      }),
+    }));
   });
 
   it("retries a successful empty model response before completing", async () => {
@@ -317,7 +342,7 @@ describe("AgentSession loop", () => {
       toolCalls: [{ type: "tool_use", id, name, input }],
     });
     const client = new FakeModelClient([
-      toolCall("plan-1", "plan_create", { steps: ["分析", "实现"] }),
+      toolCall("plan-1", "plan_create", { goal: "完成实现", steps: ["分析", "实现"] }),
       toolCall("plan-2", "plan_update", { step_id: "step-1", status: "in_progress" }),
       toolCall("work-1", "echo", {}),
       toolCall("plan-3", "plan_update", { step_id: "step-1", status: "completed", summary: "分析完成" }),
@@ -379,10 +404,12 @@ describe("AgentSession loop", () => {
     const firstTurnId = "33333333-3333-4333-8333-333333333333";
     const secondTurnId = "44444444-4444-4444-8444-444444444444";
     const client = new FakeModelClient([
-      toolCall("create", "plan_create", { steps: ["给出方案", "实施"] }),
+      toolCall("create", "plan_create", { goal: "完成需求", steps: ["给出方案", "实施"] }),
       toolCall("start-1", "plan_update", { step_id: "step-1", status: "in_progress" }),
       toolCall("pause", "plan_pause", { summary: "等待用户确认方案" }),
       { text: "请确认方案", toolCalls: [] },
+      { text: "这是一个无关问题的回答", toolCalls: [] },
+      () => toolCall("resume", "plan_resume", { plan_id: readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)!.id }),
       toolCall("resume-1", "plan_update", { step_id: "step-1", status: "in_progress" }),
       toolCall("complete-1", "plan_update", { step_id: "step-1", status: "completed", summary: "用户已确认" }),
       toolCall("start-2", "plan_update", { step_id: "step-2", status: "in_progress" }),
@@ -396,12 +423,20 @@ describe("AgentSession loop", () => {
     });
     expect(readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)?.steps[0].status).toBe("waiting_user");
 
+    expect((await collect(session.chat("先回答一个无关问题", undefined, undefined, "plan", "unrelated-turn"))).at(-1)).toEqual({
+      type: "done", text: "这是一个无关问题的回答", reason: "completed",
+    });
+    expect(readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)?.steps[0].status).toBe("waiting_user");
+    expect(client.calls[4].tools?.map((tool) => tool.name)).toContain("plan_create");
+    expect(client.calls[4].tools?.map((tool) => tool.name)).not.toContain("plan_update");
+
     expect((await collect(session.chat("确认", undefined, undefined, "plan", secondTurnId))).at(-1)).toEqual({
       type: "done", text: "任务完成", reason: "completed",
     });
     expect(readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)?.status).toBe("completed");
     expect(readSessionPlan(workspacePath, "plan-user-pause", secondTurnId)).toBeUndefined();
-    expect(client.calls[4].systemPrompt).toContain("不要调用 plan_create");
+    expect(client.calls[5].systemPrompt).toContain("plan_resume");
+    expect(readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)?.relatedTurnIds).toEqual([secondTurnId]);
   });
 
   it("revises pending steps after a research step", async () => {
@@ -416,7 +451,7 @@ describe("AgentSession loop", () => {
       toolCalls: [{ type: "tool_use", id, name, input }],
     });
     const client = new FakeModelClient([
-      toolCall("create", "plan_create", { steps: ["调研现状", "根据调研细化计划"] }),
+      toolCall("create", "plan_create", { goal: "完成调研和实施", steps: ["调研现状", "根据调研细化计划"] }),
       toolCall("start-research", "plan_update", { step_id: "step-1", status: "in_progress" }),
       toolCall("research", "echo", {}),
       toolCall("complete-research", "plan_update", { step_id: "step-1", status: "completed", summary: "调研完成" }),
@@ -2052,14 +2087,17 @@ describe("AgentSession loop", () => {
   });
 
   it("rejects concurrent chats in the same session and supports cancellation", async () => {
+    let modelStarted!: () => void;
+    const started = new Promise<void>((resolve) => { modelStarted = resolve; });
     const client = new FakeModelClient([
       (_messages, _tools, _systemPrompt, signal) => new Promise((_resolve, reject) => {
         signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        modelStarted();
       }),
     ]);
     const session = new AgentSession("cancel", workspacePath, manager, {}, client);
     const running = collect(session.chat("wait"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await started;
 
     expect(session.isBusy()).toBe(true);
     expect(await collect(session.chat("second"))).toEqual([
@@ -2069,6 +2107,28 @@ describe("AgentSession loop", () => {
     expect(await running).toEqual([{ type: "error", message: "会话已取消" }]);
     expect(session.isBusy()).toBe(false);
     expect(session.cancel()).toBe(false);
+  });
+
+  it("does not call the model when cancelled during context snapshot preparation", async () => {
+    let prepared!: () => void;
+    let release!: () => void;
+    const preparing = new Promise<void>((resolve) => { prepared = resolve; });
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    addHooks(manager, {
+      async onModelRequestPrepared() {
+        prepared();
+        await paused;
+      },
+    });
+    const client = new FakeModelClient([]);
+    const session = new AgentSession("cancel-preparation", workspacePath, manager, {}, client);
+    const running = collect(session.chat("wait"));
+    await preparing;
+    expect(session.cancel()).toBe(true);
+    release();
+    expect(await running).toEqual([{ type: "error", message: "会话已取消" }]);
+    expect(client.calls).toHaveLength(0);
+    expect(session.isBusy()).toBe(false);
   });
 
   it("stops after the configured maximum number of iterations", async () => {

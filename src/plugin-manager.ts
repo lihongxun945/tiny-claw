@@ -17,6 +17,7 @@ import type {
   TurnEndReason,
   ModelCallContext,
   AgentStatusUpdate,
+  PreparedModelRequest,
 } from "./plugins/types.js";
 import type { Config, Tool, ToolDefinition, Message, ChatResponse, SessionContext, ExecutionMode } from "./types.js";
 import type { ModelClient } from "./model/index.js";
@@ -557,6 +558,12 @@ export class PluginManager {
       }
     }
     return result;
+  }
+
+  async callOnModelRequestPrepared(request: PreparedModelRequest, iteration: number, sessionId: string): Promise<void> {
+    for (const hooks of this.getHooks()) {
+      await hooks.onModelRequestPrepared?.(this.buildHookContext(iteration, sessionId), request);
+    }
   }
 
   async callOnChatResponse(response: ChatResponse, iteration: number, sessionId: string): Promise<ChatResponse> {

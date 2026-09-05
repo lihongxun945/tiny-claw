@@ -38,6 +38,16 @@ async function* streamPost(
     signal,
   });
 
+  yield* readStream(response, signal);
+}
+
+export async function* streamSessionEvents(sessionId: string, signal?: AbortSignal): AsyncGenerator<SSEEvent> {
+  const response = await fetch(`/sessions/${encodeURIComponent(sessionId)}/events`, { signal });
+  if (response.status === 204) return;
+  yield* readStream(response, signal);
+}
+
+async function* readStream(response: Response, signal?: AbortSignal): AsyncGenerator<SSEEvent> {
   if (!response.ok) {
     const error = await response.text();
     throw new Error(`Chat request failed: ${response.status} ${error}`);

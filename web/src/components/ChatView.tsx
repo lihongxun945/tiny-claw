@@ -6,12 +6,15 @@ import { mergeApprovalResume } from "../lib/message-merge.js";
 
 interface Props {
   messages: Message[];
+  activePlanId?: string;
   streamingText: string;
+  streamingTurnId?: string;
   streamingStatus: string;
   streamingToolCalls: ToolCallInfo[];
   summaryNotice?: { state: "completed" | "failed"; message: string };
   streamingApprovalId?: string;
   isStreaming: boolean;
+  backendBusy?: boolean;
   activeSessionId: string | null;
   isRefreshing?: boolean;
   onRefreshMessages: () => void;
@@ -21,12 +24,15 @@ interface Props {
 
 export default function ChatView({
   messages,
+  activePlanId,
   streamingText,
+  streamingTurnId,
   streamingStatus,
   streamingToolCalls,
   summaryNotice,
   streamingApprovalId,
   isStreaming,
+  backendBusy = false,
   activeSessionId,
   isRefreshing,
   onRefreshMessages,
@@ -37,7 +43,12 @@ export default function ChatView({
   const [expandedToolGroups, setExpandedToolGroups] = useState<Record<string, boolean>>({});
   const displayedMessages = streamingApprovalId
     ? mergeApprovalResume(messages, streamingApprovalId, streamingText, streamingToolCalls)
-    : messages;
+    : messages.filter((message) => !(isStreaming && streamingTurnId && message.role === "assistant" && message.turnId === streamingTurnId));
+  const showBackendBusy = backendBusy && !isStreaming;
+  const lastPlanMessage = new Map<string, number>();
+  displayedMessages.forEach((message, index) => {
+    if (message.role === "assistant" && message.plan) lastPlanMessage.set(message.plan.id, index);
+  });
 
   const toolGroupProps = (message: Message) => {
     if (message.toolCalls.length <= 1) return {};
@@ -76,7 +87,7 @@ export default function ChatView({
             <span>{summaryNotice.message}</span>
           </div>
         )}
-        {displayedMessages.length === 0 && !isStreaming && (
+        {displayedMessages.length === 0 && !isStreaming && !showBackendBusy && (
           <div className="chat-empty-state">
             <img className="empty-mark" src="/icon.png" alt="" aria-hidden="true" />
             <h1>开始一段新对话</h1>
@@ -91,10 +102,11 @@ export default function ChatView({
               onApproveAndResume={onApproveAndResume}
               onApproveTurnAndResume={onApproveTurnAndResume}
             />
-            {msg.role === "assistant" && msg.plan && <PlanProgress plan={msg.plan} />}
+            {msg.role === "assistant" && msg.plan && msg.plan.id !== activePlanId
+              && lastPlanMessage.get(msg.plan.id) === i && <PlanProgress plan={msg.plan} historical />}
           </Fragment>
         ))}
-        {isStreaming && !streamingApprovalId && (
+        {(isStreaming || showBackendBusy) && !streamingApprovalId && (
           streamingText || streamingToolCalls.length > 0 ? (
             (() => {
               const message: Message = {
@@ -116,12 +128,13 @@ export default function ChatView({
           ) : (
             <div className="message assistant">
               <div className="message-content processing-indicator" aria-live="polite">
-                <span>{streamingStatus || "正在处理"}</span>
+                <span>{showBackendBusy ? "正在后台执行" : streamingStatus || "正在处理"}</span>
                 <span className="processing-dots" aria-hidden="true">
                   <span />
                   <span />
                   <span />
                 </span>
+                <span className="streaming-cursor" aria-hidden="true" />
               </div>
             </div>
           )

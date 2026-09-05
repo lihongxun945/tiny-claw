@@ -20,6 +20,7 @@ src/
 ├── index.ts          # CLI 入口（使用 PluginManager + AgentSession）
 ├── gateway.ts        # HTTP Gateway（SSE 流式 API + 插件路由）
 ├── gateway-sse.ts    # SSE 心跳生命周期管理
+├── gateway-streams.ts # 当前执行快照及可重连 SSE 订阅
 ├── agent.ts          # AgentSession 类（核心 Agent Loop，仅编排流程+调用钩子）
 ├── plugin-manager.ts # 插件管理器（生命周期、工具注册、钩子调度）
 ├── kernel/          # 类型化插件内核（Capability、作用域与资源释放）
@@ -163,13 +164,19 @@ WebUI 先调用 `/projects/inspect` 检查目录，选择成功后立即通过 `
 
 ## 计划执行模式
 
-计划模式在执行层仍是每轮请求的临时 `ExecutionMode`，不修改 Session 的普通/项目上下文绑定；用户选择则作为 `meta.json` 中可变的 `preferences.executionMode` 持久化。WebUI 切换模式时立即更新 Session 偏好，发送 `POST /chat` 时再次携带并兜底保存；刷新、切换会话和 Gateway 重启后从 Session 元数据恢复各自选择。AgentSession 在本轮开始时把模式注册到 PluginManager，审批暂停时将模式写入待恢复状态，恢复执行后继续沿用，最终在本轮结束时清理。工具注册支持同时按 `SessionContext` 和 `ExecutionMode` 过滤，因此 `plan_create`、`plan_update`、`plan_revise`、`plan_pause` 只在计划模式下发送给模型。
+历史计划使用默认收起的轻量任务记录，保留目标、状态和完成数，展开后查看步骤详情；不显示卡片背景、边框、阴影或进度条。当前活动计划仍使用完整进度面板。
 
-`core-plan` 插件通过 `onBuildTurnPrompt` 注入不进入历史记录的本轮计划规则，并负责计划工具、状态机及 `GET /plan?session_id=...` 恢复接口。每轮消息生成独立 `turnId`，消息和 Hook 只把该标识作为内部元数据使用，调用模型前会将其剥离。计划原子写入 `sessions/<session>/plans/<turnId>.json`，步骤状态为 pending、in_progress、completed、failed、skipped、waiting_approval、waiting_user；同一时间只能有一个执行中步骤且必须按顺序推进。需要审批时插件把当前步骤切换到 waiting_approval，恢复工具执行前切回 in_progress；需要用户确认或补充信息时，模型通过 `plan_pause` 将步骤持久化为 waiting_user，下一轮用户回复后继续原计划，Gateway 重启不会丢失暂停状态。迭代上限和执行错误会明确标记当前步骤失败。
+计划面板按计划 ID 唯一展示：存在当前活动计划时，历史回答隐藏同 ID 面板；结束或等待用户后，只在最后一条关联的历史回答下展示。计划状态刷新同时按 ID 更新历史快照，普通和项目视图共用 `ChatView` 去重规则，避免审批恢复或跨轮继续时重复展示。
+
+`plan_create` 要求同时提供非空 `goal` 和执行步骤；目标描述预期结果，随计划 JSON 持久化并通过既有计划 API 返回。WebUI 在进度条和步骤上方显示“当前目标”。步骤修订和显式恢复保留目标，可恢复计划提示词也包含目标；新目标建立独立计划。旧文件允许缺少 `goal`，不从步骤猜测或回填目标。本功能无新增配置。
+
+计划模式在执行层仍是每轮请求的临时 `ExecutionMode`，不修改 Session 的普通/项目上下文绑定；用户选择则作为 `meta.json` 中可变的 `preferences.executionMode` 持久化。WebUI 切换模式时立即更新 Session 偏好，发送 `POST /chat` 时再次携带并兜底保存；刷新、切换会话和 Gateway 重启后从 Session 元数据恢复各自选择。AgentSession 在本轮开始时把模式注册到 PluginManager，审批暂停时将模式写入待恢复状态，恢复执行后继续沿用，最终在本轮结束时清理。工具注册支持同时按 `SessionContext` 和 `ExecutionMode` 过滤，因此 `plan_create`、`plan_resume`、`plan_update`、`plan_revise`、`plan_pause` 只在计划模式下发送给模型。
+
+`core-plan` 插件通过 `onBuildTurnPrompt` 注入不进入历史记录的本轮计划规则，并负责计划工具、状态机及 `GET /plan?session_id=...` 恢复接口。每轮消息生成独立 `turnId`，消息和 Hook 只把该标识作为内部元数据使用，调用模型前会将其剥离。计划原子写入 `sessions/<session>/plans/<turnId>.json`，创建轮次保持不变；`relatedTurnIds` 持久化显式恢复该计划的后续轮次。查找本轮计划只匹配创建轮次或关联轮次，不再回退到会话最新未完成计划。步骤状态为 pending、in_progress、completed、failed、skipped、waiting_approval、waiting_user；同一时间只能有一个执行中步骤且必须按顺序推进。需要审批时插件把当前步骤切换到 waiting_approval，恢复工具执行前切回 in_progress；需要用户确认或补充信息时，模型通过 `plan_pause` 将步骤持久化为 waiting_user。旧计划只作为候选信息提供给模型，用户明确继续旧任务时调用 `plan_resume` 校验会话归属和可恢复状态并绑定本轮，再通过 `plan_update` 开始步骤；无关问答和新任务不继承旧计划。Gateway 重启不会丢失暂停状态和轮次关联；缺少 `relatedTurnIds` 的旧文件仍可查看并显式恢复。迭代上限和执行错误会明确标记绑定计划失败。
 
 计划模式不强制纯文本问答创建空计划。初次模型调用可以直接回答、调用只读工具补充信息，或调用 `plan_create`：不需要执行任务时可直接返回文本，不写入计划文件也不显示进度；写入或其他有副作用的工具仍必须等到计划创建且步骤开始后才能执行。一旦本轮创建或继承了计划，完成、暂停和失败校验继续强制执行。
 
-计划插件通过通用 `onFilterToolDefinitions` 钩子按持久化状态限制模型可见工具。工具可声明 `effect: "read" | "write"`，未声明时按有副作用处理：创建计划前允许使用显式只读工具收集制定可靠计划所需的信息，同时暴露 `plan_create`；计划存在但当前步骤尚未开始时允许只读工具以及 `plan_update`、`plan_revise`；步骤进入 `in_progress` 后才开放写入和其他有副作用的执行工具。`skill_use` 可能运行技能中的动态命令，因此不属于只读工具。`onBeforeTool` 仍保留相同阶段校验，防止绕过模型工具定义直接执行。插件还通过 `onBeforeModelCall.reportStatus` 推送“生成计划、准备步骤、执行步骤、整理结果”等临时状态，状态不写入会话历史。
+计划插件通过通用 `onFilterToolDefinitions` 钩子按持久化状态限制模型可见工具。工具可声明 `effect: "read" | "write"`，未声明时按有副作用处理：本轮绑定计划前允许使用显式只读工具收集制定可靠计划所需的信息，同时暴露 `plan_create` 和 `plan_resume`；计划存在但当前步骤尚未开始时允许只读工具以及 `plan_update`、`plan_revise`；步骤进入 `in_progress` 后才开放写入和其他有副作用的执行工具。`skill_use` 可能运行技能中的动态命令，因此不属于只读工具。`onBeforeTool` 仍保留相同阶段校验，防止绕过模型工具定义直接执行。插件还通过 `onBeforeModelCall.reportStatus` 推送“生成计划、准备步骤、执行步骤、整理结果”等临时状态，状态不写入会话历史。
 
 复杂任务允许渐进式计划：模型先创建包含调研步骤的粗粒度计划，在明确现状和约束后调用 `plan_revise` 整体替换末尾连续的 pending 步骤。已经开始或结束的步骤原样保留，新步骤使用不复用的递增 ID，计划 `revision` 随每次调整递增；调整后的总步骤数继续受 `plan.maxSteps` 限制。WebUI 收到 `plan_revise` 工具结果后立即重新读取持久化计划。
 
@@ -177,9 +184,11 @@ Agent Loop 对“请求成功但文本和工具调用同时为空”的模型响
 
 模型输出无工具调用的最终回复时，如果当前步骤是唯一未结束的执行中步骤，插件会通过计划状态机自动将其标记为 completed，避免模型遗漏最后一次 `plan_update` 而把已经完成的任务误判为失败。只要仍有其他 pending 或执行中步骤，就不会自动收尾，仍按计划提前结束处理。
 
-WebUI 收到计划工具结果或终止事件后重新读取持久化计划，避免解析模型自然语言或依赖单条 SSE 连接。执行中或等待审批的计划显示在输入框上方；完成或失败后，历史消息接口按 `turnId` 将计划挂到对应轮次的最终助手消息下。切换 Session、刷新页面和 Gateway 重启后均能恢复每轮计划，后续对话不会覆盖或全局展示旧计划。
+WebUI 收到计划工具结果（包括恢复、暂停）或终止事件后重新读取持久化计划，避免解析模型自然语言或依赖单条 SSE 连接。计划插件在内存中维护当前执行轮次，`/plan` 返回历史 `plans`、`currentTurnId` 和可展示的 `activePlan`；执行中或等待审批时保留顶部计划，等待用户、完成或失败时清除。新消息立即清空顶部进度，并通过请求序号丢弃旧轮次的迟到响应。历史接口按创建轮次及 `relatedTurnIds` 将计划最新持久化状态挂到对应助手回答下，包含暂停计划，不保存逐轮快照。`/history/sessions` 会合并内存中活跃会话的 `busy` 状态，侧栏在存在执行中会话时短轮询刷新，因此切换窗口、刷新页面或重新打开客户端后仍能看到后台执行状态。选中后台执行中的会话时同步读取当前计划，输入框进入执行态且只提供停止操作；本地没有 SSE 连接时通过当前执行订阅接口恢复快照和后续输出，结束后刷新历史消息。切换 Session、刷新页面和 Gateway 重启后均能恢复历史计划；Gateway 重启后不根据未完成状态自动恢复顶部任务窗。
 
-WebUI 以单条助手消息作为工具调用的展示边界。同一轮出现多个工具调用时聚合为一个可展开面板，完成后显示成功和失败数量并默认折叠，展开后的列表限制高度并独立滚动。仍在执行的调用默认展开；用户手动选择的展开状态以首个工具调用 ID 为稳定键保存，工具结果更新、消息刷新以及流式临时消息替换为最终消息时不会自动收起。只要存在待审批调用，聚合面板就强制展开且不能折叠，确保审批入口持续可见。单个工具调用继续使用原有工具卡片，不增加额外层级。
+WebUI 以单条助手消息作为工具调用的展示边界。同一轮出现多个工具调用时聚合为一个可展开面板，完成后显示执行中、待审批、成功和失败数量，全部结束后默认折叠，展开后的列表限制高度并独立滚动。仍在执行的调用默认展开，并在聚合头部和单个工具卡片中显示运行态与已耗时，避免长任务被误认为卡死；用户手动选择的展开状态以首个工具调用 ID 为稳定键保存，工具结果更新、消息刷新以及流式临时消息替换为最终消息时不会自动收起。只要存在待审批调用，聚合面板就强制展开且不能折叠，确保审批入口持续可见。单个工具调用继续使用原有工具卡片，不增加额外层级。
+
+`core-context-inspector` 通过 `onModelRequestPrepared` 观察每一次真正发送给模型的最终请求。该钩子位于提示词注入、工具过滤和上下文压缩之后，因此快照包含实际的 System Prompt、Messages 与 Tools。插件将最新快照写入 `sessions/<session>/context-snapshot.json`，采用异步临时文件加原子重命名，仅保留最新一份；写入失败记录警告，不中断模型请求。`GET /context?session_id=...` 从磁盘读取，缺失或损坏时返回 404，Gateway 重启后可恢复，删除会话目录时一并清理。旧会话没有快照时需等待下一次模型调用生成。Agent 同时通过 SSE 推送 `context_usage`，WebUI 在输入框内审批模式左侧以“上下文 24%”展示占用比例，无数据时隐藏入口；点击后在弹窗中查看完整 Token 统计、占用比例及请求内容。Token 统计复用上下文压缩模块的估算函数；附件只保留类型和名称，不暴露本地文件路径或 Base64 数据。
 
 ### config.json
 
@@ -729,7 +738,7 @@ web/
 
 **SSE 消费：** POST /chat 返回 SSE 流，无法使用 `EventSource`（仅支持 GET）。使用 `fetch` + `ReadableStream` 手动解析 SSE 帧，实现为 async generator。
 
-Web UI 按 session 保存消息、流式文本、工具调用、运行状态和中止控制器。切换会话或进入其他页签不会关闭仍在运行的 SSE；流事件继续写入其所属 session，返回该会话时可恢复处理中状态和已有输出。“停止”只中止当前会话。刷新页面后的任务重连不在这一前端状态机制的范围内。助手消息由 ReactMarkdown 渲染，围栏代码块通过共享的 highlight.js 语言注册表执行语法高亮；项目 Diff 视图复用同一高亮模块，未知或未标注语言使用自动识别。
+Web UI 按 session 保存消息、流式文本、工具调用、运行状态和中止控制器。切换会话或进入其他页签不会关闭仍在运行的 SSE；流事件继续写入其所属 session，返回该会话时可恢复处理中状态和已有输出。“停止”只中止当前会话。Gateway 的 `GatewayStream` 独立消费 Agent 事件，维护当前轮次累计文本、工具状态与订阅者，页面连接断开仅移除订阅；任务结束后释放内存快照。刷新或断线后，前端根据会话轮询通过 `GET /sessions/:id/events` 获取 `snapshot` 并订阅后续增量，204 表示任务已结束，应刷新历史。按快照 `turnId` 替换同轮历史助手片段，避免历史消息和流式消息重复；审批恢复沿用审批 ID 合并工具结果。该机制只恢复当前 Gateway 进程中的 Web 任务，不跨服务重启恢复执行。助手消息由 ReactMarkdown 渲染，围栏代码块通过共享的 highlight.js 语言注册表执行语法高亮；项目 Diff 视图复用同一高亮模块，未知或未标注语言使用自动识别。
 
 Web UI 的主题状态只属于客户端展示偏好，不进入 Gateway 配置或 Session 数据。首次加载优先读取浏览器 `localStorage` 中的 `tiny-claw-theme`，没有有效值时使用 `prefers-color-scheme`；用户通过侧栏切换后持久化为 `light` 或 `dark`。`index.html` 在 React 挂载前同步设置根节点的 `data-theme`，避免页面先以浅色渲染再切换；组件样式通过语义化 CSS 变量响应主题。
 

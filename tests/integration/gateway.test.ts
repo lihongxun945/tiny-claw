@@ -6,7 +6,8 @@ import { startTestGateway, type TestGateway } from "../helpers/start-gateway.js"
 import { loadSessionState, saveSessionState } from "../../src/session-state.js";
 import { appendSessionMessage, readSessionMeta } from "../../src/session-store.js";
 import { attachmentToImageBlock, readAttachment } from "../../src/attachments.js";
-import { createSessionPlan, updateSessionPlanStep } from "../../src/plan-store.js";
+import { createSessionPlan, resumeSessionPlan, updateSessionPlanStep } from "../../src/plan-store.js";
+import { createServer } from "node:http";
 
 async function json(url: string, init?: RequestInit): Promise<{ status: number; body: any }> {
   const response = await fetch(url, init);
@@ -44,6 +45,67 @@ describe("Gateway HTTP API", () => {
   afterEach(async () => {
     await gateway.stop();
     removeTempWorkspace(workspacePath);
+  });
+
+  it("keeps a disconnected task running and reconnects through the web proxy", async () => {
+    let finishModel!: () => void;
+    let started!: () => void;
+    const modelStarted = new Promise<void>((resolve) => { started = resolve; });
+    const model = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "first" } }] })}\n\n`);
+      finishModel = () => {
+        if (res.writableEnded) return;
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: " second" } }] })}\n\n`);
+        res.end("data: [DONE]\n\n");
+      };
+      started();
+    });
+    await new Promise<void>((resolve) => model.listen(0, "127.0.0.1", resolve));
+    const address = model.address() as { port: number };
+    const controller = new AbortController();
+    try {
+      const config = await json(`${gateway.apiUrl}/config`);
+      await json(`${gateway.apiUrl}/config`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...config.body.config, apiUrl: `http://127.0.0.1:${address.port}`, modelProvider: "openai-chat" }),
+      });
+      const created = await json(`${gateway.apiUrl}/sessions`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: "chat" }),
+      });
+      const sessionId = created.body.session.id;
+      const response = await fetch(`${gateway.webUrl}/chat`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, message: "run", turn_id: "11111111-1111-4111-8111-111111111111" }), signal: controller.signal,
+      });
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let initial = "";
+      while (!initial.includes('"text":"first"')) initial += decoder.decode((await reader.read()).value);
+      await modelStarted;
+      controller.abort();
+      const resumed = await fetch(`${gateway.webUrl}/sessions/${sessionId}/events`);
+      expect(resumed.status).toBe(200);
+      const resumedReader = resumed.body!.getReader();
+      let output = decoder.decode((await resumedReader.read()).value);
+      expect(output).toContain('"text":"first"');
+      expect(output).toContain("event: snapshot");
+      expect((await json(`${gateway.apiUrl}/history/sessions`)).body.sessions.find((item: { id: string }) => item.id === sessionId).busy).toBe(true);
+      finishModel();
+      for (;;) {
+        const next = await resumedReader.read();
+        if (next.done) break;
+        output += decoder.decode(next.value);
+      }
+      expect(output).toContain('"text":" second"');
+      expect(output).toContain("event: done");
+      expect((await fetch(`${gateway.webUrl}/sessions/${sessionId}/events`)).status).toBe(204);
+    } finally {
+      controller.abort();
+      finishModel?.();
+      model.closeAllConnections();
+      await new Promise<void>((resolve) => model.close(() => resolve()));
+    }
   });
 
   it("masks nested secrets and preserves them when masked config is saved", async () => {
@@ -214,6 +276,7 @@ describe("Gateway HTTP API", () => {
     expect(sessions.body.sessions).toContainEqual(expect.objectContaining({
       id: created.body.session.id,
       context: expect.objectContaining({ mode: "project" }),
+      busy: false,
     }));
   });
 
@@ -254,7 +317,7 @@ describe("Gateway HTTP API", () => {
     await appendSessionMessage(workspacePath, created.body.session.id, { role: "user", content: "第二轮", _timestamp: 3, _turnId: secondTurnId });
     await appendSessionMessage(workspacePath, created.body.session.id, { role: "assistant", content: "第二轮结果", _timestamp: 4, _turnId: secondTurnId });
     const response = await json(`${gateway.webUrl}/plan?session_id=${encodeURIComponent(created.body.session.id)}`);
-    expect(response).toEqual({ status: 200, body: { plans: [firstPlan, secondPlan] } });
+    expect(response).toEqual({ status: 200, body: { plans: [firstPlan, secondPlan], activePlan: null } });
     const history = await json(`${gateway.webUrl}/history/sessions/${encodeURIComponent(created.body.session.id)}/messages`);
     expect(history.body.messages).toEqual([
       expect.objectContaining({ role: "user", turnId: firstTurnId }),
@@ -262,6 +325,27 @@ describe("Gateway HTTP API", () => {
       expect.objectContaining({ role: "user", turnId: secondTurnId }),
       expect.objectContaining({ role: "assistant", turnId: secondTurnId, plan: secondPlan }),
     ]);
+  });
+
+  it("keeps paused and resumed plans in their related history turns without restoring a stale active plan", async () => {
+    const created = await json(`${gateway.apiUrl}/sessions`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: "chat" }),
+    });
+    const sessionId = created.body.session.id;
+    const original = createSessionPlan(workspacePath, sessionId, "initial", ["确认", "执行"]);
+    updateSessionPlanStep(workspacePath, sessionId, "initial", "step-1", "in_progress");
+    updateSessionPlanStep(workspacePath, sessionId, "initial", "step-1", "waiting_user");
+    const plan = resumeSessionPlan(workspacePath, sessionId, "continued", original.id);
+    for (const turnId of ["initial", "unrelated", "continued"]) {
+      await appendSessionMessage(workspacePath, sessionId, { role: "user", content: turnId, _turnId: turnId });
+      await appendSessionMessage(workspacePath, sessionId, { role: "assistant", content: `回答 ${turnId}`, _turnId: turnId });
+    }
+    const history = await json(`${gateway.webUrl}/history/sessions/${sessionId}/messages`);
+    expect(history.body.messages.filter((message: { plan?: unknown }) => message.plan)).toEqual([
+      expect.objectContaining({ turnId: "initial", plan }),
+      expect.objectContaining({ turnId: "continued", plan }),
+    ]);
+    expect((await json(`${gateway.webUrl}/plan?session_id=${sessionId}`)).body).toEqual({ plans: [plan], activePlan: null });
   });
 
   it("persists each session execution mode and rejects invalid values", async () => {

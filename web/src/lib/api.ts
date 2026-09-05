@@ -1,6 +1,6 @@
-import type { Session, Message, MemoryRecord, ProfileRecord, ApprovalRequest, ChatCommand, Attachment, ModelCallSummary, ModelCallTrace, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionContext, SessionPlan, ExecutionMode, PluginSnapshot, PluginConfigView } from "../types.js";
+import type { Session, Message, MemoryRecord, ProfileRecord, ApprovalRequest, ChatCommand, Attachment, ModelCallSummary, ModelCallTrace, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionContext, SessionPlan, ExecutionMode, PluginSnapshot, PluginConfigView, ContextSnapshot } from "../types.js";
 
-export { streamChat, streamApprovalResume } from "./sse-client.js";
+export { streamChat, streamApprovalResume, streamSessionEvents } from "./sse-client.js";
 
 export async function fetchSessions(): Promise<Session[]> {
   const res = await fetch("/sessions");
@@ -66,15 +66,25 @@ export async function fetchHistoryMessages(id: string): Promise<Message[]> {
 }
 
 export async function fetchSessionPlans(id: string): Promise<SessionPlan[]> {
+  return (await fetchSessionPlanState(id)).plans;
+}
+
+export async function fetchSessionPlanState(id: string): Promise<{ plans: SessionPlan[]; activePlan: SessionPlan | null; currentTurnId?: string }> {
   const res = await fetch(`/plan?session_id=${encodeURIComponent(id)}`);
-  const data = await parseJSON<{ plans: SessionPlan[] }>(res);
-  return data.plans ?? [];
+  const data = await parseJSON<{ plans: SessionPlan[]; activePlan?: SessionPlan | null; currentTurnId?: string }>(res);
+  return { plans: data.plans ?? [], activePlan: data.activePlan ?? null, currentTurnId: data.currentTurnId };
 }
 
 export async function fetchChatCommands(): Promise<ChatCommand[]> {
   const res = await fetch("/commands");
   const data = await parseJSON<{ commands: ChatCommand[] }>(res);
   return data.commands ?? [];
+}
+
+export async function fetchContextSnapshot(sessionId: string): Promise<ContextSnapshot | null> {
+  const res = await fetch(`/context?session_id=${encodeURIComponent(sessionId)}`);
+  if (res.status === 404) return null;
+  return (await parseJSON<{ snapshot: ContextSnapshot }>(res)).snapshot;
 }
 
 export async function uploadImage(sessionId: string, file: File): Promise<Attachment> {

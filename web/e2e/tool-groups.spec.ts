@@ -69,3 +69,28 @@ test("keeps a tool group expanded while an approval is pending", async ({ page }
   await expect(header).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("button", { name: "批准本次" })).toBeVisible();
 });
+
+test("shows running status for unfinished tool calls", async ({ page }) => {
+  await mockSession(page, [{
+    id: "call-complete",
+    name: "file_read",
+    input: { path: "/tmp/package.json" },
+    result: JSON.stringify({ content: "{}" }),
+  }, {
+    id: "call-running",
+    name: "bash",
+    input: { command: "npm run desktop:dist" },
+    startedAt: Date.now() - 12_000,
+  }]);
+
+  await page.goto("/");
+  await page.locator(".session-item", { hasText: "tools" }).click();
+
+  const header = page.locator(".tool-call-group-header");
+  await expect(header).toContainText("2 次调用");
+  await expect(header).toContainText("1 执行中");
+  await expect(header).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(".tool-block.is-running")).toBeVisible();
+  await expect(page.locator(".tool-block.is-running .tool-status")).toContainText(/执行中 · 1[2-9]s/);
+  await expect(page.getByText("等待工具返回结果...")).toBeVisible();
+});

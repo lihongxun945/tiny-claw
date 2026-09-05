@@ -3,6 +3,8 @@ export interface ToolCallInfo {
   name: string;
   input: Record<string, unknown>;
   result?: string;
+  startedAt?: number;
+  completedAt?: number;
 }
 
 export interface Attachment {
@@ -69,6 +71,29 @@ export interface ApprovalRequest {
 export type ModelDebugPhase = "request" | "response" | "parsed_response" | "error" | "repair" | "stream_event";
 
 export type PermissionMode = "ask" | "auto" | "allow";
+
+export interface ContextTokenUsage {
+  systemPrompt: number;
+  messages: number;
+  tools: number;
+  outputReserved: number;
+  input: number;
+  totalReserved: number;
+  maxContext: number;
+  percent: number;
+}
+
+export interface ContextSnapshot {
+  sessionId: string;
+  turnId?: string;
+  iteration: number;
+  attempt: number;
+  createdAt: string;
+  systemPrompt: string;
+  messages: unknown[];
+  tools: unknown[];
+  usage: ContextTokenUsage;
+}
 
 export type PluginState = "registered" | "starting" | "active" | "stopping" | "stopped" | "failed" | "blocked";
 export type PluginKind = "core" | "builtin" | "workspace" | "external";
@@ -212,6 +237,8 @@ export type ExecutionMode = "normal" | "plan";
 export type PlanStepStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped" | "waiting_approval" | "waiting_user";
 
 export interface SessionPlan {
+  goal?: string;
+  relatedTurnIds?: string[];
   id: string;
   turnId: string;
   status: "planning" | "executing" | "completed" | "failed";

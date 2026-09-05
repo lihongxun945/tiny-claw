@@ -17,25 +17,28 @@ interface Props {
   onSessionDeleted: (id: string) => void;
   onProjectDeleted: (projectRoot: string, sessionIds: string[]) => void;
   onViewChange: (view: View) => void;
+  onSessionsLoaded?: (sessions: Session[]) => void;
   refreshKey: number;
   projectRoot: string | null;
   theme: Theme;
   onThemeChange: (theme: Theme) => void;
 }
 
-export default function SessionSidebar({ activeSessionId, currentView, sidebarMode, onSelectSession, onNewChat, onNewProject, onNewProjectChat, onSessionDeleted, onProjectDeleted, onViewChange, refreshKey, projectRoot, theme, onThemeChange }: Props) {
+export default function SessionSidebar({ activeSessionId, currentView, sidebarMode, onSelectSession, onNewChat, onNewProject, onNewProjectChat, onSessionDeleted, onProjectDeleted, onViewChange, onSessionsLoaded, refreshKey, projectRoot, theme, onThemeChange }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [deletingProjectRoot, setDeletingProjectRoot] = useState<string | null>(null);
   const loadRequestRef = useRef(0);
 
-  const loadSessions = async () => {
+  const loadSessions = async (options: { silent?: boolean } = {}) => {
     const requestId = ++loadRequestRef.current;
-    setIsLoading(true);
+    if (!options.silent) setIsLoading(true);
     try {
       const list = await fetchHistorySessions();
       if (requestId === loadRequestRef.current) {
-        setSessions(list.sort((a, b) => b.lastActivity - a.lastActivity));
+        const sorted = list.sort((a, b) => b.lastActivity - a.lastActivity);
+        setSessions(sorted);
+        onSessionsLoaded?.(sorted);
       }
     } catch {
       // ignore
@@ -51,6 +54,14 @@ export default function SessionSidebar({ activeSessionId, currentView, sidebarMo
   useEffect(() => {
     if (refreshKey > 0) loadSessions();
   }, [refreshKey]);
+
+  useEffect(() => {
+    if (!sessions.some((session) => session.busy)) return;
+    const timer = window.setInterval(() => {
+      void loadSessions({ silent: true });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [sessions]);
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -120,7 +131,7 @@ export default function SessionSidebar({ activeSessionId, currentView, sidebarMo
           <img className="brand-mark" src="/icon.png" alt="" aria-hidden="true" />
           <span>tiny-claw</span>
         </div>
-        <button className="refresh-btn" onClick={loadSessions} disabled={isLoading} title="刷新会话列表">
+        <button className="refresh-btn" onClick={() => void loadSessions()} disabled={isLoading} title="刷新会话列表">
           {isLoading ? "…" : "↻"}
         </button>
       </div>
@@ -159,11 +170,14 @@ export default function SessionSidebar({ activeSessionId, currentView, sidebarMo
               {group.sessions.map((session) => (
                 <div
                   key={session.id}
-                  className={`session-item project-conversation-item ${session.id === activeSessionId ? "active" : ""}`}
+                  className={`session-item project-conversation-item ${session.id === activeSessionId ? "active" : ""} ${session.busy ? "is-busy" : ""}`}
                   onClick={() => onSelectSession(session)}
                 >
                   <div className="session-info">
-                    <div className="session-id">{session.preview || "新对话"}</div>
+                    <div className="session-id">
+                      {session.preview || "新对话"}
+                      {session.busy && <span className="session-busy-badge" role="status">执行中</span>}
+                    </div>
                     <div className="session-time">{formatTime(session.lastActivity)}</div>
                   </div>
                   <button className="delete-btn" onClick={(event) => handleDelete(session.id, event)}>✕</button>
@@ -174,12 +188,13 @@ export default function SessionSidebar({ activeSessionId, currentView, sidebarMo
         )) : sessions.filter((session) => session.context.mode === "chat").map((s) => (
           <div
             key={s.id}
-            className={`session-item ${s.id === activeSessionId ? "active" : ""}`}
+            className={`session-item ${s.id === activeSessionId ? "active" : ""} ${s.busy ? "is-busy" : ""}`}
             onClick={() => { onSelectSession(s); }}
           >
             <div className="session-info">
               <div className="session-id">
                 {formatId(s.id)}
+                {s.busy && <span className="session-busy-badge" role="status">执行中</span>}
               </div>
               {s.preview && <div className="session-preview">{s.preview}</div>}
               <div className="session-time">{formatTime(s.lastActivity)}</div>
