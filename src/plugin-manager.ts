@@ -218,6 +218,7 @@ export class PluginManager {
         ? ((pm.config ?? pm.baseConfig ?? {}) as unknown as Record<string, unknown>)
         : (pm.pluginConfigs?.[pluginName] ?? {})),
       workspacePath: pm.workspacePath,
+      registerDisposable(resource: Disposable) { return owner.add(resource); },
       registerRoute(route: RouteDefinition) {
         if (plugin) assertPluginRegistrationPermission(manifest, "route");
         const registered = { ...route, pluginName };
@@ -486,18 +487,18 @@ export class PluginManager {
       history,
       sessionContext: deps?.sessionContext ?? { mode: "chat" },
       executionMode: this.getExecutionMode(sessionId),
-      getToolDefinitions: () => this.getToolDefinitions(deps?.sessionContext, this.getExecutionMode(sessionId)),
+      getToolDefinitions: () => this.getToolDefinitions(deps?.sessionContext, this.getExecutionMode(sessionId), sessionId, iteration),
       reportStatus,
       getTool: (name) => this.getTool(name),
     };
   }
 
-  async callOnBeforeChat(input: string, sessionId: string): Promise<{ input: string; abort?: string }> {
+  async callOnBeforeChat(input: string, sessionId: string, signal?: AbortSignal, reportStatus?: (status: AgentStatusUpdate) => void): Promise<{ input: string; abort?: string }> {
     let result: { input: string; abort?: string } = { input };
     for (const hooks of this.getHooks()) {
       if (hooks.onBeforeChat) {
         const r = await hooks.onBeforeChat(
-          this.buildHookContext(0, sessionId),
+          { ...this.buildHookContext(0, sessionId, 0, reportStatus), signal },
           result.input,
         );
         if (r) {
@@ -546,12 +547,12 @@ export class PluginManager {
     }
   }
 
-  async callOnBeforeModelCall(modelContext: ModelCallContext, iteration: number, sessionId: string): Promise<ModelCallContext> {
+  async callOnBeforeModelCall(modelContext: ModelCallContext, iteration: number, sessionId: string, signal?: AbortSignal): Promise<ModelCallContext> {
     let result = modelContext;
     for (const hooks of this.getHooks()) {
       if (hooks.onBeforeModelCall) {
         const r = await hooks.onBeforeModelCall(
-          this.buildHookContext(iteration, sessionId, result.turnStartIndex),
+          { ...this.buildHookContext(iteration, sessionId, result.turnStartIndex), signal },
           result,
         );
         if (r !== undefined) result = r;
@@ -580,7 +581,7 @@ export class PluginManager {
     return result;
   }
 
-  async callOnBeforeTool(name: string, args: Record<string, unknown>, iteration: number, sessionId: string): Promise<{ abort?: string }> {
+  async callOnBeforeTool(name: string, args: Record<string, unknown>, iteration: number, sessionId: string): Promise<import("./plugins/types.js").ToolGateResult> {
     for (const hooks of this.getHooks()) {
       if (hooks.onBeforeTool) {
         const r = await hooks.onBeforeTool(
@@ -588,7 +589,7 @@ export class PluginManager {
           name,
           args,
         );
-        if (r?.abort) return { abort: r.abort };
+        if (r?.abort) return r;
       }
     }
     return {};
@@ -619,15 +620,26 @@ export class PluginManager {
     }
   }
 
-  async callOnTurnEnd(reason: TurnEndReason, iteration: number, sessionId: string, reportStatus?: (status: AgentStatusUpdate) => void): Promise<void> {
+  async callOnTurnEnd(reason: TurnEndReason, iteration: number, sessionId: string, reportStatus?: (status: AgentStatusUpdate) => void, signal?: AbortSignal): Promise<void> {
     for (const hooks of this.getHooks()) {
       if (hooks.onTurnEnd) {
+        signal?.throwIfAborted();
         await hooks.onTurnEnd(
-          this.buildHookContext(iteration, sessionId, 0, reportStatus),
+          { ...this.buildHookContext(iteration, sessionId, 0, reportStatus), signal },
           reason,
         );
+        signal?.throwIfAborted();
       }
     }
+  }
+
+  async callOnTurnNotices(reason: TurnEndReason, iteration: number, sessionId: string): Promise<Array<{ id: string; text: string }>> {
+    const notices: Array<{ id: string; text: string }> = [];
+    for (const hooks of this.getHooks()) {
+      const notice = await hooks.onTurnNotice?.(this.buildHookContext(iteration, sessionId), reason);
+      if (notice?.text.trim()) notices.push(notice);
+    }
+    return notices;
   }
 
   async callOnError(error: Error, iteration: number, sessionId: string): Promise<void> {

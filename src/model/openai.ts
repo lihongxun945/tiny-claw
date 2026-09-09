@@ -23,6 +23,7 @@ interface OpenAIToolCall {
 }
 
 interface OpenAIMessage {
+  reasoning_content?: string;
   role: "system" | "user" | "assistant" | "tool";
   content?: string | null | Array<
     | { type: "text"; text: string }
@@ -107,7 +108,8 @@ function toOpenAIMessages(config: Config, messages: Message[], systemPrompt?: st
 
   for (const message of sanitizeToolMessageChains(messages)) {
     if (typeof message.content === "string") {
-      result.push({ role: message.role, content: message.content });
+      result.push({ role: message.role, content: message.content,
+        ...(message.role === "assistant" && message._reasoningContent !== undefined ? { reasoning_content: message._reasoningContent } : {}) });
       continue;
     }
 
@@ -118,6 +120,7 @@ function toOpenAIMessages(config: Config, messages: Message[], systemPrompt?: st
         .map(toolUseToOpenAIToolCall);
       result.push({
         role: "assistant",
+        ...(message._reasoningContent !== undefined ? { reasoning_content: message._reasoningContent } : {}),
         content: text || null,
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       });
@@ -306,6 +309,7 @@ export class OpenAIChatClient implements ModelClient {
     const decoder = new TextDecoder();
     let buffer = "";
     let fullText = "";
+    let reasoningContent: string | undefined;
     const toolCallStates = new Map<number, OpenAIToolCallState>();
 
     while (true) {
@@ -329,6 +333,7 @@ export class OpenAIChatClient implements ModelClient {
             const event = JSON.parse(dataLine) as {
               choices?: Array<{
                 delta?: {
+                  reasoning_content?: string | null;
                   content?: string | null;
                   tool_calls?: Array<{
                     index: number;
@@ -347,6 +352,7 @@ export class OpenAIChatClient implements ModelClient {
 
             const delta = event.choices?.[0]?.delta;
             if (!delta) continue;
+            if (typeof delta.reasoning_content === "string") reasoningContent = (reasoningContent ?? "") + delta.reasoning_content;
             if (delta.content) {
               fullText += delta.content;
               onDelta(delta.content);
@@ -381,7 +387,7 @@ export class OpenAIChatClient implements ModelClient {
         };
       });
 
-    const parsed = { text: fullText, toolCalls };
+    const parsed = { text: fullText, toolCalls, ...(reasoningContent !== undefined ? { reasoningContent } : {}) };
     this.debugLog(requestId, "chat", "parsed_response", parsed);
     return parsed;
   }

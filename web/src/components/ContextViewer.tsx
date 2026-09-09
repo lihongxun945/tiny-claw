@@ -6,7 +6,7 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "usage" | "prompt" | "messages" | "tools";
+type Tab = "usage" | "prompt" | "summary" | "messages" | "tools";
 
 function number(value: number): string {
   return value.toLocaleString();
@@ -26,7 +26,7 @@ export default function ContextViewer({ snapshot, onClose }: Props) {
           <button type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>
         <nav aria-label="上下文分类">
-          {([['usage', '统计'], ['prompt', 'System Prompt'], ['messages', 'Messages'], ['tools', 'Tools']] as Array<[Tab, string]>).map(([value, label]) => (
+          {([['usage', '统计'], ['prompt', 'System Prompt'], ['summary', '上下文摘要'], ['messages', 'Messages'], ['tools', 'Tools']] as Array<[Tab, string]>).map(([value, label]) => (
             <button key={value} type="button" className={tab === value ? "active" : ""} onClick={() => setTab(value)}>{label}</button>
           ))}
         </nav>
@@ -43,6 +43,13 @@ export default function ContextViewer({ snapshot, onClose }: Props) {
             </div>
           )}
           {tab === "prompt" && <pre>{snapshot.systemPrompt}</pre>}
+          {tab === "summary" && (
+            snapshot.contextSummaries === undefined ? <p>该快照未单独记录上下文摘要</p>
+              : snapshot.contextSummaries.length === 0 ? <p>本次调用未使用上下文摘要</p>
+              : snapshot.contextSummaries.map((section, index) => (
+                <section key={index}><h3>{section.title}</h3><pre>{section.content}</pre></section>
+              ))
+          )}
           {tab === "messages" && <pre>{JSON.stringify(snapshot.messages, null, 2)}</pre>}
           {tab === "tools" && <pre>{JSON.stringify(snapshot.tools, null, 2)}</pre>}
         </div>

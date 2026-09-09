@@ -156,11 +156,12 @@ export async function compressMessages(
     const summary = await ctx.client.complete(
       [{ role: "user", content: prompt }],
       "你是上下文压缩器。只输出派生摘要，不要把摘要写成用户发言，不要添加任何额外说明。",
-      { maxTokens: getCompressionMaxOutputTokens(ctx.config) },
+      { maxTokens: getCompressionMaxOutputTokens(ctx.config), signal: ctx.signal },
     );
     const trimmed = summary.trim();
     return trimmed ? truncateSummary(trimmed, maxChars) : undefined;
   } catch {
+    ctx.signal?.throwIfAborted();
     return undefined;
   }
 }
@@ -189,6 +190,7 @@ function withSummary(
     ...modelContext,
     messages,
     turnStartIndex: messages.length - currentMessageCount,
+    contextSummaries: [...(modelContext.contextSummaries ?? []), ...(block ? [{ title: "临时压缩摘要", content: block }] : [])],
     systemPromptSuffix: block
       ? appendSystemPromptSuffix(modelContext.systemPromptSuffix, block)
       : modelContext.systemPromptSuffix,

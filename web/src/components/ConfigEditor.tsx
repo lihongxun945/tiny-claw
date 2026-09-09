@@ -166,6 +166,9 @@ const FIELD_GROUPS: FieldGroup[] = [
     title: "权限与 Gateway",
     fields: [
       { key: "security.tools", label: "工具权限覆盖", type: "json", defaultValue: {}, description: "按工具名设置 mode，可覆盖全局配置。" },
+      { key: "security.background.timeoutSeconds", label: "后台任务超时（秒）", type: "number", defaultValue: 3600 },
+      { key: "security.background.maxRunning", label: "后台任务并发上限", type: "number", defaultValue: 4 },
+      { key: "security.background.maxLogChars", label: "后台任务日志字符上限", type: "number", defaultValue: 20000 },
       { key: "security.gateway.host", label: "Gateway Host", type: "text", defaultValue: "127.0.0.1" },
       { key: "security.gateway.token", label: "Gateway Token", type: "password" },
       { key: "security.gateway.sseHeartbeatIntervalMs", label: "SSE 心跳间隔（毫秒）", type: "number", defaultValue: 15000 },
@@ -200,7 +203,7 @@ const FIELD_GROUPS: FieldGroup[] = [
   {
     title: "计划执行模式",
     fields: [
-      { key: "plan.enabled", label: "启用计划模式", type: "checkbox", defaultValue: true },
+      { key: "plan.enabled", label: "显示任务计划", type: "checkbox", defaultValue: true },
       { key: "plan.maxSteps", label: "最大计划步骤数", type: "number", defaultValue: 8 },
     ],
   },

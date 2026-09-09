@@ -8,6 +8,7 @@ import {
 } from "./validation.js";
 
 export interface ExtractSummaryDeltaInput {
+  signal?: AbortSignal;
   sessionId: string;
   current: PersistedSessionSummary;
   messages: Message[];
@@ -69,7 +70,7 @@ export async function extractSummaryDelta(
   const output = await client.complete(
     [{ role: "user", content: prompt }],
     SYSTEM_PROMPT,
-    { maxTokens: input.maxOutputTokens },
+    { maxTokens: input.maxOutputTokens, signal: input.signal },
   );
   return validateSummaryDelta(parseSummaryDeltaDraft(output), {
     sessionId: input.sessionId,

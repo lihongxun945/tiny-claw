@@ -26,6 +26,7 @@ export interface PluginContext {
   capabilities: CapabilityRegistry;
   readonly config: Readonly<Record<string, unknown>>;
   workspacePath: string;
+  registerDisposable(resource: Disposable): Disposable;
   registerRoute(route: RouteDefinition): Disposable;
   registerTool(tool: Tool): Disposable;
   registerChatCommand(command: ChatCommand): Disposable;
@@ -95,15 +96,24 @@ export interface PluginHooks {
   onChatResponse?: (ctx: HookContext, response: ChatResponse) =>
     ChatResponse | Promise<ChatResponse> | void;
   onBeforeTool?: (ctx: HookContext, name: string, args: Record<string, unknown>) =>
-    { abort?: string } | Promise<{ abort?: string } | void> | void;
+    ToolGateResult | Promise<ToolGateResult | void> | void;
   onAfterTool?: (ctx: HookContext, name: string, result: string) =>
     string | Promise<string> | void;
   onAfterIteration?: (ctx: HookContext) => void | Promise<void>;
   onTurnEnd?: (ctx: HookContext, reason: TurnEndReason) => void | Promise<void>;
+  onTurnNotice?: (ctx: HookContext, reason: TurnEndReason) => { id: string; text: string } | undefined | Promise<{ id: string; text: string } | undefined>;
   onError?: (ctx: HookContext, error: Error) => void | Promise<void>;
 }
 
-export type TurnEndReason = "completed" | "approval_required" | "iteration_limit";
+export interface ToolGateResult {
+  abort?: string;
+  code?: string;
+  requiredAction?: string;
+  stop?: boolean;
+  stopState?: "waiting_user" | "interrupted";
+}
+
+export type TurnEndReason = "completed" | "approval_required" | "iteration_limit" | "waiting_user" | "interrupted";
 
 export interface ContextTokenUsage {
   systemPrompt: number;
@@ -116,7 +126,13 @@ export interface ContextTokenUsage {
   percent: number;
 }
 
+export interface ContextSummarySection {
+  title: string;
+  content: string;
+}
+
 export interface PreparedModelRequest {
+  contextSummaries?: ContextSummarySection[];
   sessionId: string;
   turnId?: string;
   iteration: number;
@@ -129,6 +145,8 @@ export interface PreparedModelRequest {
 }
 
 export interface ModelCallContext {
+  /** Display metadata for summaries already included in the actual request. */
+  contextSummaries?: ContextSummarySection[];
   messages: Message[];
   /** Temporary derived context inserted after history and before the current turn; never persisted. */
   derivedContext?: string;
@@ -151,6 +169,7 @@ export interface AgentStatusUpdate {
 }
 
 export interface HookContext {
+  signal?: AbortSignal;
   sessionId: string;
   turnId?: string;
   iteration: number;

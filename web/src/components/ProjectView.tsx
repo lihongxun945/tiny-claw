@@ -1,12 +1,15 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { Settings } from "lucide-react";
 import type { ContextTokenUsage, ExecutionMode, Message, PermissionMode, ToolCallInfo, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionPlan } from "../types.js";
-import { fetchConfig, fetchProjectDiff, fetchProjectInfo, fetchProjectStatus } from "../lib/api.js";
+import { fetchConfig, fetchProjectDiff, fetchProjectInfo, fetchProjectStatus, projectSettings } from "../lib/api.js";
 import ChatView from "./ChatView.js";
 import ChatInput from "./ChatInput.js";
 import PlanProgress from "./PlanProgress.js";
 import DiffView from "./DiffView.js";
 
 interface Props {
+  isStopping?: boolean;
+  summaryNotice?: { state: "completed" | "failed"; message: string };
   messages: Message[];
   streamingText: string;
   streamingTurnId?: string;
@@ -15,6 +18,12 @@ interface Props {
   streamingApprovalId?: string;
   isStreaming: boolean;
   backendBusy?: boolean;
+  awaitingApproval?: boolean;
+  activePlanTurnId?: string;
+  onResumePlan?: (planId: string) => void;
+  latestPlans?: SessionPlan[];
+  runState?: string;
+  run?: import("../types.js").RunView;
   activeSessionId: string | null;
   isRefreshing?: boolean;
   onRefreshMessages: () => void;
@@ -22,6 +31,7 @@ interface Props {
   onStop: () => void;
   onApproveAndResume: (approvalId: string) => Promise<void>;
   onApproveTurnAndResume: (approvalId: string) => Promise<void>;
+  onRejectAndResume: (approvalId: string) => Promise<void>;
   projectRoot: string | null;
   statusRefreshKey: number;
   onProjectChange: (path: string | null, signal?: AbortSignal) => Promise<void>;
@@ -36,6 +46,7 @@ interface Props {
 }
 
 export default function ProjectView({
+  summaryNotice,
   messages,
   streamingText,
   streamingTurnId,
@@ -44,13 +55,21 @@ export default function ProjectView({
   streamingApprovalId,
   isStreaming,
   backendBusy = false,
+  awaitingApproval = false,
+  activePlanTurnId,
+  onResumePlan,
+  latestPlans,
+  runState,
+  run,
   activeSessionId,
   isRefreshing,
   onRefreshMessages,
   onSend,
   onStop,
+  isStopping,
   onApproveAndResume,
   onApproveTurnAndResume,
+  onRejectAndResume,
   projectRoot,
   statusRefreshKey,
   onProjectChange,
@@ -64,6 +83,16 @@ export default function ProjectView({
   contextUsage,
 }: Props) {
   const [pathInput, setPathInput] = useState(projectRoot ?? "");
+  const [settings, setSettings] = useState<{ root: string; trusted: boolean; creating: boolean } | null>(null);
+  const [settingsError, setSettingsError] = useState("");
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const settingsDialog = useRef<HTMLDialogElement>(null);
+  const settingsSavingRef = useRef(false);
+  useEffect(() => {
+    if (settings) settingsDialog.current?.showModal();
+    else settingsDialog.current?.close();
+  }, [settings !== null]);
+  useEffect(() => { setSettings(null); }, [projectRoot]);
   const [info, setInfo] = useState<ProjectInfo | null>(null);
   const [infoLoading, setInfoLoading] = useState(false);
   const [infoError, setInfoError] = useState("");
@@ -143,7 +172,9 @@ export default function ProjectView({
       timeout = window.setTimeout(() => controller.abort(), openTimeoutMsRef.current);
       const result = await loadProjectInfo(selectedPath, controller.signal);
       if (!result) return;
-      await onProjectChange(result.root, controller.signal);
+      const saved = await projectSettings(result.root, undefined, controller.signal);
+      setSettingsError("");
+      setSettings({ ...saved, creating: true });
     } catch (err) {
       const message = err instanceof DOMException && err.name === "AbortError"
         ? `打开项目超时（${openTimeoutMsRef.current}ms），请重试`
@@ -155,6 +186,33 @@ export default function ProjectView({
       setIsOpeningProject(false);
     }
   }, [loadProjectInfo, onProjectChange]);
+
+  const saveSettings = async () => {
+    if (!settings || settingsSavingRef.current) return;
+    settingsSavingRef.current = true;
+    setSettingsSaving(true);
+    setSettingsError("");
+    try {
+      await projectSettings(settings.root, settings.trusted);
+      if (settings.creating) await onProjectChange(settings.root);
+      setSettings(null);
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : "保存失败");
+    } finally {
+      settingsSavingRef.current = false;
+      setSettingsSaving(false);
+    }
+  };
+
+  const openSettings = async () => {
+    if (!projectRoot) return;
+    setInfoError("");
+    try {
+      const saved = await projectSettings(projectRoot);
+      setSettingsError("");
+      setSettings({ ...saved, creating: false });
+    } catch (error) { setInfoError(error instanceof Error ? error.message : "读取项目设置失败"); }
+  };
 
   const handleOpenProject = useCallback(async () => {
     const trimmed = pathInput.trim();
@@ -198,6 +256,18 @@ export default function ProjectView({
 
   return (
     <>
+      <dialog ref={settingsDialog} className="project-settings-dialog" aria-labelledby="project-settings-title"
+        onCancel={(event) => { event.preventDefault(); if (!settingsSaving) setSettings(null); }}>
+        <h2 id="project-settings-title">{settings?.creating ? "创建项目" : "项目设置"}</h2>
+        <p className="project-settings-path">{settings?.root}</p>
+        <label title="授权执行此项目代码；危险操作仍需审批。这不是执行沙箱。"><input type="checkbox" checked={settings?.trusted ?? false} disabled={settingsSaving}
+          onChange={(event) => setSettings((value) => value ? { ...value, trusted: event.target.checked } : value)} /> 信任此项目</label>
+        {settingsError && <p role="alert">{settingsError}</p>}
+        <div className="project-settings-actions">
+          <button disabled={settingsSaving} onClick={() => setSettings(null)}>取消</button>
+          <button disabled={settingsSaving} onClick={() => void saveSettings()}>{settingsSaving ? "保存中..." : settings?.creating ? "创建项目" : "保存"}</button>
+        </div>
+      </dialog>
       {/* 项目选择器 / 项目信息栏 */}
       {!projectRoot ? (
         <div className="project-picker">
@@ -256,6 +326,7 @@ export default function ProjectView({
               </div>
             </div>
             <div className="project-toolbar-right">
+              <button className="project-toolbar-action" aria-label="项目设置" title="项目设置" onClick={() => void openSettings()}><Settings size={18} aria-hidden="true" /></button>
               {statusError && <span className="project-toolbar-meta project-toolbar-error">{statusError}</span>}
               <button className="project-toolbar-action" onClick={() => void refreshStatus()} disabled={statusLoading}>
                 {statusLoading ? "刷新中…" : "刷新"}
@@ -327,8 +398,12 @@ export default function ProjectView({
 
           {/* 项目聊天视图 */}
           <ChatView
+            summaryNotice={summaryNotice}
             messages={messages}
             activePlanId={plan?.id}
+            activePlanTurnId={activePlanTurnId}
+            onResumePlan={onResumePlan}
+            latestPlans={latestPlans}
           streamingText={streamingText}
           streamingTurnId={streamingTurnId}
             streamingStatus={streamingStatus}
@@ -341,12 +416,14 @@ export default function ProjectView({
             onRefreshMessages={onRefreshMessages}
             onApproveAndResume={onApproveAndResume}
             onApproveTurnAndResume={onApproveTurnAndResume}
+            onRejectAndResume={onRejectAndResume}
           />
-          <PlanProgress plan={plan} />
+          <PlanProgress plan={plan} runState={runState} run={run} />
           <ChatInput
             onSend={onSend}
             onStop={onStop}
-            disabled={isStreaming || backendBusy}
+            isStopping={isStopping}
+            disabled={isStreaming || backendBusy || awaitingApproval}
             executionMode={executionMode}
             onExecutionModeChange={onExecutionModeChange}
             permissionMode={permissionMode}

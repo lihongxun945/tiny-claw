@@ -7,22 +7,22 @@ import { loadConfig } from "../../src/config.js";
 import type { ModelClient } from "../../src/model/index.js";
 import { PluginManager } from "../../src/plugin-manager.js";
 import { loadSessionState, saveSessionState, updateSessionState } from "../../src/session-state.js";
-import { appendSessionMessage, createSessionMeta, sessionMessagesPath, sessionStateFilePath } from "../../src/session-store.js";
+import { appendSessionMessage, createSessionMeta, sessionDir, sessionMessagesPath, sessionStateFilePath } from "../../src/session-store.js";
 import { getMemoryRecord, saveMemory } from "../../src/tools/memory.js";
-import { approveTurnRequest, hasTurnApproval, listApprovals } from "../../src/tools/approval.js";
+import { approveRequest, approveTurnRequest, hasTurnApproval, listApprovals, listSessionApprovalContinuations } from "../../src/tools/approval.js";
 import { checkDangerousToolPermission } from "../../src/tools/permission.js";
 import type { ChatResponse, Message, Tool, ToolDefinition } from "../../src/types.js";
 import { runAutoMemoryAnalysis, runWorkspaceAutoMemoryAnalysis } from "../../src/plugins/core/auto-memory.js";
 import type { PluginContext, PluginHooks } from "../../src/plugins/types.js";
-import { readSessionPlan } from "../../src/plan-store.js";
 import { loadSessionSummary } from "../../src/session-memory/store.js";
+import { readRun } from "../../src/run-store.js";
 import { FakeModelClient } from "../helpers/fake-model-client.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
 async function collect(events: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
   const result: AgentEvent[] = [];
   for await (const event of events) {
-    if (event.type !== "context_usage") result.push(event);
+    if (event.type !== "context_usage" && event.type !== "run_state") result.push(event);
   }
   return result;
 }
@@ -178,7 +178,7 @@ describe("AgentSession loop", () => {
     const session = new AgentSession("context-usage", workspacePath, manager, {}, client);
 
     const events = await collectAll(session.chat("hi"));
-    expect(events[0]).toEqual(expect.objectContaining({
+    expect(events.find((event) => event.type !== "run_state")).toEqual(expect.objectContaining({
       type: "context_usage",
       iteration: 1,
       attempt: 1,
@@ -314,8 +314,8 @@ describe("AgentSession loop", () => {
     const session = new AgentSession("tool-loop", workspacePath, manager, {}, client);
 
     expect(await collect(session.chat("run"))).toEqual([
-      { type: "tool_call", toolCallId: "call-1", name: "echo", input: { text: "value" } },
-      { type: "tool_result", toolCallId: "call-1", name: "echo", result: "echo:value" },
+      { type: "tool_call", toolCallId: "call-1", name: "echo", input: { text: "value" }, startedAt: expect.any(Number) },
+      { type: "tool_result", toolCallId: "call-1", name: "echo", result: "echo:value", completedAt: expect.any(Number) },
       { type: "text_delta", text: "done" },
       { type: "done", text: "done", reason: "completed" },
     ]);
@@ -330,154 +330,6 @@ describe("AgentSession loop", () => {
     }));
   });
 
-  it("creates and completes a persisted plan before finishing plan mode", async () => {
-    registerTool(manager, {
-      name: "echo",
-      description: "echo",
-      inputSchema: { type: "object", properties: {} },
-      execute: async () => "ok",
-    });
-    const toolCall = (id: string, name: string, input: Record<string, unknown>): ChatResponse => ({
-      text: "",
-      toolCalls: [{ type: "tool_use", id, name, input }],
-    });
-    const client = new FakeModelClient([
-      toolCall("plan-1", "plan_create", { goal: "完成实现", steps: ["分析", "实现"] }),
-      toolCall("plan-2", "plan_update", { step_id: "step-1", status: "in_progress" }),
-      toolCall("work-1", "echo", {}),
-      toolCall("plan-3", "plan_update", { step_id: "step-1", status: "completed", summary: "分析完成" }),
-      toolCall("plan-4", "plan_update", { step_id: "step-2", status: "in_progress" }),
-      toolCall("plan-5", "plan_update", { step_id: "step-2", status: "completed", summary: "实现完成" }),
-      { text: "全部完成", toolCalls: [] },
-    ]);
-    const session = new AgentSession("plan-loop", workspacePath, manager, {}, client);
-
-    const planTurnId = "11111111-1111-4111-8111-111111111111";
-    const events = await collect(session.chat("执行任务", undefined, undefined, "plan", planTurnId));
-    expect(events.at(-1)).toEqual({ type: "done", text: "全部完成", reason: "completed" });
-    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "plan_create", "file_read", "web_search", "memory_search",
-    ]));
-    expect(client.calls[0].tools?.map((tool) => tool.name)).not.toContain("echo");
-    expect(client.calls[1].tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["plan_update", "plan_revise"]));
-    expect(client.calls[1].tools?.map((tool) => tool.name)).not.toContain("echo");
-    expect(client.calls[2].tools?.map((tool) => tool.name)).toContain("echo");
-    expect(events).toEqual(expect.arrayContaining([
-      { type: "status", stage: "plan", state: "started", message: "正在生成执行计划…" },
-      { type: "status", stage: "plan", state: "started", message: "正在执行第 1/2 步：分析" },
-      { type: "status", stage: "plan", state: "started", message: "计划已完成，正在整理最终结果…" },
-    ]));
-    expect(client.calls[0].systemPrompt).toContain("计划执行模式");
-    const persistedPlan = readSessionPlan(workspacePath, "plan-loop", planTurnId);
-    expect(persistedPlan?.status).toBe("completed");
-    expect(persistedPlan?.currentStepId).toBeUndefined();
-
-    const normalClient = new FakeModelClient([{ text: "普通回复", toolCalls: [] }]);
-    const normalSession = new AgentSession("normal-loop", workspacePath, manager, {}, normalClient);
-    await collect(normalSession.chat("普通任务"));
-    expect(normalClient.calls[0].tools?.some((tool) => tool.name === "plan_create")).toBe(false);
-    expect(normalClient.calls[0].systemPrompt).not.toContain("计划执行模式");
-  });
-
-  it("answers directly in plan mode when no tool execution is needed", async () => {
-    const client = new FakeModelClient([{ text: "RAG 更适合语义检索。", toolCalls: [] }]);
-    const session = new AgentSession("plan-direct-answer", workspacePath, manager, {}, client);
-    const turnId = "22222222-2222-4222-8222-222222222222";
-
-    expect((await collect(session.chat("关键词检索和 RAG 如何选择？", undefined, undefined, "plan", turnId))).at(-1)).toEqual({
-      type: "done",
-      text: "RAG 更适合语义检索。",
-      reason: "completed",
-    });
-    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "plan_create", "file_read", "web_search", "memory_search",
-    ]));
-    expect(client.calls[0].systemPrompt).toContain("无需调用任何工具");
-    expect(readSessionPlan(workspacePath, "plan-direct-answer", turnId)).toBeUndefined();
-  });
-
-  it("pauses a plan for user input and resumes it in a later turn", async () => {
-    const toolCall = (id: string, name: string, input: Record<string, unknown>): ChatResponse => ({
-      text: "",
-      toolCalls: [{ type: "tool_use", id, name, input }],
-    });
-    const firstTurnId = "33333333-3333-4333-8333-333333333333";
-    const secondTurnId = "44444444-4444-4444-8444-444444444444";
-    const client = new FakeModelClient([
-      toolCall("create", "plan_create", { goal: "完成需求", steps: ["给出方案", "实施"] }),
-      toolCall("start-1", "plan_update", { step_id: "step-1", status: "in_progress" }),
-      toolCall("pause", "plan_pause", { summary: "等待用户确认方案" }),
-      { text: "请确认方案", toolCalls: [] },
-      { text: "这是一个无关问题的回答", toolCalls: [] },
-      () => toolCall("resume", "plan_resume", { plan_id: readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)!.id }),
-      toolCall("resume-1", "plan_update", { step_id: "step-1", status: "in_progress" }),
-      toolCall("complete-1", "plan_update", { step_id: "step-1", status: "completed", summary: "用户已确认" }),
-      toolCall("start-2", "plan_update", { step_id: "step-2", status: "in_progress" }),
-      toolCall("complete-2", "plan_update", { step_id: "step-2", status: "completed", summary: "实施完成" }),
-      { text: "任务完成", toolCalls: [] },
-    ]);
-    const session = new AgentSession("plan-user-pause", workspacePath, manager, {}, client);
-
-    expect((await collect(session.chat("先给方案", undefined, undefined, "plan", firstTurnId))).at(-1)).toEqual({
-      type: "done", text: "请确认方案", reason: "completed",
-    });
-    expect(readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)?.steps[0].status).toBe("waiting_user");
-
-    expect((await collect(session.chat("先回答一个无关问题", undefined, undefined, "plan", "unrelated-turn"))).at(-1)).toEqual({
-      type: "done", text: "这是一个无关问题的回答", reason: "completed",
-    });
-    expect(readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)?.steps[0].status).toBe("waiting_user");
-    expect(client.calls[4].tools?.map((tool) => tool.name)).toContain("plan_create");
-    expect(client.calls[4].tools?.map((tool) => tool.name)).not.toContain("plan_update");
-
-    expect((await collect(session.chat("确认", undefined, undefined, "plan", secondTurnId))).at(-1)).toEqual({
-      type: "done", text: "任务完成", reason: "completed",
-    });
-    expect(readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)?.status).toBe("completed");
-    expect(readSessionPlan(workspacePath, "plan-user-pause", secondTurnId)).toBeUndefined();
-    expect(client.calls[5].systemPrompt).toContain("plan_resume");
-    expect(readSessionPlan(workspacePath, "plan-user-pause", firstTurnId)?.relatedTurnIds).toEqual([secondTurnId]);
-  });
-
-  it("revises pending steps after a research step", async () => {
-    registerTool(manager, {
-      name: "echo",
-      description: "echo",
-      inputSchema: { type: "object", properties: {} },
-      execute: async () => "调研结果",
-    });
-    const toolCall = (id: string, name: string, input: Record<string, unknown>): ChatResponse => ({
-      text: "",
-      toolCalls: [{ type: "tool_use", id, name, input }],
-    });
-    const client = new FakeModelClient([
-      toolCall("create", "plan_create", { goal: "完成调研和实施", steps: ["调研现状", "根据调研细化计划"] }),
-      toolCall("start-research", "plan_update", { step_id: "step-1", status: "in_progress" }),
-      toolCall("research", "echo", {}),
-      toolCall("complete-research", "plan_update", { step_id: "step-1", status: "completed", summary: "调研完成" }),
-      toolCall("revise", "plan_revise", { steps: ["修改实现", "运行测试"] }),
-      toolCall("start-code", "plan_update", { step_id: "step-3", status: "in_progress" }),
-      toolCall("complete-code", "plan_update", { step_id: "step-3", status: "completed" }),
-      toolCall("start-test", "plan_update", { step_id: "step-4", status: "in_progress" }),
-      toolCall("complete-test", "plan_update", { step_id: "step-4", status: "completed" }),
-      { text: "完成", toolCalls: [] },
-    ]);
-    const session = new AgentSession("plan-revise", workspacePath, manager, {}, client);
-    const reviseTurnId = "55555555-5555-4555-8555-555555555555";
-
-    expect((await collect(session.chat("复杂任务", undefined, undefined, "plan", reviseTurnId))).at(-1)).toEqual({
-      type: "done", text: "完成", reason: "completed",
-    });
-    const plan = readSessionPlan(workspacePath, "plan-revise", reviseTurnId);
-    expect(plan?.revision).toBe(1);
-    expect(plan?.steps.map((step) => step.title)).toEqual(["调研现状", "修改实现", "运行测试"]);
-    expect(client.calls[0].tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "plan_create", "file_read", "web_search", "memory_search",
-    ]));
-    expect(client.calls[0].tools?.map((tool) => tool.name)).not.toContain("echo");
-    expect(client.calls[4].tools?.map((tool) => tool.name)).toContain("plan_revise");
-    expect(client.calls[0].systemPrompt).toContain("调研完成后调用 plan_revise");
-  });
 
   it("auto-memory analyzes only user questions and final answers", async () => {
     const autoWorkspace = createTempWorkspace({
@@ -502,8 +354,8 @@ describe("AgentSession loop", () => {
       const session = new AgentSession("auto-memory-input", autoWorkspace, autoManager, {}, client);
 
       expect(await collect(session.chat("用户原始问题"))).toEqual([
-        { type: "tool_call", toolCallId: "call-1", name: "echo", input: { text: "value" } },
-        { type: "tool_result", toolCallId: "call-1", name: "echo", result: "工具过程结果" },
+        { type: "tool_call", toolCallId: "call-1", name: "echo", input: { text: "value" }, startedAt: expect.any(Number) },
+        { type: "tool_result", toolCallId: "call-1", name: "echo", result: "工具过程结果", completedAt: expect.any(Number) },
         { type: "text_delta", text: "最终回答：长期结论" },
         { type: "done", text: "最终回答：长期结论", reason: "completed" },
       ]);
@@ -1219,12 +1071,14 @@ describe("AgentSession loop", () => {
     expect(events).toContainEqual({
       type: "tool_result",
       toolCallId: "missing",
+      completedAt: expect.any(Number),
       name: "missing",
-      result: JSON.stringify({ error: "未知工具: missing" }),
+      result: expect.stringContaining('"status":"blocked"'),
     });
     expect(events).toContainEqual({
       type: "tool_result",
       toolCallId: "fail",
+      completedAt: expect.any(Number),
       name: "fail",
       result: JSON.stringify({ error: "工具执行失败: tool failed" }),
     });
@@ -1263,11 +1117,12 @@ describe("AgentSession loop", () => {
 
     expect(await collect(session.chat("run"))).toEqual([
       { type: "text_delta", text: "先申请授权" },
-      { type: "tool_call", toolCallId: "call-1", name: "gated", input: {} },
+      { type: "tool_call", toolCallId: "call-1", name: "gated", input: {}, startedAt: expect.any(Number) },
       {
         type: "tool_result",
         toolCallId: "call-1",
         name: "gated",
+        completedAt: expect.any(Number),
         result: JSON.stringify({ error: "需要批准", requiresConfirmation: true, approvalId: "approval-1" }),
       },
       { type: "done", text: "先申请授权", reason: "approval_required" },
@@ -1275,6 +1130,26 @@ describe("AgentSession loop", () => {
     expect(client.calls).toHaveLength(1);
     expect(gatedTool).toHaveBeenCalledTimes(1);
     expect(laterTool).not.toHaveBeenCalled();
+  });
+
+  it("persists reasoning across approval and ends a failed resumed run", async () => {
+    let calls = 0;
+    registerTool(manager, { name: "reason-gate", description: "gate", inputSchema: { type: "object" },
+      execute: async () => ++calls === 1 ? JSON.stringify({ requiresConfirmation: true, approvalId: "reason-approval" }) : "ok" });
+    const client = new FakeModelClient([
+      { text: "", reasoningContent: "protocol metadata", toolCalls: [{ type: "tool_use", id: "r-call", name: "reason-gate", input: {} }] },
+      (messages) => {
+        expect(messages.find(m => m.role === "assistant")?._reasoningContent).toBe("protocol metadata");
+        throw new Error("model 400");
+      },
+    ]);
+    const session = new AgentSession("reason-resume", workspacePath, manager, {}, client);
+    await collect(session.chat("run"));
+    const turn = manager.getTurnId(session.id)!;
+    const events = await collect(session.resumeApproval("reason-approval"));
+    expect(events.at(-1)).toMatchObject({ type: "error", message: "model 400" });
+    expect(readRun(workspacePath, session.id, turn)?.state).toBe("interrupted");
+    expect(session.isBusy()).toBe(false);
   });
 
   it("continues the original model loop after an approval is granted", async () => {
@@ -1336,8 +1211,8 @@ describe("AgentSession loop", () => {
       { type: "error", message: "当前会话有待审批的工具调用。请先批准或拒绝最新审批，再继续发送新任务。" },
     ]);
     expect(await collect(session.resumeApproval("approval-1"))).toEqual([
-      { type: "tool_call", toolCallId: "call-1", name: "gated", input: {} },
-      { type: "tool_result", toolCallId: "call-1", name: "gated", result: "approved-result" },
+      { type: "tool_call", toolCallId: "call-1", name: "gated", input: {}, startedAt: expect.any(Number) },
+      { type: "tool_result", toolCallId: "call-1", name: "gated", result: "approved-result", completedAt: expect.any(Number) },
       { type: "text_delta", text: "继续后的总结" },
       { type: "done", text: "继续后的总结", reason: "completed" },
     ]);
@@ -1345,6 +1220,74 @@ describe("AgentSession loop", () => {
     expect(gatedTool).toHaveBeenCalledTimes(2);
     expect(laterTool).not.toHaveBeenCalled();
     expect(manager.getTurnId("approval-resume")).toBeUndefined();
+  });
+
+  it("feeds a rejected approval back into the original model loop", async () => {
+    const gatedTool = vi.fn(async () => JSON.stringify({
+      error: "需要批准", requiresConfirmation: true, approvalId: "reject-approval",
+    }));
+    registerTool(manager, { name: "gated_reject", description: "gated", inputSchema: { type: "object" }, execute: gatedTool });
+    const client = new FakeModelClient([
+      { text: "等待决定", toolCalls: [{ type: "tool_use", id: "reject-call", name: "gated_reject", input: {} }] },
+      (messages) => {
+        expect(JSON.stringify(messages)).toContain("用户拒绝执行该工具调用");
+        return { text: "已按拒绝结果调整", toolCalls: [] };
+      },
+    ]);
+    const session = new AgentSession("approval-reject", workspacePath, manager, {}, client);
+    await collect(session.chat("run"));
+    const events = await collect(session.rejectApproval("reject-approval"));
+    expect(events).toContainEqual({
+      type: "tool_result",
+      toolCallId: "reject-call",
+      name: "gated_reject",
+      result: JSON.stringify({ error: "用户拒绝执行该工具调用", rejected: true }),
+    });
+    expect(events.at(-1)).toEqual({ type: "done", text: "已按拒绝结果调整", reason: "completed" });
+    expect(gatedTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores a persisted approval in a new AgentSession", async () => {
+    const config = loadConfig(workspacePath);
+    config.security = { ...config.security, mode: "ask" };
+    writeFileSync(resolve(workspacePath, "config.json"), JSON.stringify(config), "utf-8");
+    const execute = vi.fn(async (args: Record<string, unknown>, context?: Parameters<Tool["execute"]>[1]) => {
+      const permission = checkDangerousToolPermission({
+        workspacePath,
+        config: loadConfig(workspacePath),
+        toolName: "durable_tool",
+        args,
+        context,
+      });
+      return permission.allowed ? "restored-result" : permission.result;
+    });
+    registerTool(manager, { name: "durable_tool", description: "durable", inputSchema: { type: "object" }, execute });
+    const firstClient = new FakeModelClient([{
+      text: "等待审批",
+      toolCalls: [{ type: "tool_use", id: "durable-call", name: "durable_tool", input: { value: 1 } }],
+    }]);
+    const firstSession = new AgentSession("durable-approval", workspacePath, manager, {}, firstClient);
+    expect((await collect(firstSession.chat("run"))).at(-1)).toEqual({ type: "done", text: "等待审批", reason: "approval_required" });
+    const approval = listApprovals(workspacePath)[0];
+    expect(listSessionApprovalContinuations(workspacePath, firstSession.id)).toHaveLength(1);
+    expect(existsSync(resolve(workspacePath, "approvals", `${approval.id}.json`))).toBe(true);
+
+    const restoredManager = new PluginManager(workspacePath);
+    await restoredManager.loadCorePlugins();
+    registerTool(restoredManager, { name: "durable_tool", description: "durable", inputSchema: { type: "object" }, execute });
+    const restoredClient = new FakeModelClient([(messages) => {
+      expect(JSON.stringify(messages)).toContain('"tool_use_id":"durable-call"');
+      expect(JSON.stringify(messages)).toContain('"content":"restored-result"');
+      return { text: "恢复完成", toolCalls: [] };
+    }]);
+    expect(approveRequest(workspacePath, approval.id)?.status).toBe("approved");
+    const restoredSession = new AgentSession("durable-approval", workspacePath, restoredManager, {}, restoredClient);
+    expect((await collect(restoredSession.resumeApproval(approval.id))).at(-1)).toEqual({
+      type: "done", text: "恢复完成", reason: "completed",
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(listSessionApprovalContinuations(workspacePath, firstSession.id)).toEqual([]);
+    await restoredManager.destroy();
   });
 
   it("allows all ask-mode tools for the resumed turn and clears the grant afterwards", async () => {
@@ -1387,8 +1330,8 @@ describe("AgentSession loop", () => {
 
     const resumed = await collect(session.resumeApproval(approval.id));
 
-    expect(resumed).toContainEqual({ type: "tool_result", toolCallId: "call-1", name: "dangerous", result: "ran-first" });
-    expect(resumed).toContainEqual({ type: "tool_result", toolCallId: "call-2", name: "dangerous", result: "ran-second" });
+    expect(resumed).toContainEqual({ type: "tool_result", toolCallId: "call-1", name: "dangerous", result: "ran-first", completedAt: expect.any(Number) });
+    expect(resumed).toContainEqual({ type: "tool_result", toolCallId: "call-2", name: "dangerous", result: "ran-second", completedAt: expect.any(Number) });
     expect(dangerousTool).toHaveBeenCalledTimes(3);
     expect(hasTurnApproval(workspacePath, session.id)).toBe(false);
   });
@@ -1432,6 +1375,75 @@ describe("AgentSession loop", () => {
     ]);
   });
 
+  it.each([false, true])("keeps the run busy until synchronous compression settles (failure=%s)", async (fails) => {
+    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, sessionSummary: { enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 } });
+    const pm = new PluginManager(workspace);
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    let running: Promise<void> | undefined;
+    try {
+      await pm.loadCorePlugins();
+      const client = new SummaryModelClient([{ text: "您要继续吗？", toolCalls: [] }]);
+      const complete = client.complete.bind(client);
+      vi.spyOn(client, "complete").mockImplementation(async (messages) => {
+        await waiting;
+        if (fails) throw new Error("compression unavailable");
+        return complete(messages);
+      });
+      const session = new AgentSession("slow-summary", workspace, pm, {}, client);
+      const events: AgentEvent[] = [];
+      running = (async () => { for await (const event of session.chat("解释结果", undefined, undefined, "plan", "slow-turn")) events.push(event); })();
+      await vi.waitFor(() => expect(events).toContainEqual({ type: "status", stage: "session_summary", state: "started", message: "正在进行上下文压缩..." }));
+      expect(session.isBusy()).toBe(true);
+      expect(readRun(workspace, session.id, "slow-turn")).toMatchObject({ state: "running", status: { stage: "session_summary", state: "started" } });
+      expect(events.some((event) => event.type === "done")).toBe(false);
+      expect(events.some((event) => event.type === "run_state" && event.run.state === "completed")).toBe(false);
+      expect(await collect(session.chat("继续"))).toEqual([{ type: "error", message: "会话正在执行中，请等待完成或先取消当前任务" }]);
+      release();
+      await running;
+      expect(session.isBusy()).toBe(false);
+      expect(readRun(workspace, session.id, "slow-turn")?.state).toBe("completed");
+      expect(events).toContainEqual(expect.objectContaining({ type: "status", stage: "session_summary", state: fails ? "failed" : "completed" }));
+      expect(events.at(-1)).toMatchObject({ type: "done" });
+      expect(session.getMessages()).toEqual(expect.arrayContaining([expect.objectContaining({ role: "user", content: "解释结果" })]));
+    } finally {
+      release();
+      await running;
+      await pm.destroy();
+      removeTempWorkspace(workspace);
+    }
+  });
+
+  it("cancels synchronous summary without committing it and unlocks the session", async () => {
+    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, sessionSummary: { enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 } });
+    const pm = new PluginManager(workspace);
+    let pending: Promise<AgentEvent[]> | undefined;
+    let session: AgentSession | undefined;
+    try {
+      await pm.loadCorePlugins();
+      const client = new SummaryModelClient([{ text: "done", toolCalls: [] }, { text: "next", toolCalls: [] }]);
+      let started = false;
+      vi.spyOn(client, "complete").mockImplementationOnce((_messages, _prompt, options) => new Promise((_resolve, reject) => {
+        started = true;
+        options?.signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+      }));
+      session = new AgentSession("cancel-summary", workspace, pm, {}, client);
+      pending = collectAll(session.chat("hello", undefined, undefined, "normal", "summary-turn"));
+      await vi.waitFor(() => expect(started).toBe(true));
+      session.cancel();
+      await pending;
+      expect(session.isBusy()).toBe(false);
+      expect(readRun(workspace, session.id, "summary-turn")?.state).toBe("cancelled");
+      expect(loadSessionSummary(workspace, session.id).summarizedThroughSequence).toBe(0);
+      expect((await collect(session.chat("next"))).at(-1)).toMatchObject({ type: "done" });
+    } finally {
+      session?.cancel();
+      await pending;
+      await pm.destroy();
+      removeTempWorkspace(workspace);
+    }
+  });
+
   it("persists session summaries and restores them after rebuilding the session", async () => {
     const summaryWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
@@ -1446,7 +1458,7 @@ describe("AgentSession loop", () => {
 
       expect(await collect(firstSession.chat("记住这个目标"))).toEqual([
         { type: "text_delta", text: "第一轮完成" },
-        { type: "status", stage: "session_summary", state: "started", message: "正在整理会话记忆…" },
+        { type: "status", stage: "session_summary", state: "started", message: "正在进行上下文压缩..." },
         { type: "status", stage: "session_summary", state: "completed", message: "会话记忆整理完成" },
         { type: "done", text: "第一轮完成", reason: "completed" },
       ]);
@@ -1460,7 +1472,7 @@ describe("AgentSession loop", () => {
 
       expect(await collect(secondSession.chat("继续"))).toEqual([
         { type: "text_delta", text: "第二轮完成" },
-        { type: "status", stage: "session_summary", state: "started", message: "正在整理会话记忆…" },
+        { type: "status", stage: "session_summary", state: "started", message: "正在进行上下文压缩..." },
         { type: "status", stage: "session_summary", state: "completed", message: "会话记忆整理完成" },
         { type: "done", text: "第二轮完成", reason: "completed" },
       ]);
@@ -1487,6 +1499,11 @@ describe("AgentSession loop", () => {
       expect(summaryIndex).toBe(currentUserIndex - 1);
       expect(secondClient.calls[0][summaryIndex].content).toContain("以历史原文为准");
       expect(secondClient.systemPrompts[0]).toBe(firstClient.systemPrompts[0]);
+      const snapshot = JSON.parse(readFileSync(resolve(sessionDir(summaryWorkspace, "summary-session"), "context-snapshot.json"), "utf8"));
+      expect(snapshot.contextSummaries).toEqual([
+        { title: "会话摘要", content: secondClient.calls[0][summaryIndex].content },
+      ]);
+      expect(snapshot.messages[summaryIndex].content).toBe(snapshot.contextSummaries[0].content);
     } finally {
       await firstManager.destroy();
       await secondManager.destroy();
@@ -1812,6 +1829,11 @@ describe("AgentSession loop", () => {
         expect.objectContaining({ role: "user", content: "current user raw" }),
       ]);
       expect(client.systemPrompts[0]).toContain('<context_compression_summary data-kind="derived-summary" role="internal">');
+      const snapshot = JSON.parse(readFileSync(resolve(sessionDir(compressWorkspace, "compress-session"), "context-snapshot.json"), "utf8"));
+      expect(snapshot.contextSummaries).toEqual([
+        { title: "临时压缩摘要", content: expect.stringContaining('<context_compression_summary data-kind="derived-summary" role="internal">') },
+      ]);
+      expect(client.systemPrompts[0]).toContain(snapshot.contextSummaries[0].content);
       expect(client.calls[0]).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ role: "user", content: expect.stringContaining("[当前会话摘要]") }),
       ]));
@@ -2055,8 +2077,8 @@ describe("AgentSession loop", () => {
       const session = new AgentSession("tool-budget-session", toolBudgetWorkspace, toolBudgetManager, {}, client);
 
       expect(await collect(session.chat("继续总结"))).toEqual([
-        { type: "tool_call", toolCallId: "search-1", name: "large_result", input: {} },
-        { type: "tool_result", toolCallId: "search-1", name: "large_result", result: "超大搜索结果".repeat(20_000) },
+        { type: "tool_call", toolCallId: "search-1", name: "large_result", input: {}, startedAt: expect.any(Number) },
+        { type: "tool_result", toolCallId: "search-1", name: "large_result", result: "超大搜索结果".repeat(20_000), completedAt: expect.any(Number) },
         { type: "text_delta", text: "完成" },
         { type: "done", text: "完成", reason: "completed" },
       ]);
@@ -2150,8 +2172,8 @@ describe("AgentSession loop", () => {
 
     expect(await collect(session.chat("hi"))).toEqual([
       { type: "text_delta", text: "partial" },
-      { type: "tool_call", toolCallId: "call-1", name: "echo", input: {} },
-      { type: "tool_result", toolCallId: "call-1", name: "echo", result: "ok" },
+      { type: "tool_call", toolCallId: "call-1", name: "echo", input: {}, startedAt: expect.any(Number) },
+      { type: "tool_result", toolCallId: "call-1", name: "echo", result: "ok", completedAt: expect.any(Number) },
       {
         type: "text_delta",
         text: "\n\n任务已停止：Agent 已达到最大迭代次数（1 次），当前任务可能尚未完成。你可以继续发送“继续”，或在设置中调整 maxAgentIterations。",

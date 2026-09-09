@@ -10,10 +10,10 @@ describe("reconnectable Gateway streams", () => {
     const prepared = new Promise<void>((resolve) => { ready = resolve; });
     async function* events(): AsyncGenerator<AgentEvent> {
       yield { type: "text_delta", text: "已有输出" };
-      yield { type: "tool_call", toolCallId: "call", name: "bash", input: { command: "test" } };
+      yield { type: "tool_call", toolCallId: "call", name: "bash", input: { command: "test" }, startedAt: 1000 };
       ready();
       await paused;
-      yield { type: "tool_result", toolCallId: "call", name: "bash", result: "ok" };
+      yield { type: "tool_result", toolCallId: "call", name: "bash", result: "ok", completedAt: 6000 };
       yield { type: "text_delta", text: "后续输出" };
       yield { type: "done", text: "已有输出后续输出", reason: "completed" };
     }
@@ -29,5 +29,6 @@ describe("reconnectable Gateway streams", () => {
     unsubscribe();
     expect(received.map((event) => event.type)).toEqual(["tool_result", "text_delta", "done"]);
     expect(stream.snapshot.toolCalls[0].result).toBe("ok");
+    expect(stream.snapshot.toolCalls[0]).toMatchObject({ startedAt: 1000, completedAt: 6000 });
   });
 });

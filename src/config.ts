@@ -12,6 +12,7 @@ const DEFAULTS: Partial<Config> = {
   contextCompressionToolResultMaxChars: 500,
   contextCompressionMaxOutputTokens: 2048,
   toolResultInitialMaxChars: 12_000,
+  bashTerminationGraceMs: 1000,
   historyWindowSize: 5,
   maxAgentIterations: 100,
   emptyResponseRetries: 1,
@@ -37,6 +38,7 @@ export function createDefaultConfig(): Record<string, unknown> {
     contextCompressionToolResultMaxChars: DEFAULTS.contextCompressionToolResultMaxChars,
     contextCompressionMaxOutputTokens: DEFAULTS.contextCompressionMaxOutputTokens,
     toolResultInitialMaxChars: DEFAULTS.toolResultInitialMaxChars,
+    bashTerminationGraceMs: DEFAULTS.bashTerminationGraceMs,
     historyWindowSize: DEFAULTS.historyWindowSize,
     maxAgentIterations: DEFAULTS.maxAgentIterations,
     emptyResponseRetries: DEFAULTS.emptyResponseRetries,
@@ -104,6 +106,7 @@ export function createDefaultConfig(): Record<string, unknown> {
     },
     security: {
       mode: "auto",
+      approvalTtlMs: 86400000,
       tools: {},
       gateway: {
         host: "127.0.0.1",
@@ -140,6 +143,7 @@ export function createDefaultConfig(): Record<string, unknown> {
     plan: {
       enabled: true,
       maxSteps: 8,
+      maxGateCorrections: 2,
     },
     searchProvider: "duckduckgo",
     ollamaApiKey: "",
@@ -234,6 +238,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
   assertNumber(raw.contextCompressionToolResultMaxChars ?? DEFAULTS.contextCompressionToolResultMaxChars, "contextCompressionToolResultMaxChars", { min: 100, max: 1_000_000, integer: true });
   assertNumber(raw.contextCompressionMaxOutputTokens ?? DEFAULTS.contextCompressionMaxOutputTokens, "contextCompressionMaxOutputTokens", { min: 256, max: 1_000_000, integer: true });
   assertNumber(raw.toolResultInitialMaxChars ?? DEFAULTS.toolResultInitialMaxChars, "toolResultInitialMaxChars", { min: 1000, max: 10_000_000, integer: true });
+  assertNumber(raw.bashTerminationGraceMs ?? DEFAULTS.bashTerminationGraceMs, "bashTerminationGraceMs", { min: 0, max: 60000, integer: true });
   assertNumber(raw.historyWindowSize ?? DEFAULTS.historyWindowSize, "historyWindowSize", { min: 0, max: 10_000, integer: true });
   assertNumber(raw.maxAgentIterations ?? DEFAULTS.maxAgentIterations, "maxAgentIterations", { min: 0, max: 1_000, integer: true });
   assertNumber(raw.emptyResponseRetries ?? DEFAULTS.emptyResponseRetries, "emptyResponseRetries", { min: 0, max: 5, integer: true });
@@ -372,6 +377,17 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertObject(raw.security, "security");
   }
   const security = raw.security as Config["security"];
+  if (security?.background !== undefined) {
+    assertObject(security.background, "security.background");
+    assertOptionalNumber(security.background.timeoutSeconds, "security.background.timeoutSeconds", { min: 1, max: 86400, integer: true });
+    assertOptionalNumber(security.background.maxRunning, "security.background.maxRunning", { min: 1, max: 100, integer: true });
+    assertOptionalNumber(security.background.maxLogChars, "security.background.maxLogChars", { min: 1000, max: 1000000, integer: true });
+  }
+  if (security?.trustedProjects !== undefined) {
+    if (!Array.isArray(security.trustedProjects) || security.trustedProjects.some((path) => typeof path !== "string" || !path.startsWith("/"))) {
+      throw new Error("配置字段 security.trustedProjects 必须是项目绝对路径数组");
+    }
+  }
   const securityMode = security?.mode;
   if (securityMode !== undefined && !["ask", "auto", "allow"].includes(securityMode)) {
     throw new Error("配置字段 security.mode 不受支持");
@@ -387,6 +403,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
       }
     }
   }
+  assertOptionalNumber(security?.approvalTtlMs, "security.approvalTtlMs", { min: 1000, max: 86_400_000, integer: true });
   const gatewayHost = security?.gateway?.host;
   const gatewayToken = security?.gateway?.token;
   if (security?.gateway !== undefined) assertObject(security.gateway, "security.gateway");
@@ -442,7 +459,9 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertObject(raw.plan, "plan");
     const plan = raw.plan as Record<string, unknown>;
     assertOptionalBoolean(plan.enabled, "plan.enabled");
-    assertOptionalNumber(plan.maxSteps, "plan.maxSteps", { min: 2, max: 50, integer: true });
+    assertOptionalNumber(plan.maxSteps, "plan.maxSteps", { min: 1, max: 50, integer: true });
+    assertOptionalNumber(plan.maxGateCorrections, "plan.maxGateCorrections", { min: 0, integer: true });
+    assertOptionalNumber(plan.decisionRetries, "plan.decisionRetries", { min: 0, max: 10, integer: true });
   }
 }
 
@@ -479,6 +498,7 @@ export function loadConfig(workspacePath: string): Config {
     contextCompressionToolResultMaxChars: (raw.contextCompressionToolResultMaxChars as number) ?? DEFAULTS.contextCompressionToolResultMaxChars!,
     contextCompressionMaxOutputTokens: (raw.contextCompressionMaxOutputTokens as number) ?? DEFAULTS.contextCompressionMaxOutputTokens!,
     toolResultInitialMaxChars: (raw.toolResultInitialMaxChars as number) ?? DEFAULTS.toolResultInitialMaxChars!,
+    bashTerminationGraceMs: (raw.bashTerminationGraceMs as number) ?? DEFAULTS.bashTerminationGraceMs!,
     historyWindowSize: (raw.historyWindowSize as number) ?? DEFAULTS.historyWindowSize!,
     maxAgentIterations: (raw.maxAgentIterations as number) ?? DEFAULTS.maxAgentIterations!,
     emptyResponseRetries: (raw.emptyResponseRetries as number) ?? DEFAULTS.emptyResponseRetries!,

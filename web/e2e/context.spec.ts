@@ -7,7 +7,8 @@ test("keeps context usage beside approvals and full statistics in the dialog", a
   await page.route("**/history/sessions/context-session/messages", (route) => route.fulfill({ json: { messages: [] } }));
   await page.route("**/context?*", (route) => route.fulfill({ json: { snapshot: {
     sessionId: "context-session", iteration: 1, attempt: 1,
-    systemPrompt: "test prompt", messages: [], tools: [],
+    systemPrompt: "test prompt", messages: [{ role: "assistant", content: "request-time summary" }], tools: [],
+    contextSummaries: [{ title: "会话摘要", content: "request-time summary" }, { title: "临时压缩摘要", content: "temporary summary" }],
     usage: { input: 24000, maxContext: 100000, percent: 24, systemPrompt: 1000, messages: 22000, tools: 1000, outputReserved: 4096 },
   } } }));
   await page.goto("/#sid=context-session");
@@ -29,9 +30,39 @@ test("keeps context usage beside approvals and full statistics in the dialog", a
     await expect(dialog).toContainText("24%");
     await dialog.getByRole("button", { name: "System Prompt", exact: true }).click();
     await expect(dialog).toContainText("test prompt");
+    await dialog.getByRole("button", { name: "上下文摘要", exact: true }).click();
+    await expect(dialog.getByRole("heading", { name: "会话摘要", exact: true })).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "临时压缩摘要", exact: true })).toBeVisible();
+    await expect(dialog.locator("pre")).toHaveText(["request-time summary", "temporary summary"]);
+    for (const button of await dialog.locator("nav button").all()) {
+      const box = (await button.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+    }
+    await dialog.getByRole("button", { name: "Messages", exact: true }).click();
+    await expect(dialog.locator("pre")).toContainText("request-time summary");
     await dialog.getByRole("button", { name: "关闭" }).click();
   }
 });
+
+for (const legacy of [false, true]) {
+  test(`distinguishes absent summaries from legacy snapshots (legacy=${legacy})`, async ({ page }) => {
+    await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [
+      { id: "context-empty", lastActivity: Date.now(), preview: "摘要测试", context: { mode: "chat" } },
+    ] } }));
+    await page.route("**/history/sessions/context-empty/messages", (route) => route.fulfill({ json: { messages: [] } }));
+    await page.route("**/context?*", (route) => route.fulfill({ json: { snapshot: {
+      sessionId: "context-empty", iteration: 1, attempt: 1, systemPrompt: "", messages: [], tools: [],
+      ...(legacy ? {} : { contextSummaries: [] }),
+      usage: { input: 1, maxContext: 100, percent: 1, systemPrompt: 1, messages: 0, tools: 0, outputReserved: 0 },
+    } } }));
+    await page.goto("/#sid=context-empty");
+    await page.getByRole("button", { name: "上下文 1%", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "当前模型上下文" });
+    await dialog.getByRole("button", { name: "上下文摘要", exact: true }).click();
+    await expect(dialog).toContainText(legacy ? "该快照未单独记录上下文摘要" : "本次调用未使用上下文摘要");
+  });
+}
 
 test("hides the context entry when the session has no snapshot", async ({ page }) => {
   await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [

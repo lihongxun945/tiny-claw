@@ -34,6 +34,7 @@ export interface ImageBlock {
 export type ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock;
 
 export interface Message {
+  _reasoningContent?: string;
   role: "user" | "assistant";
   content: string | ContentBlock[];
   /** Session 内稳定的消息标识；旧消息读取时会生成确定性兼容 ID。 */
@@ -60,6 +61,7 @@ export interface Config {
   contextCompressionToolResultMaxChars: number;
   contextCompressionMaxOutputTokens?: number;
   toolResultInitialMaxChars: number;
+  bashTerminationGraceMs: number;
   historyWindowSize: number;
   maxAgentIterations: number;
   emptyResponseRetries?: number;
@@ -91,6 +93,8 @@ export type ExecutionMode = "normal" | "plan";
 export interface PlanConfig {
   enabled?: boolean;
   maxSteps?: number;
+  decisionRetries?: number;
+  maxGateCorrections?: number;
 }
 
 export interface ProjectConfig {
@@ -232,7 +236,10 @@ export interface DebugConfig {
 }
 
 export interface SecurityConfig {
+  trustedProjects?: string[];
+  background?: { timeoutSeconds?: number; maxRunning?: number; maxLogChars?: number };
   mode?: PermissionMode;
+  approvalTtlMs?: number;
   tools?: Record<string, ToolSecurityConfig>;
   gateway?: {
     host?: string;
@@ -301,6 +308,7 @@ export interface CreateMessageRequest {
 // === API Response ===
 
 export interface ChatResponse {
+  reasoningContent?: string;
   text: string;
   toolCalls: ToolUseBlock[];
 }

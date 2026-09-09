@@ -8,8 +8,9 @@ export type ScriptedChat =
 
 export class FakeModelClient implements ModelClient {
   readonly calls: Array<{ messages: Message[]; tools?: ToolDefinition[]; systemPrompt?: string }> = [];
+  readonly decisionCalls: Array<{ messages: Message[]; tools?: ToolDefinition[]; systemPrompt?: string }> = [];
 
-  constructor(private scriptedChats: ScriptedChat[]) {}
+  constructor(private scriptedChats: ScriptedChat[], private scriptedDecisions: ScriptedChat[] = []) {}
 
   async complete(): Promise<string> {
     return "";
@@ -21,9 +22,10 @@ export class FakeModelClient implements ModelClient {
     tools?: ToolDefinition[],
     systemPrompt?: string,
     _signal?: AbortSignal,
+    options?: { requiredTool: string },
   ): Promise<ChatResponse> {
-    this.calls.push({ messages: [...messages], tools, systemPrompt });
-    const scripted = this.scriptedChats.shift();
+    (options ? this.decisionCalls : this.calls).push({ messages: [...messages], tools, systemPrompt });
+    const scripted = (options ? this.scriptedDecisions : this.scriptedChats).shift();
     if (!scripted) throw new Error("FakeModelClient: 没有剩余的脚本化响应");
     if (scripted instanceof Error) throw scripted;
 

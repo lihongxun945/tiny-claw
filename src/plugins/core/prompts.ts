@@ -34,10 +34,8 @@ export const corePromptsPlugin: Plugin = {
       onBuildPrompt: (_ctx: HookContext, prompt: string) => {
         // 首次构建时从模板开始
         if (prompt === "") {
-          const tools = _ctx.getToolDefinitions();
           const skills = listAvailableSkills(workspacePath, _ctx.sessionContext);
           const skillsText = skills.map((s) => `- ${formatSkillName(s)}: ${s.description}`).join("\n");
-          const toolsText = tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
           const currentDate = new Date().toISOString().slice(0, 10);
           const searchGuidance = buildSearchGuidance(_ctx.config.searchProvider);
 
@@ -46,14 +44,21 @@ export const corePromptsPlugin: Plugin = {
             .replace(/\{\{memories}}/g, "")
             .replace(/\{\{profile}}/g, "")
             .replace(/\{\{skills}}/g, skillsText)
-            .replace(/\{\{tools}}/g, toolsText)
             .replace(/\{\{current_date}}/g, currentDate)
             .replace(/\{\{search_guidance}}/g, searchGuidance)
-            .replace(/\{\{[^}]+}}/g, "");
+            .replace(/\{\{(?!tools}})[^}]+}}/g, "");
 
           return result;
         }
         return prompt;
+      },
+      onBuildTurnPrompt(hookCtx, prompt) {
+        const tools = hookCtx.getToolDefinitions();
+        const toolsText = "仅可调用本次请求开放的工具；历史记录中的工具不代表当前可用。阶段变更后等待下一次请求更新工具列表。\n"
+          + (tools.map((tool) => `- ${tool.name}: ${tool.description}`).join("\n") || "当前无可用工具。");
+        return prompt.includes("{{tools}}")
+          ? prompt.replace(/\{\{tools}}/g, () => toolsText)
+          : `${prompt}\n\n## 当前可用工具\n${toolsText}`;
       },
     });
   },

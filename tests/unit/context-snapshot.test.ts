@@ -25,6 +25,28 @@ describe("context snapshot", () => {
       expect(snapshot.usage.input).toBe(snapshot.usage.systemPrompt + snapshot.usage.messages + snapshot.usage.tools);
       expect(snapshot.usage.totalReserved).toBe(snapshot.usage.input + 1000);
       expect(snapshot.usage.maxContext).toBe(10000);
+      expect(snapshot.contextSummaries).toEqual([]);
+    } finally {
+      removeTempWorkspace(workspacePath);
+    }
+  });
+
+  it("copies summary metadata without changing the request or token totals", () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const options = {
+        config: loadConfig(workspacePath), sessionId: "summary", iteration: 1, attempt: 1,
+        systemPrompt: "prompt with temporary summary", messages: [], tools: [],
+      };
+      const contextSummaries = [{ title: "会话摘要", content: "summary at request time" }];
+      const baseline = createPreparedModelRequest(options);
+      const snapshot = createPreparedModelRequest({ ...options, contextSummaries });
+      expect(snapshot.contextSummaries).toEqual(contextSummaries);
+      expect(snapshot.usage).toEqual(baseline.usage);
+      expect(snapshot.messages).toEqual(baseline.messages);
+      expect(snapshot.systemPrompt).toBe(baseline.systemPrompt);
+      contextSummaries[0].content = "newer summary";
+      expect(snapshot.contextSummaries?.[0].content).toBe("summary at request time");
     } finally {
       removeTempWorkspace(workspacePath);
     }

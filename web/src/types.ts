@@ -1,4 +1,6 @@
 export interface ToolCallInfo {
+  status?: "running" | "interrupted" | "unknown";
+  statusReason?: string;
   id?: string;
   name: string;
   input: Record<string, unknown>;
@@ -23,6 +25,8 @@ export interface Message {
   timestamp: number;
   turnId?: string;
   plan?: SessionPlan;
+  runState?: string;
+  run?: RunView;
 }
 
 export interface Session {
@@ -30,6 +34,7 @@ export interface Session {
   lastActivity: number;
   preview?: string;
   busy?: boolean;
+  attention?: "approval";
   context: SessionContext;
   executionMode: ExecutionMode;
 }
@@ -57,7 +62,7 @@ export interface ApprovalRequest {
   args: Record<string, unknown>;
   command?: string;
   cwd?: string;
-  status: "pending" | "approved";
+  status: "pending" | "approved" | "expired";
   createdAt: string;
   expiresAt: string;
   actor?: {
@@ -84,6 +89,7 @@ export interface ContextTokenUsage {
 }
 
 export interface ContextSnapshot {
+  contextSummaries?: Array<{ title: string; content: string }>;
   sessionId: string;
   turnId?: string;
   iteration: number;
@@ -247,4 +253,14 @@ export interface SessionPlan {
   currentStepId?: string;
   revision?: number;
   steps: Array<{ id: string; title: string; status: PlanStepStatus; summary?: string }>;
+}
+export interface RunView {
+  startedAt?: number;
+  completedAt?: number;
+  status?: { stage: string; state: "started" | "completed" | "failed"; message: string };
+  id: string;
+  turnId: string;
+  state: "running" | "waiting_approval" | "waiting_user" | "completed" | "interrupted" | "cancelled";
+  reason?: string;
+  revision: number;
 }

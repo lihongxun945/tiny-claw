@@ -331,11 +331,12 @@ export const coreSessionSummaryPlugin: Plugin = {
       hookCtx.reportStatus?.({
         stage: "session_summary",
         state: "started",
-        message: "正在整理会话记忆…",
+        message: "正在进行上下文压缩...",
       });
 
       const engine = createSessionSummaryEngine(summaryOptions(hookCtx.config));
-      const delta = await engine.createDelta(hookCtx.client, hookCtx.sessionId, current, messages);
+      const delta = await engine.createDelta(hookCtx.client, hookCtx.sessionId, current, messages, hookCtx.signal);
+      hookCtx.signal?.throwIfAborted();
       await persistDelta(hookCtx, current, delta);
       return true;
     }
@@ -353,10 +354,12 @@ export const coreSessionSummaryPlugin: Plugin = {
         );
         const current = stripped.messages.slice(stripped.turnStartIndex);
         const recent = takeRecentUserTurns(previous, getRecentTurns(hookCtx.config));
+        const summaryText = renderSummary(summary);
         return {
           ...modelContext,
           messages: [...recent, ...current],
-          derivedContext: renderSummary(summary),
+          derivedContext: summaryText,
+          contextSummaries: [...(modelContext.contextSummaries ?? []), { title: "会话摘要", content: summaryText }],
           turnStartIndex: recent.length,
         };
       },
@@ -373,6 +376,7 @@ export const coreSessionSummaryPlugin: Plugin = {
             });
           }
         } catch (error) {
+          hookCtx.signal?.throwIfAborted();
           hookCtx.reportStatus?.({
             stage: "session_summary",
             state: "failed",

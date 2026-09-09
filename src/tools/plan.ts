@@ -1,5 +1,6 @@
 import type { Config, Tool } from "../types.js";
 import { createSessionPlan, findActiveSessionPlan, resumeSessionPlan, revisePendingPlanSteps, updateSessionPlanStep, type PlanStepStatus } from "../plan-store.js";
+import { updateRun } from "../run-store.js";
 
 function activePlanTurnId(workspacePath: string, sessionId: string, turnId: string): string {
   return findActiveSessionPlan(workspacePath, sessionId, turnId)?.turnId ?? turnId;
@@ -26,7 +27,7 @@ export function createPlanCreateTool(workspacePath: string, getConfig: () => Con
       if (!goal) return JSON.stringify({ error: "goal 不能为空，请描述当前任务最终要达成的结果" });
       const steps = Array.isArray(args.steps) ? args.steps.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
       const maxSteps = (context.config ?? getConfig()).plan?.maxSteps ?? 8;
-      if (steps.length < 2 || steps.length > maxSteps) return JSON.stringify({ error: `计划步骤数必须在 2 到 ${maxSteps} 之间` });
+      if (steps.length < 1 || steps.length > maxSteps) return JSON.stringify({ error: `计划步骤数必须在 1 到 ${maxSteps} 之间` });
       return JSON.stringify({ plan: createSessionPlan(workspacePath, context.sessionId, context.turnId, steps, goal) });
     },
   };
@@ -39,14 +40,14 @@ export function createPlanResumeTool(workspacePath: string): Tool {
     isAvailable: (_context, executionMode) => executionMode === "plan",
     inputSchema: {
       type: "object",
-      properties: { plan_id: { type: "string", description: "要继续执行的计划 ID" } },
+      properties: { plan_id: { type: "string", description: "要继续执行的计划 ID" }, goal: { type: "string", description: "仅用于补充旧计划缺失的目标，必须依据用户明确要求，不得猜测" } },
       required: ["plan_id"],
     },
     execute: async (args, context) => {
       if (context?.executionMode !== "plan" || !context.sessionId || !context.turnId) return JSON.stringify({ error: "plan_resume 仅可在计划模式中使用" });
       if (typeof args.plan_id !== "string" || !args.plan_id) return JSON.stringify({ error: "缺少 plan_id" });
       try {
-        return JSON.stringify({ plan: resumeSessionPlan(workspacePath, context.sessionId, context.turnId, args.plan_id) });
+        return JSON.stringify({ plan: resumeSessionPlan(workspacePath, context.sessionId, context.turnId, args.plan_id, typeof args.goal === "string" ? args.goal : undefined) });
       } catch (error) {
         return JSON.stringify({ error: error instanceof Error ? error.message : String(error) });
       }
@@ -125,11 +126,12 @@ export function createPlanPauseTool(workspacePath: string): Tool {
     execute: async (args, context) => {
       if (context?.executionMode !== "plan" || !context.sessionId || !context.turnId) return JSON.stringify({ error: "plan_pause 仅可在计划模式中使用" });
       const plan = findActiveSessionPlan(workspacePath, context.sessionId, context.turnId);
-      const step = plan?.steps.find((item) => item.id === plan.currentStepId);
-      if (!plan || !step || step.status !== "in_progress") return JSON.stringify({ error: "暂停前必须有执行中的计划步骤" });
+      if (!plan || plan.status === "completed" || plan.status === "failed") return JSON.stringify({ error: "暂停前必须有未完成计划" });
       const summary = typeof args.summary === "string" ? args.summary.trim() : "";
       if (!summary) return JSON.stringify({ error: "summary 不能为空" });
-      return JSON.stringify({ plan: updateSessionPlanStep(workspacePath, context.sessionId, plan.turnId, step.id, "waiting_user", summary) });
+      const run = updateRun(workspacePath, context.sessionId, context.turnId, { state: "waiting_user", reason: summary });
+      if (!run) return JSON.stringify({ error: "缺少当前运行记录，无法暂停" });
+      return JSON.stringify({ plan, run });
     },
   };
 }

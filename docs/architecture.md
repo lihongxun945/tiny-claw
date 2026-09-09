@@ -160,35 +160,69 @@ WebUI 打开项目时使用前端互斥锁和 loading 状态阻止重复提交�
 
 项目会话的有效配置在创建 `AgentSession` 时由全局配置和 `project` 段合并：项目工具配置覆盖项目模式，项目模式覆盖全局配置；未显式配置时项目危险操作默认 `ask`。工具执行时从 `ToolExecutionContext` 获取有效配置，禁止自行重新加载未合并的全局权限。项目模式下 bash 和文件工具的相对路径基于项目根目录，绝对路径、`..` 和符号链接均不能越过项目边界；sub-agent 继承父会话的项目上下文。
 
-WebUI 先调用 `/projects/inspect` 检查目录，选择成功后立即通过 `POST /sessions` 创建项目会话，不等待用户发送第一条消息。应用启动时读取持久化 Session 列表，分别恢复普通对话和项目模式最后使用的 Session；切换视图时恢复各自状态。右侧功能页面由 `view` 控制，左侧普通会话/项目列表由独立的 `sidebarMode` 控制，因此从项目进入记忆、日志或设置时仍保留项目列表。项目侧栏按 `SessionContext.project.root` 分组：项目行显示持久化目录名并提供项目级新对话和删除按钮，下面缩进显示该项目的会话预览；顶部“新建项目”单独进入目录选择流程。项目不是独立持久化实体，删除项目会复用 Session 删除接口清理该目录关联的全部会话及会话数据，但不会删除用户选择的本地项目目录或其中的文件。
+WebUI 先调用 `/projects/inspect` 检查目录，再读取项目设置并展示创建确认弹窗；用户确认信任选择后保存设置，通过 `POST /sessions` 创建项目会话，不等待用户发送第一条消息。取消确认不保存授权。应用启动时读取持久化 Session 列表，分别恢复普通对话和项目模式最后使用的 Session；切换视图时恢复各自状态。右侧功能页面由 `view` 控制，左侧普通会话/项目列表由独立的 `sidebarMode` 控制，因此从项目进入记忆、日志或设置时仍保留项目列表。项目侧栏按 `SessionContext.project.root` 分组：项目行显示持久化目录名并提供项目级新对话和删除按钮，下面缩进显示该项目的会话预览；顶部“新建项目”单独进入目录选择流程。项目不是独立持久化实体，删除项目会复用 Session 删除接口清理该目录关联的全部会话及会话数据，但不会删除用户选择的本地项目目录或其中的文件。
 
-## 计划执行模式
+### 自动审批分析与托管命令
 
-历史计划使用默认收起的轻量任务记录，保留目标、状态和完成数，展开后查看步骤详情；不显示卡片背景、边框、阴影或进度条。当前活动计划仍使用完整进度面板。
+项目信任由 core-project 的 POST/PUT /projects/settings 路由管理，前者读取，后者校验布尔值并原子更新用户 config.json 中已有 security.trustedProjects 字段。全局设置页不再编辑路径列表，ProjectView 在目录检查后显示创建确认弹窗，也在项目栏提供项目设置入口。同一真实目录共享信任；信任不写入仓库。权限分析、Bash TMPDIR、后台工具和项目提示词按调用读取最新持久化信任值，避免 Session 配置缓存导致撤销延迟；不重启会话、不自动消费待审批请求。配置缺失旧字段时保留原配置兼容逻辑。
 
-计划面板按计划 ID 唯一展示：存在当前活动计划时，历史回答隐藏同 ID 面板；结束或等待用户后，只在最后一条关联的历史回答下展示。计划状态刷新同时按 ID 更新历史快照，普通和项目视图共用 `ChatView` 去重规则，避免审批恢复或跨轮继续时重复展示。
+插件通过 `PluginContext.registerDisposable` 将运行资源绑定到插件生命周期；后台任务在插件卸载及正常服务退出时均取消并等待清理完成。
 
-`plan_create` 要求同时提供非空 `goal` 和执行步骤；目标描述预期结果，随计划 JSON 持久化并通过既有计划 API 返回。WebUI 在进度条和步骤上方显示“当前目标”。步骤修订和显式恢复保留目标，可恢复计划提示词也包含目标；新目标建立独立计划。旧文件允许缺少 `goal`，不从步骤猜测或回填目标。本功能无新增配置。
+`security/shell-analysis.ts` 使用 bash-parser 生成 AST，`security/auto-approval.ts` 遍历命令、管道、逻辑连接和重定向，跟踪可确定的工作目录。丢弃输出到准确的 `/dev/null`、描述符复制以及引号内普通文本不作为外部写入；命令替换中的命令仍分析。未知语法或动态目标请求确认。支持范围内的写入目标经真实路径与符号链接检查；这是审批静态分析，不是完整 Bash 解释器或 OS 沙箱。
 
-计划模式在执行层仍是每轮请求的临时 `ExecutionMode`，不修改 Session 的普通/项目上下文绑定；用户选择则作为 `meta.json` 中可变的 `preferences.executionMode` 持久化。WebUI 切换模式时立即更新 Session 偏好，发送 `POST /chat` 时再次携带并兜底保存；刷新、切换会话和 Gateway 重启后从 Session 元数据恢复各自选择。AgentSession 在本轮开始时把模式注册到 PluginManager，审批暂停时将模式写入待恢复状态，恢复执行后继续沿用，最终在本轮结束时清理。工具注册支持同时按 `SessionContext` 和 `ExecutionMode` 过滤，因此 `plan_create`、`plan_resume`、`plan_update`、`plan_revise`、`plan_pause` 只在计划模式下发送给模型。
+项目模式下，自动审批默认允许工作目录和入口文件均在当前项目内的 Node/Python 脚本；路径检查包含符号链接。允许 npm run/test/build 和不含选项或变量覆盖的 make 任务，不以 trustedProjects 为前提。解释器内联代码、未知选项、外部脚本、npm 执行目录/配置覆盖与未识别命令保守请求确认。外层 AST 仍独立检查管道、重定向、目录切换、系统和远程操作；普通模式及显式 ask/allow 不变。此策略是代码执行授权，不是沙箱，不检测脚本内部所有副作用。
 
-`core-plan` 插件通过 `onBuildTurnPrompt` 注入不进入历史记录的本轮计划规则，并负责计划工具、状态机及 `GET /plan?session_id=...` 恢复接口。每轮消息生成独立 `turnId`，消息和 Hook 只把该标识作为内部元数据使用，调用模型前会将其剥离。计划原子写入 `sessions/<session>/plans/<turnId>.json`，创建轮次保持不变；`relatedTurnIds` 持久化显式恢复该计划的后续轮次。查找本轮计划只匹配创建轮次或关联轮次，不再回退到会话最新未完成计划。步骤状态为 pending、in_progress、completed、failed、skipped、waiting_approval、waiting_user；同一时间只能有一个执行中步骤且必须按顺序推进。需要审批时插件把当前步骤切换到 waiting_approval，恢复工具执行前切回 in_progress；需要用户确认或补充信息时，模型通过 `plan_pause` 将步骤持久化为 waiting_user。旧计划只作为候选信息提供给模型，用户明确继续旧任务时调用 `plan_resume` 校验会话归属和可恢复状态并绑定本轮，再通过 `plan_update` 开始步骤；无关问答和新任务不继承旧计划。Gateway 重启不会丢失暂停状态和轮次关联；缺少 `relatedTurnIds` 的旧文件仍可查看并显式恢复。迭代上限和执行错误会明确标记绑定计划失败。
+`security.trustedProjects` 在全局用户配置中保存额外授权的项目绝对路径，默认空数组；按真实路径精确匹配，不自动信任子目录、项目声明或已有项目。保留通用 git 命令的原授权逻辑以及托管临时目录授权，不覆盖系统危险操作与可识别的外部写入。`security/project-trust.ts` 创建 workspace 下 `project-tmp/<真实项目路径哈希>`，可信项目命令的 TMPDIR 与审批解析使用同一目录。
 
-计划模式不强制纯文本问答创建空计划。初次模型调用可以直接回答、调用只读工具补充信息，或调用 `plan_create`：不需要执行任务时可直接返回文本，不写入计划文件也不显示进度；写入或其他有副作用的工具仍必须等到计划创建且步骤开始后才能执行。一旦本轮创建或继承了计划，完成、暂停和失败校验继续强制执行。
+`core-background` 插件注册 background_start/status/stop 工具与 /tasks、/task-stop 命令，主 Agent Loop 不包含后台任务分支。启动仍经过计划门禁、统一权限审批和工具审计，background_start 默认继承 bash 权限覆盖。后台任务绑定发起 session，通过 ID 查询/取消，不能跨会话操作；运行控制器独立于消息轮次取消，应用 Scope 释放时终止进程组。任务上限、超时、有界日志通过 security.background 配置。状态记录原子保存至 sessions/<session>/background/<id>.json；运行中日志由内存提供，结束时持久化。重启后未知运行记录显示 interrupted，不通过旧 PID 操作进程或自动重放。进程异常崩溃不保证清理已脱离宿主的进程，当前不承诺跨重启续跑。
 
-计划插件通过通用 `onFilterToolDefinitions` 钩子按持久化状态限制模型可见工具。工具可声明 `effect: "read" | "write"`，未声明时按有副作用处理：本轮绑定计划前允许使用显式只读工具收集制定可靠计划所需的信息，同时暴露 `plan_create` 和 `plan_resume`；计划存在但当前步骤尚未开始时允许只读工具以及 `plan_update`、`plan_revise`；步骤进入 `in_progress` 后才开放写入和其他有副作用的执行工具。`skill_use` 可能运行技能中的动态命令，因此不属于只读工具。`onBeforeTool` 仍保留相同阶段校验，防止绕过模型工具定义直接执行。插件还通过 `onBeforeModelCall.reportStatus` 推送“生成计划、准备步骤、执行步骤、整理结果”等临时状态，状态不写入会话历史。
+## 任务计划展示
 
-复杂任务允许渐进式计划：模型先创建包含调研步骤的粗粒度计划，在明确现状和约束后调用 `plan_revise` 整体替换末尾连续的 pending 步骤。已经开始或结束的步骤原样保留，新步骤使用不复用的递增 ID，计划 `revision` 随每次调整递增；调整后的总步骤数继续受 `plan.maxSteps` 限制。WebUI 收到 `plan_revise` 工具结果后立即重新读取持久化计划。
+core-plan 是非阻塞进度插件，不是工作流引擎。简单问答直接回答，多阶段任务通过提示词鼓励模型调用 update_plan；不做额外意图分类请求，不要求先创建计划，不根据计划状态过滤或拦截执行工具。旧 executionMode 字段兼容读取和请求，但不再控制计划权限，WebUI 移除普通/计划切换。
 
-Agent Loop 对“请求成功但文本和工具调用同时为空”的模型响应执行有限重试，重试次数由 `emptyResponseRetries` 配置；耗尽后返回明确错误，不再把空响应视为任务正常完成。
+插件只注册 update_plan，接收 title、完整 steps（稳定 id、title、status、可选 summary）及可选历史 plan_id。首次调用创建当轮计划，后续调用整体更新；允许增删、修订和重新排列步骤，不强制顺序。格式错误只返回工具错误，不暂停运行。plan.enabled 控制进度插件工具和提示词启用，关闭后执行、审批、取消仍可用；plan.maxSteps 沿用步骤上限。旧 maxGateCorrections 和 decisionRetries 字段仅兼容读取，不再生效。
 
-模型输出无工具调用的最终回复时，如果当前步骤是唯一未结束的执行中步骤，插件会通过计划状态机自动将其标记为 completed，避免模型遗漏最后一次 `plan_update` 而把已经完成的任务误判为失败。只要仍有其他 pending 或执行中步骤，就不会自动收尾，仍按计划提前结束处理。
+Plan 保存模型报告的进度，Run 保存真实执行状态。update_plan 不写 Run 状态，不批准工具，也不启动或恢复进程。即使没有计划、计划格式错误、计划完成，普通工具仍按独立安全策略执行。后台任务状态只来自后台任务执行记录，计划 in_progress 不代表评测进程存在。
 
-WebUI 收到计划工具结果（包括恢复、暂停）或终止事件后重新读取持久化计划，避免解析模型自然语言或依赖单条 SSE 连接。计划插件在内存中维护当前执行轮次，`/plan` 返回历史 `plans`、`currentTurnId` 和可展示的 `activePlan`；执行中或等待审批时保留顶部计划，等待用户、完成或失败时清除。新消息立即清空顶部进度，并通过请求序号丢弃旧轮次的迟到响应。历史接口按创建轮次及 `relatedTurnIds` 将计划最新持久化状态挂到对应助手回答下，包含暂停计划，不保存逐轮快照。`/history/sessions` 会合并内存中活跃会话的 `busy` 状态，侧栏在存在执行中会话时短轮询刷新，因此切换窗口、刷新页面或重新打开客户端后仍能看到后台执行状态。选中后台执行中的会话时同步读取当前计划，输入框进入执行态且只提供停止操作；本地没有 SSE 连接时通过当前执行订阅接口恢复快照和后续输出，结束后刷新历史消息。切换 Session、刷新页面和 Gateway 重启后均能恢复历史计划；Gateway 重启后不根据未完成状态自动恢复顶部任务窗。
+每轮计划单独持久化，plan_id 仅关联当前会话中的历史计划；新记录以 previousPlanId 关联旧记录，不修改旧计划或其快照。无关新轮次不继承旧计划。update_plan 本身不自动选择最近计划或识别“继续”关键词。旧工具工厂仅保留兼容测试，不再注册到模型工具列表。
 
-WebUI 以单条助手消息作为工具调用的展示边界。同一轮出现多个工具调用时聚合为一个可展开面板，完成后显示执行中、待审批、成功和失败数量，全部结束后默认折叠，展开后的列表限制高度并独立滚动。仍在执行的调用默认展开，并在聚合头部和单个工具卡片中显示运行态与已耗时，避免长任务被误认为卡死；用户手动选择的展开状态以首个工具调用 ID 为稳定键保存，工具结果更新、消息刷新以及流式临时消息替换为最终消息时不会自动收起。只要存在待审批调用，聚合面板就强制展开且不能折叠，确保审批入口持续可见。单个工具调用继续使用原有工具卡片，不增加额外层级。
+运行期间在输入框上方显示默认折叠的信息条，展示步骤完成数和当前步骤，不显示百分比进度条；展开查看完整步骤与摘要。轮次结束后移入对应历史消息，未完成步骤不自动算完成，也不继续显示为活动执行。问题、选项和重要结果必须在正文或独立审批入口展示，不能仅存于折叠计划。
+
+Run 仍由 run-store.ts 独立持久化。一次消息轮次对应一个 Run，审批恢复复用原 Run；running、waiting_approval、waiting_user、completed、interrupted、cancelled 描述运行而非计划。会话互斥、重复轮次拒绝、进程故障恢复和停止保持独立。completed 仅表示本轮结束。历史计划与快照继续兼容读取，不自动执行旧任务。
+
+Run 持久化 startedAt/completedAt 及按 toolCallId 索引的 toolTimings。总耗时从本轮开始计算，包含审批等待，审批续跑不重置；终态冻结结束时间。服务异常退出无法确定精确停止时间时，以最后持久化活动时间截止，不把停机时间计入。工具调用由 Agent 执行包装器统一记录时间，SSE 增量、GatewayStream 快照和历史投影使用同一数据，审批后实际执行覆盖此前权限检查的计时。旧记录不伪造时间。后台任务独立保存自己的开始/结束时间，启动工具耗时不代表后台任务运行时长。
+
+WebUI 的 useElapsedTime 只用时间差计算显示值，每秒刷新并监听 focus/pageshow/visibilitychange 立即校准；切换会话或折叠不会重置时间。工具结束后显示固定耗时，计划信息条及历史计划显示本轮总耗时；未记录开始时间时不显示数值。
+
+### 审批与恢复
+
+Approval 仍关联具体工具、参数和 continuation。批准或拒绝在原 Run 中恢复，恢复计划不代表批准操作；授权只消费一次。等待审批时不能发送新任务，允许批准、拒绝或取消整个等待任务。取消将未执行调用记录为 blocked，清理审批和运行轮次；不调用模型自动继续。到期将审批标记为 expired 并持久化，不删除 continuation，Run 保持 waiting_approval。plan-recovery.ts 仅在 continuation 丢失时将 Run 转 interrupted，旧孤立 waiting_approval 步骤转 waiting_user。
+
+### 展示与历史
+
+旧消息未保存正文提示时，历史 API 可从该轮 Run 的中断、取消或等待原因生成只读补充，不修改原始历史。旧计划缺失目标也能展示，不要求先修复才能执行工具。
+
+计划面板只提供辅助详情，默认折叠。进度来自 update_plan，真实运行和审批状态来自独立记录。正文由模型说明关键进展与用户问题，计划插件不再用暂停工具控制运行，也不自动追加完成结论。
+
+GET /plan 返回计划列表、最新 Run、当前执行 turnId 和 activePlan；是否在输入框上方展示由 Run running/waiting_approval 决定，不根据步骤未完成推断。模式偏好仍保存于 Session meta，审批 continuation 保留 executionMode。普通/项目绑定保持不变。
+
+GatewayStream 保留当前 Run、turnId、累计文本、工具调用和事件序号。SSE 先发送 snapshot，再发送带序号的增量和 run_state；前端按序号去重并按轮次合并助手消息。刷新或切换会话重新订阅；连接状态与后端运行状态分开，断线不视为任务完成。历史会话 busy 从运行记录派生，审批入口来自持久化审批事实源。
+
+重连失败保留累计正文、工具调用及 turnId，普通运行统一显示“正在处理”，不以连接有无推断后台执行。无事件流时 Gateway 仅对本进程拥有且执行器已空闲的 running 记录补写 interrupted；不干预其他进程或真实活动任务。模型循环的失败统一抛给发起入口，普通执行与审批恢复均先持久化终态、发送 run_state，再报告 error，避免流结束后遗留 running。
+
+OpenAI-compatible 流响应的 reasoning_content 作为协议元数据合并到 ChatResponse.reasoningContent，并随原助手消息以 _reasoningContent 持久化。工具结果回传及审批恢复时原样映射回 reasoning_content，不加入可见正文、不生成虚构推理内容；未提供该字段的模型不附加字段。旧历史未保存的推理字段无法凭空恢复。
+
+会话摘要保持同步执行：onTurnEnd 收尾钩子完成前不发布 Run 完成状态，输入保持锁定，确保下一轮读取更新后的摘要。收尾阶段的通用状态持久化到 Run.status 并通过 SSE 更新；有正文时仍在回答下方显示“正在进行上下文压缩...”，不显示模型输入光标。刷新后从流快照或 Run.status 恢复提示。摘要失败保留原始消息和已有 Checkpoint，显示失败提示后结束本轮，普通和项目视图采用相同展示规则。
+
+轮次结束或出错时将当前计划保存为 plan-snapshots/<turn>.json。后续轮次的更新创建独立记录，不覆盖以前快照；快照保存失败仅记录告警，不阻断任务。历史未完成记录可通过界面显式关联到新请求，但该关联不构成执行恢复或操作授权。
+
+工具调用仍以单条助手消息聚合，展示执行中、成功、失败、已拦截和待审批；有审批时强制展开。输入框执行期间只能停止，等待审批期间锁定普通发送但审批卡片可操作。
+
+在 macOS/Linux 上，bash 工具为每次调用创建独立进程组；取消与超时先向整组发送 SIGTERM，等待 `bashTerminationGraceMs`（默认 1000ms）后发送 SIGKILL 并释放输出管道，避免后台子进程持有管道导致调用无法返回。普通 `&`/`nohup` 子进程仍受本次调用管理，不作为独立持久任务。显式另建会话的外部进程不在该进程组保证范围内。前端点击停止立即显示“正在停止...”，仍等待服务端终态解锁。模型调用前压缩与轮次结束摘要均接收本轮 AbortSignal；取消时不提交尚未保存的摘要，并保留原始消息供后续处理。
 
 `core-context-inspector` 通过 `onModelRequestPrepared` 观察每一次真正发送给模型的最终请求。该钩子位于提示词注入、工具过滤和上下文压缩之后，因此快照包含实际的 System Prompt、Messages 与 Tools。插件将最新快照写入 `sessions/<session>/context-snapshot.json`，采用异步临时文件加原子重命名，仅保留最新一份；写入失败记录警告，不中断模型请求。`GET /context?session_id=...` 从磁盘读取，缺失或损坏时返回 404，Gateway 重启后可恢复，删除会话目录时一并清理。旧会话没有快照时需等待下一次模型调用生成。Agent 同时通过 SSE 推送 `context_usage`，WebUI 在输入框内审批模式左侧以“上下文 24%”展示占用比例，无数据时隐藏入口；点击后在弹窗中查看完整 Token 统计、占用比例及请求内容。Token 统计复用上下文压缩模块的估算函数；附件只保留类型和名称，不暴露本地文件路径或 Base64 数据。
+
+上下文弹窗提供独立的“上下文摘要”标签页。会话摘要与临时压缩插件通过 `ModelCallContext.contextSummaries` 提供本次请求实际注入的摘要文本，Agent 仅将其转交给最终请求快照并持久化，不读取调用结束后更新的摘要。该元数据不参与 Token 计数，也不改变原始 System Prompt 和 Messages 展示。新快照无摘要时记录空数组；旧快照缺失该字段时明确提示未单独记录。
 
 ### config.json
 
@@ -317,9 +351,13 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 
 自动审批策略位于独立安全模块，输出 `allow`、`ask` 或 `deny` 以及风险等级、规则 ID 和原因。策略默认放行普通工具和命令，当前工作目录内的创建、覆盖、编辑、移动和删除均视为低风险；目录外写入、提权、系统状态修改和远程脚本执行进入 `ask`；格式化磁盘、删除根目录等灾难性操作直接 `deny`。每次自动决策写入审计日志，但不记录文件内容或密钥。
 
-`ask` 模式及自动策略返回的 `ask` 决策使用进程内审批队列。审批记录按 workspace、工具名、参数和调用者身份去重，默认 10 分钟过期。单次批准后的许可只消费一次；拒绝、过期或消费后立即失效。“允许本轮”会以 session 和调用者身份建立临时授权，当前审批先按单次许可消费，后续需要人工审批的工具在同一个 Agent Loop 中自动通过；自动策略的直接拒绝不受影响。临时授权在恢复执行结束、失败或取消后由 `AgentSession` 的 `finally` 清理，服务重启也会自然失效。Gateway 暴露 `/approvals` 系列接口，Web UI 在聊天工具块内展示风险和原因，并提供“批准本次”“允许本轮”和拒绝操作，批准后会自动调用 `AgentSession.resumeApproval()` 继续原任务。飞书消息会携带用户 `open_id` 和 `chat_id`，用户可以发送 `/approvals`、`/approve <id>`、`/approve-all <id>` 或 `/reject <id>` 处理自己在当前会话发起的审批。
+`security/sed-analysis.ts` 单独识别 `sed` 的字面量只读行打印子集：`p`、数字或 `$` 行地址及范围、多条打印命令、`-e` / `--expression` 和只读选项。识别成功的命令不要求项目信任；`-i`、`w`、`e`、外部脚本或未支持的表达式保守请求确认。外层 shell 分析仍独立检查动态展开、管道中的其他命令和重定向，不因识别只读 `sed` 而放宽。显式 `ask` 模式仍始终请求审批。
 
-当工具结果包含 `requiresConfirmation: true` 时，Agent Loop 会立即暂停当前轮：审批提示会发给用户并写入历史用于 UI 恢复，但不会再把该结果回灌给模型继续总结。这样用户批准前不会产生基于“未执行命令”的最终回答；批准后由审批命令消费一次性许可并执行记录的命令。工具调用和工具结果的 SSE 事件携带同一个稳定 `tool_call_id`；Web UI 在审批续跑过程中以该 ID 实时替换原工具块中的待审批结果，并将后续工具调用和回复流投影到同一条助手消息，收到完成事件后再固化该消息，保持实时显示与刷新后的持久化历史一致。
+`ask` 模式及自动策略返回的 `ask` 决策使用 workspace 级审批事实源。审批请求与 Agent continuation 原子写入 `workspace/approvals/<approvalId>.json`，文件权限为 `0600`；记录按 workspace、工具名、参数和调用者身份去重，过期时间由 `security.approvalTtlMs` 配置，默认 24 小时。已存在的 expiresAt 不随默认值变化。`AgentSession` 创建时从事实源恢复待审批调用，因此页面刷新、切换会话和 Gateway 重启不会丢失审批。单次批准后的许可只消费一次；“允许本轮”的后续临时授权仍只保存在当前恢复循环内，并在结束、失败或取消后清理。Gateway 暴露 `/approvals` 系列接口，Web UI 提供“批准本次”“允许本轮”和拒绝操作；批准与拒绝都会把最终工具结果送回原 Agent Loop。飞书审批继续按用户 `open_id` 和 `chat_id` 隔离。
+
+过期记录及 continuation 保留在原文件，拒绝直接批准过期请求。POST `/approvals/:id/renew` 与 core-chat-commands 注册的 `/renew-approval` 显式将 expired 转为 pending，按当前配置重设 expiresAt，保留原 ID、命令、参数和创建时间；不授予许可，不调用模型或工具。后续批准时仍经过原执行器和当前权限检查。历史投影覆盖旧 displayResult 中的期限及审批状态；前端在期限到达时禁用批准并展示重新申请入口。停止接口支持从磁盘恢复待审批会话再取消，不要求会话已加载到内存。旧版本已删除的记录无法恢复。
+
+当工具结果包含 `requiresConfirmation: true` 时，Agent Loop 会立即暂停当前轮，但不会把临时审批结果写入模型历史，避免同一个 `tool_use_id` 最终对应两条正式结果。历史接口读取独立审批事实源，为尚无结果的工具调用生成只用于 WebUI 的审批投影；批准、拒绝或过期后才向模型历史追加唯一的最终工具结果。计划处于 `waiting_approval` 却找不到有效 continuation 时，会降级为 `waiting_user`，提示用户继续任务后重新发起审批，避免出现没有操作入口的悬空状态。
 
 ### autoMemory 配置
 
@@ -645,7 +683,9 @@ Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prom
 
 采用单文件模板方案，支持用户自定义覆盖。`src/prompts/default.md` 是默认模板，使用 `{{placeholder}}` 占位符语法。用户可在 `workspace/system_prompt.md` 放置自定义模板覆盖默认值。
 
-模板加载逻辑：优先检查 `workspace/system_prompt.md`，存在则使用用户模板，否则使用 `src/prompts/default.md`。运行时将模板占位符替换为 identity、skills、tools、current_date 等基础内容；Profile 与向量召回内容由各自插件通过 `onBuildTurnPrompt` 动态追加，确保写入后下一次模型调用即可生效。
+模板加载逻辑：优先检查 `workspace/system_prompt.md`，存在则使用用户模板，否则使用 `src/prompts/default.md`。运行时将模板占位符替换为 identity、skills、current_date 等基础内容；`{{tools}}` 保留到 `onBuildTurnPrompt`，按当前会话、执行模式和计划阶段动态生成，无此占位符的自定义模板则追加当前工具清单。HookContext 查询工具时同样经过阶段过滤，避免缓存的系统提示词暴露完整工具列表。Profile 与向量召回内容由各自插件通过 `onBuildTurnPrompt` 动态追加，确保写入后下一次模型调用即可生效。
+
+Agent 对同批工具逐个重新查询当前允许的工具集合。前一个状态更新成功后，后续调用按最新状态校验；更新失败不开放执行工具，完成或暂停步骤后也立即收回执行能力。已开放工具仍须通过执行前插件校验与权限审批。越界调用不执行，持久化配对结果并返回 `status: "blocked"`；`reason` 区分 unregistered_tool 与 currently_unavailable，后者可在条件满足后重试，`availableTools` 给出当前列表，不表示整轮禁用。WebUI 单独显示“已拦截”，不计入成功或失败。
 
 其他插件可以通过 `ctx.extendPrompt()` 注册 `PromptSection`，自动追加到系统提示词末尾。
 
@@ -708,6 +748,8 @@ Gateway 是一个 HTTP 服务器，让外部客户端（Web UI、聊天机器人
 
 ### Web UI
 
+工具历史展示不以结果缺失推断正在执行。Gateway 在补齐审批后，根据对应轮次的 Run 和 pendingToolCallId 为无结果调用提供运行、中断或结果未知状态及原因，不依赖计划步骤状态；普通会话同样适用。前端实时调用以流事件及开始/结束时间判断活动状态，轮次结束后无结果调用停止计时，显示结果未知。过期审批保留入口，展示重新申请操作；审批被处理或取消后刷新历史移除入口。历史原文保留，当前中断原因在工具卡片单独展示。
+
 基于 React + Vite 的浏览器聊天界面，代码位于独立的 `web/` 目录。
 
 **技术栈：** React 19 + Vite + react-markdown，无 CSS 框架（~150 行 CSS），无状态管理库（useState 足够）。
@@ -737,6 +779,8 @@ web/
 ```
 
 **SSE 消费：** POST /chat 返回 SSE 流，无法使用 `EventSource`（仅支持 GET）。使用 `fetch` + `ReadableStream` 手动解析 SSE 帧，实现为 async generator。
+
+切换会话或首次加载历史消息时，消息列表在布局阶段立即定位到底部；同一会话后续流式输出仍使用平滑滚动。
 
 Web UI 按 session 保存消息、流式文本、工具调用、运行状态和中止控制器。切换会话或进入其他页签不会关闭仍在运行的 SSE；流事件继续写入其所属 session，返回该会话时可恢复处理中状态和已有输出。“停止”只中止当前会话。Gateway 的 `GatewayStream` 独立消费 Agent 事件，维护当前轮次累计文本、工具状态与订阅者，页面连接断开仅移除订阅；任务结束后释放内存快照。刷新或断线后，前端根据会话轮询通过 `GET /sessions/:id/events` 获取 `snapshot` 并订阅后续增量，204 表示任务已结束，应刷新历史。按快照 `turnId` 替换同轮历史助手片段，避免历史消息和流式消息重复；审批恢复沿用审批 ID 合并工具结果。该机制只恢复当前 Gateway 进程中的 Web 任务，不跨服务重启恢复执行。助手消息由 ReactMarkdown 渲染，围栏代码块通过共享的 highlight.js 语言注册表执行语法高亮；项目 Diff 视图复用同一高亮模块，未知或未标注语言使用自动识别。
 

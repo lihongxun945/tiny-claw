@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useRef, useState } from "react";
-import type { Message, ToolCallInfo } from "../types.js";
+import { Fragment, useLayoutEffect, useRef, useState } from "react";
+import type { Message, ToolCallInfo, SessionPlan } from "../types.js";
 import MessageBubble from "./MessageBubble.js";
 import PlanProgress from "./PlanProgress.js";
 import { mergeApprovalResume } from "../lib/message-merge.js";
@@ -7,6 +7,9 @@ import { mergeApprovalResume } from "../lib/message-merge.js";
 interface Props {
   messages: Message[];
   activePlanId?: string;
+  activePlanTurnId?: string;
+  onResumePlan?: (planId: string) => void;
+  latestPlans?: SessionPlan[];
   streamingText: string;
   streamingTurnId?: string;
   streamingStatus: string;
@@ -20,11 +23,15 @@ interface Props {
   onRefreshMessages: () => void;
   onApproveAndResume: (approvalId: string) => Promise<void>;
   onApproveTurnAndResume: (approvalId: string) => Promise<void>;
+  onRejectAndResume: (approvalId: string) => Promise<void>;
 }
 
 export default function ChatView({
   messages,
   activePlanId,
+  activePlanTurnId,
+  onResumePlan,
+  latestPlans,
   streamingText,
   streamingTurnId,
   streamingStatus,
@@ -38,16 +45,18 @@ export default function ChatView({
   onRefreshMessages,
   onApproveAndResume,
   onApproveTurnAndResume,
+  onRejectAndResume,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const previousScrollRef = useRef<{ sessionId: string | null; hasMessages: boolean } | undefined>(undefined);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Record<string, boolean>>({});
   const displayedMessages = streamingApprovalId
     ? mergeApprovalResume(messages, streamingApprovalId, streamingText, streamingToolCalls)
-    : messages.filter((message) => !(isStreaming && streamingTurnId && message.role === "assistant" && message.turnId === streamingTurnId));
+    : messages.filter((message) => !((isStreaming || backendBusy) && streamingTurnId && message.role === "assistant" && message.turnId === streamingTurnId));
   const showBackendBusy = backendBusy && !isStreaming;
   const lastPlanMessage = new Map<string, number>();
   displayedMessages.forEach((message, index) => {
-    if (message.role === "assistant" && message.plan) lastPlanMessage.set(message.plan.id, index);
+    if (message.role === "assistant" && message.plan) lastPlanMessage.set(`${message.turnId ?? message.plan.turnId}:${message.plan.id}`, index);
   });
 
   const toolGroupProps = (message: Message) => {
@@ -61,9 +70,13 @@ export default function ChatView({
     };
   };
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText, streamingToolCalls]);
+  useLayoutEffect(() => {
+    const previous = previousScrollRef.current;
+    const switchingSession = !previous || previous.sessionId !== activeSessionId;
+    const loadingHistory = !previous?.hasMessages && messages.length > 0;
+    bottomRef.current?.scrollIntoView({ behavior: switchingSession || loadingHistory ? "instant" : "smooth" });
+    previousScrollRef.current = { sessionId: activeSessionId, hasMessages: messages.length > 0 };
+  }, [activeSessionId, messages, streamingText, streamingToolCalls, streamingStatus]);
 
   return (
     <>
@@ -101,9 +114,11 @@ export default function ChatView({
               {...toolGroupProps(msg)}
               onApproveAndResume={onApproveAndResume}
               onApproveTurnAndResume={onApproveTurnAndResume}
+              onRejectAndResume={onRejectAndResume}
             />
-            {msg.role === "assistant" && msg.plan && msg.plan.id !== activePlanId
-              && lastPlanMessage.get(msg.plan.id) === i && <PlanProgress plan={msg.plan} historical />}
+            {msg.role === "assistant" && msg.plan && !(msg.plan.id === activePlanId && msg.turnId === activePlanTurnId)
+              && lastPlanMessage.get(`${msg.turnId ?? msg.plan.turnId}:${msg.plan.id}`) === i && <PlanProgress plan={msg.plan} historical runState={msg.runState} run={msg.run}
+                onResume={onResumePlan && (latestPlans ?? [msg.plan]).some((plan) => plan.id === msg.plan!.id && plan.status !== "completed" && plan.status !== "failed") ? () => onResumePlan(msg.plan!.id) : undefined} />}
           </Fragment>
         ))}
         {(isStreaming || showBackendBusy) && !streamingApprovalId && (
@@ -119,25 +134,29 @@ export default function ChatView({
                 <MessageBubble
                   message={message}
                   {...toolGroupProps(message)}
-                  isStreaming
+                  isStreaming={!streamingStatus}
                   onApproveAndResume={onApproveAndResume}
                   onApproveTurnAndResume={onApproveTurnAndResume}
+                  onRejectAndResume={onRejectAndResume}
                 />
               );
             })()
           ) : (
             <div className="message assistant">
               <div className="message-content processing-indicator" aria-live="polite">
-                <span>{showBackendBusy ? "正在后台执行" : streamingStatus || "正在处理"}</span>
+                <span>{streamingStatus || "正在处理"}</span>
                 <span className="processing-dots" aria-hidden="true">
                   <span />
                   <span />
                   <span />
                 </span>
-                <span className="streaming-cursor" aria-hidden="true" />
+                {!streamingStatus && <span className="streaming-cursor" aria-hidden="true" />}
               </div>
             </div>
           )
+        )}
+        {(isStreaming || backendBusy) && streamingStatus && (streamingText || streamingToolCalls.length > 0 || streamingApprovalId) && (
+          <div className="summary-lifecycle-notice" role="status" aria-live="polite">{streamingStatus}</div>
         )}
         <div ref={bottomRef} />
       </div>

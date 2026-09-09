@@ -2,6 +2,14 @@ import type { Session, Message, MemoryRecord, ProfileRecord, ApprovalRequest, Ch
 
 export { streamChat, streamApprovalResume, streamSessionEvents } from "./sse-client.js";
 
+export async function projectSettings(path: string, trusted?: boolean, signal?: AbortSignal): Promise<{ root: string; trusted: boolean }> {
+  return parseJSON(await fetch("/projects/settings", {
+    method: trusted === undefined ? "POST" : "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path, trusted }), signal,
+  }));
+}
+
 export async function fetchSessions(): Promise<Session[]> {
   const res = await fetch("/sessions");
   const data = await res.json();
@@ -69,10 +77,10 @@ export async function fetchSessionPlans(id: string): Promise<SessionPlan[]> {
   return (await fetchSessionPlanState(id)).plans;
 }
 
-export async function fetchSessionPlanState(id: string): Promise<{ plans: SessionPlan[]; activePlan: SessionPlan | null; currentTurnId?: string }> {
+export async function fetchSessionPlanState(id: string): Promise<{ plans: SessionPlan[]; activePlan: SessionPlan | null; currentTurnId?: string; run?: import("../types.js").RunView }> {
   const res = await fetch(`/plan?session_id=${encodeURIComponent(id)}`);
-  const data = await parseJSON<{ plans: SessionPlan[]; activePlan?: SessionPlan | null; currentTurnId?: string }>(res);
-  return { plans: data.plans ?? [], activePlan: data.activePlan ?? null, currentTurnId: data.currentTurnId };
+  const data = await parseJSON<{ plans: SessionPlan[]; activePlan?: SessionPlan | null; currentTurnId?: string; run?: import("../types.js").RunView }>(res);
+  return { plans: data.plans ?? [], activePlan: data.activePlan ?? null, currentTurnId: data.currentTurnId, run: data.run };
 }
 
 export async function fetchChatCommands(): Promise<ChatCommand[]> {
@@ -249,6 +257,11 @@ export async function approveCommand(id: string): Promise<ApprovalRequest> {
   const res = await fetch(`/approvals/${encodeURIComponent(id)}/approve`, { method: "POST" });
   const data = await parseJSON<{ approval: ApprovalRequest }>(res);
   return data.approval;
+}
+
+export async function renewCommand(id: string): Promise<ApprovalRequest> {
+  const res = await fetch(`/approvals/${encodeURIComponent(id)}/renew`, { method: "POST" });
+  return (await parseJSON<{ approval: ApprovalRequest }>(res)).approval;
 }
 
 export async function rejectCommand(id: string): Promise<void> {

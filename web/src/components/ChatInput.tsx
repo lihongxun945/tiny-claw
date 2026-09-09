@@ -5,6 +5,7 @@ import type { ExecutionMode } from "../types.js";
 import ContextViewer from "./ContextViewer.js";
 
 interface Props {
+  isStopping?: boolean;
   onSend: (text: string, files: File[]) => void;
   onStop: () => void;
   disabled: boolean;
@@ -21,9 +22,8 @@ interface Props {
 export default function ChatInput({
   onSend,
   onStop,
+  isStopping,
   disabled,
-  executionMode,
-  onExecutionModeChange,
   permissionMode,
   onPermissionModeChange,
   permissionSaving = false,
@@ -256,10 +256,6 @@ export default function ChatInput({
                 event.target.value = "";
               }}
             />
-            <div className="execution-mode-switch" role="group" aria-label="执行模式">
-              <button type="button" className={executionMode === "normal" ? "active" : ""} onClick={() => onExecutionModeChange("normal")} disabled={disabled}>普通</button>
-              <button type="button" className={executionMode === "plan" ? "active" : ""} onClick={() => onExecutionModeChange("plan")} disabled={disabled}>计划</button>
-            </div>
             <span>Enter 发送 · Shift+Enter 换行</span>
           </div>
           <div className="composer-actions">
@@ -287,7 +283,7 @@ export default function ChatInput({
             </label>
             {permissionError && <span className="permission-mode-error">{permissionError}</span>}
             {disabled ? (
-              <button className="stop-btn" onClick={onStop}>停止</button>
+              <button className="stop-btn" disabled={isStopping} onClick={onStop}>{isStopping ? "正在停止..." : "停止"}</button>
             ) : (
               <button onClick={handleSend} disabled={!text.trim() && images.length === 0} aria-label="↑">↑</button>
             )}

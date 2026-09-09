@@ -69,12 +69,13 @@ WebUI 仍只监听本机回环地址，并由本地代理访问 Gateway。
 | `GET` | `/sessions/:id/events` | 恢复当前任务快照并订阅后续 SSE，无运行任务时返回 204 |
 | `POST` | `/sessions` | 创建普通或项目会话 |
 | `DELETE` | `/sessions/:id` | 删除会话及持久化数据 |
-| `POST` | `/sessions/:id/cancel` | 取消正在运行的任务 |
+| `POST` | `/sessions/:id/cancel` | 取消正在运行或等待审批的任务（包括重启后恢复的过期审批） |
 | `PUT` | `/sessions/:id/execution-mode` | 保存会话默认执行模式 |
 | `GET` | `/history/sessions` | 列出持久化会话 |
 | `GET` | `/history/sessions/:id/messages` | 获取格式化历史消息 |
 | `GET` | `/plan?session_id=:id` | 获取会话各轮计划 |
 | `GET` | `/approvals` | 列出待处理审批 |
+| `POST` | `/approvals/:id/renew` | 重新申请过期审批，返回 `{ approval }`；不授权、不执行，非过期记录返回 409 |
 | `POST` | `/approvals/:id/approve-and-resume` | 单次批准并恢复任务 |
 | `POST` | `/approvals/:id/approve-turn-and-resume` | 允许本轮后续审批并恢复任务 |
 | `POST` | `/approvals/:id/reject` | 拒绝审批 |

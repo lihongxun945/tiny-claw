@@ -1,5 +1,6 @@
 import type { Plugin } from "../types.js";
 import { coreToolsPlugin } from "./tools.js";
+import { coreBackgroundPlugin } from "./background.js";
 import { coreSubAgentPlugin } from "./sub-agent.js";
 import { corePromptsPlugin } from "./prompts.js";
 import { coreHistoryPlugin } from "./history.js";
@@ -26,6 +27,7 @@ export const corePlugins: Plugin[] = [
   coreContextInspectorPlugin,
   coreLocalModelsPlugin,
   coreToolsPlugin,
+  coreBackgroundPlugin,
   coreProfileMemoryPlugin,
   coreVectorMemoryPlugin,
   coreSubAgentPlugin,

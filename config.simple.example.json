@@ -74,7 +74,9 @@
   "searchProvider": "ollama",
   "ollamaApiKey": "YOUR_OLLAMA_API_KEY",
   "security": {
+    "trustedProjects": [],
     "mode": "auto",
+    "approvalTtlMs": 86400000,
     "tools": {}
   }
 }

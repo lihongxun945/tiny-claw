@@ -1,17 +1,21 @@
 import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import type { ToolCallInfo } from "../types.js";
-import { approveCommand, rejectCommand } from "../lib/api.js";
+import { approveCommand, rejectCommand, renewCommand } from "../lib/api.js";
+import { formatDuration, useElapsedTime } from "../lib/elapsed-time.js";
 
 interface Props {
   toolCall: ToolCallInfo;
   onApproveAndResume?: (approvalId: string) => Promise<void>;
   onApproveTurnAndResume?: (approvalId: string) => Promise<void>;
+  onRejectAndResume?: (approvalId: string) => Promise<void>;
 }
 
 export interface ApprovalResult {
   requiresConfirmation: true;
   approvalId: string;
+  approvalStatus?: "pending" | "approved" | "expired";
+  expiresAt?: string;
   command?: string;
   cwd?: string;
   error?: string;
@@ -41,6 +45,7 @@ function summarizeResult(result: string | undefined): string {
   try {
     const obj = JSON.parse(result);
     if (obj.requiresConfirmation && obj.approvalId) return "需要批准";
+    if (obj.status === "blocked") return `已拦截：${obj.error ?? "调用未执行"}`;
     if (obj.error) return `❌ ${obj.error}`;
     if (obj.stdout !== undefined) return obj.stdout.slice(0, 80);
     if (obj.results) return `${Array.isArray(obj.results) ? obj.results.length : 0} 条结果`;
@@ -64,48 +69,87 @@ export function isToolCallFailure(result: string | undefined): boolean {
   if (!result) return false;
   try {
     const value = JSON.parse(result) as { error?: unknown; requiresConfirmation?: unknown };
-    return typeof value.error === "string" && value.requiresConfirmation !== true;
+    return typeof value.error === "string" && value.requiresConfirmation !== true && !isToolCallBlocked(result);
   } catch {
     return false;
   }
 }
 
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}m ${seconds}s`;
+export function isToolCallBlocked(result: string | undefined): boolean {
+  if (!result) return false;
+  try {
+    return JSON.parse(result)?.status === "blocked";
+  } catch {
+    return false;
+  }
 }
 
-export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveTurnAndResume }: Props) {
+export function isToolCallRunning(toolCall: ToolCallInfo): boolean {
+  return toolCall.result === undefined && (toolCall.status === "running"
+    || (!toolCall.status && toolCall.startedAt !== undefined && toolCall.completedAt === undefined));
+}
+
+export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveTurnAndResume, onRejectAndResume }: Props) {
   const approval = parseApprovalResult(toolCall.result);
   const [approvalStatus, setApprovalStatus] = useState<"pending" | "approved" | "rejected">("pending");
   const [approvalMessage, setApprovalMessage] = useState("");
   const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
-  const isRunning = toolCall.result === undefined;
+  const isRunning = isToolCallRunning(toolCall);
   const failed = isToolCallFailure(toolCall.result);
+  const blocked = isToolCallBlocked(toolCall.result);
   const [now, setNow] = useState(Date.now());
+  const [renewedExpiresAt, setRenewedExpiresAt] = useState<string>();
+  const expiresAt = renewedExpiresAt ?? approval?.expiresAt;
+  const expired = (expiresAt ? Date.parse(expiresAt) <= now : false)
+    || (!renewedExpiresAt && approval?.approvalStatus === "expired");
   const inputStr = JSON.stringify(toolCall.input, null, 2);
   const inputSummary = summarizeInput(toolCall.name, toolCall.input);
   const resultSummary = summarizeResult(toolCall.result);
-  const elapsedMs = toolCall.startedAt ? (toolCall.completedAt ?? now) - toolCall.startedAt : 0;
+  const elapsedMs = useElapsedTime(toolCall.startedAt, toolCall.completedAt, isRunning);
   const statusLabel = approval
-    ? "待审批"
+    ? expired ? "审批已过期" : "待审批"
     : isRunning
-      ? `执行中 · ${formatDuration(elapsedMs)}`
+      ? "执行中"
+      : toolCall.result === undefined
+        ? toolCall.status === "interrupted" ? "已中断" : "结果未知"
+      : blocked
+        ? "已拦截"
       : failed
         ? "失败"
         : "成功";
 
   useEffect(() => {
-    if (!isRunning || !toolCall.startedAt) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [isRunning, toolCall.startedAt]);
+    setRenewedExpiresAt(undefined);
+    setApprovalStatus("pending");
+  }, [approval?.approvalId]);
+
+  useEffect(() => {
+    if (!expiresAt) return;
+    const remaining = Date.parse(expiresAt) - Date.now();
+    if (!Number.isFinite(remaining)) return;
+    setNow(Date.now());
+    if (remaining <= 0) return;
+    const timer = window.setTimeout(() => setNow(Date.now()), remaining);
+    return () => window.clearTimeout(timer);
+  }, [expiresAt]);
+
+  const handleRenew = async () => {
+    if (!approval) return;
+    setIsSubmittingApproval(true);
+    try {
+      const renewed = await renewCommand(approval.approvalId);
+      setRenewedExpiresAt(renewed.expiresAt);
+      setNow(Date.now());
+      setApprovalMessage("已重新申请，请核对命令后批准。命令尚未执行。");
+    } catch (err) {
+      setApprovalMessage(err instanceof Error ? err.message : "重新申请失败");
+    } finally {
+      setIsSubmittingApproval(false);
+    }
+  };
 
   const handleApprove = async () => {
-    if (!approval) return;
+    if (!approval || expired) return;
     setIsSubmittingApproval(true);
     setApprovalMessage("");
     try {
@@ -129,9 +173,10 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveT
     setIsSubmittingApproval(true);
     setApprovalMessage("");
     try {
-      await rejectCommand(approval.approvalId);
+      if (onRejectAndResume) await onRejectAndResume(approval.approvalId);
+      else await rejectCommand(approval.approvalId);
       setApprovalStatus("rejected");
-      setApprovalMessage("已拒绝。");
+      setApprovalMessage("已拒绝，任务已继续处理。");
     } catch (err) {
       setApprovalMessage(err instanceof Error ? err.message : "拒绝失败");
     } finally {
@@ -140,7 +185,7 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveT
   };
 
   const handleApproveTurn = async () => {
-    if (!approval || !onApproveTurnAndResume) return;
+    if (!approval || expired || !onApproveTurnAndResume) return;
     setIsSubmittingApproval(true);
     setApprovalMessage("已允许本轮，正在继续执行...");
     try {
@@ -155,12 +200,12 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveT
   };
 
   return (
-    <details className={`tool-block ${isRunning ? "is-running" : ""} ${failed ? "is-failed" : ""} ${approval ? "is-approval" : ""}`} open={approval || isRunning ? true : undefined}>
+    <details className={`tool-block ${isRunning ? "is-running" : ""} ${!isRunning && toolCall.result === undefined ? "is-inactive" : ""} ${failed ? "is-failed" : ""} ${approval ? "is-approval" : ""}`} open={approval || isRunning ? true : undefined}>
       <summary>
         <span className="tool-name">{toolCall.name}</span>
         {inputSummary && <span className="tool-input-summary">{inputSummary}</span>}
         {resultSummary && <span className="tool-result-summary">{resultSummary}</span>}
-        <span className="tool-status" role="status">{statusLabel}</span>
+        <span className="tool-status" role="status" title={toolCall.name === "background_start" ? "启动工具调用耗时；后台任务运行时间见任务状态" : undefined}>{statusLabel}{!approval && elapsedMs !== undefined ? ` · ${formatDuration(elapsedMs)}` : ""}</span>
       </summary>
       <div className={`tool-body ${approval ? "tool-body-approval" : ""}`}>
         {approval ? (
@@ -170,7 +215,9 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveT
               <div>{inputStr}</div>
               <div style={{ marginTop: 8 }}><strong>Result:</strong></div>
               <div>
-                <div className="tool-approval-title">此工具调用需要批准</div>
+                <div className="tool-approval-title">{expired ? "审批已过期" : "此工具调用需要批准"}</div>
+                {expiresAt && <div>到期时间：<time dateTime={expiresAt}>{new Date(expiresAt).toLocaleString()}</time></div>}
+                {expired && <div>命令尚未执行。可重新申请审批，或点击输入框中的“停止”取消任务。</div>}
                 {approval.error && <div>{approval.error}</div>}
                 {approval.permissionDecision?.reason && (
                   <div className="tool-approval-reason">
@@ -186,11 +233,12 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveT
             </div>
             <div className="tool-approval-footer">
                 <div className="tool-approval-actions">
-                  <button onClick={handleApprove} disabled={isSubmittingApproval || approvalStatus !== "pending"}>
+                  {expired && <button onClick={handleRenew} disabled={isSubmittingApproval}>重新申请审批</button>}
+                  <button onClick={handleApprove} disabled={expired || isSubmittingApproval || approvalStatus !== "pending"}>
                     {approvalStatus === "approved" ? "已批准" : "批准本次"}
                   </button>
                   {onApproveTurnAndResume && (
-                    <button className="approve-turn" onClick={handleApproveTurn} disabled={isSubmittingApproval || approvalStatus !== "pending"}>
+                    <button className="approve-turn" onClick={handleApproveTurn} disabled={expired || isSubmittingApproval || approvalStatus !== "pending"}>
                       允许本轮
                     </button>
                   )}
@@ -214,6 +262,9 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveT
                 <div style={{ marginTop: 8 }}><strong>Result:</strong></div>
               <Markdown>{toolCall.result}</Markdown>
               </>
+            )}
+            {!isRunning && toolCall.result === undefined && (
+              <div role="status">{toolCall.statusReason ?? "未记录工具执行结果，当前无法确认执行情况"}</div>
             )}
           </>
         )}

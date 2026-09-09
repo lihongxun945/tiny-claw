@@ -17,6 +17,7 @@ export interface SessionSummaryEngine {
     sessionId: string,
     current: PersistedSessionSummary,
     messages: Message[],
+    signal?: AbortSignal,
   ): Promise<SummaryDelta>;
   applyDelta(current: PersistedSessionSummary, delta: SummaryDelta): PersistedSessionSummary;
   compact(current: PersistedSessionSummary, createdAt?: string): PersistedSessionSummary;
@@ -24,7 +25,8 @@ export interface SessionSummaryEngine {
 
 export function createSessionSummaryEngine(options: SessionSummaryEngineOptions): SessionSummaryEngine {
   return {
-    createDelta: (client, sessionId, current, messages) => extractSummaryDelta(client, {
+    createDelta: (client, sessionId, current, messages, signal) => extractSummaryDelta(client, {
+      signal,
       sessionId,
       current,
       messages,

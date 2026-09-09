@@ -4,6 +4,7 @@ import type { Tool } from "../types.js";
 import type { Config } from "../types.js";
 import { checkDangerousToolPermission } from "./permission.js";
 import { resolveRootFile } from "./workspace-path.js";
+import { isTrustedProject, projectTempDirectory } from "../security/project-trust.js";
 
 const MAX_OUTPUT = 10000;
 const DEFAULT_TIMEOUT = 30;
@@ -55,12 +56,14 @@ export function createBashTool(workspacePath: string, getConfig: () => Config): 
       });
       if (!permission.allowed) return permission.result;
 
-      return execute(command, timeout, cwd, context?.signal);
+      const config = context?.config ?? getConfig();
+      const tempPath = context?.sessionContext?.mode === "project" && isTrustedProject(config, root, workspacePath) ? projectTempDirectory(workspacePath, root) : undefined;
+      return executeShell(command, timeout, cwd, config.bashTerminationGraceMs ?? 1000, context?.signal, tempPath);
     },
   };
 }
 
-function execute(command: string, timeout: number, cwd: string, signal?: AbortSignal): Promise<string> {
+export function executeShell(command: string, timeout: number, cwd: string, graceMs: number, signal?: AbortSignal, tempPath?: string, onOutput?: (text: string) => void): Promise<string> {
   return new Promise((resolve) => {
     if (signal?.aborted) {
       resolve(JSON.stringify({ stdout: "", stderr: "命令执行已取消", exitCode: -1 }));
@@ -68,52 +71,69 @@ function execute(command: string, timeout: number, cwd: string, signal?: AbortSi
     }
     const proc = spawn("bash", ["-c", command], {
       cwd,
-      env: process.env,
+      env: { ...process.env, ...(tempPath ? { TMPDIR: tempPath } : {}) },
+      detached: process.platform !== "win32",
     });
 
     let stdout = "";
     let stderr = "";
+    let terminating = false;
+    let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const kill = (kind: NodeJS.Signals) => {
+      try {
+        if (process.platform !== "win32" && proc.pid) process.kill(-proc.pid, kind);
+        else proc.kill(kind);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") stderr += `\n${String(error)}`;
+      }
+    };
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(killTimer);
+      signal?.removeEventListener("abort", onAbort);
+      proc.stdin.destroy();
+      proc.stdout.destroy();
+      proc.stderr.destroy();
+      resolve(JSON.stringify({ stdout: truncate(stdout, MAX_OUTPUT), stderr: truncate(stderr, MAX_OUTPUT), exitCode: code ?? -1 }));
+    };
+    const terminate = (message: string) => {
+      if (terminating || settled) return;
+      terminating = true;
+      stderr += message;
+      kill("SIGTERM");
+      // Descendants may ignore TERM or retain pipes after the shell exits.
+      killTimer = setTimeout(() => { kill("SIGKILL"); finish(-1); }, graceMs);
+    };
 
     proc.stdout.on("data", (data: Buffer) => {
-      stdout += data.toString();
+      stdout = (stdout + data.toString()).slice(-MAX_OUTPUT);
+      onOutput?.(data.toString());
     });
 
     proc.stderr.on("data", (data: Buffer) => {
-      stderr += data.toString();
+      stderr = (stderr + data.toString()).slice(-MAX_OUTPUT);
+      onOutput?.(data.toString());
     });
 
     const timer = setTimeout(() => {
-      proc.kill("SIGTERM");
-      stderr += "\n[超时: 命令执行超过指定时间]";
+      terminate("\n[超时: 命令执行超过指定时间]");
     }, timeout * 1000);
     const onAbort = () => {
-      proc.kill("SIGTERM");
-      stderr += "\n[已取消: 命令执行被用户中止]";
+      terminate("\n[已取消: 命令执行被用户中止]");
     };
     signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
 
     proc.on("close", (code) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      resolve(
-        JSON.stringify({
-          stdout: truncate(stdout, MAX_OUTPUT),
-          stderr: truncate(stderr, MAX_OUTPUT),
-          exitCode: code ?? -1,
-        }),
-      );
+      if (!terminating) { kill("SIGKILL"); finish(code); }
     });
 
     proc.on("error", (err) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      resolve(
-        JSON.stringify({
-          stdout: "",
-          stderr: err.message,
-          exitCode: -1,
-        }),
-      );
+      stderr += err.message;
+      if (!terminating) finish(-1);
     });
   });
 }

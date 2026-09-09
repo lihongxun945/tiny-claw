@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFile
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { sessionDir } from "./session-store.js";
+import { listRuns } from "./run-store.js";
 
 export type PlanStepStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped" | "waiting_approval" | "waiting_user";
 export type PlanStatus = "planning" | "executing" | "completed" | "failed";
@@ -14,6 +15,7 @@ export interface PlanStep {
 }
 
 export interface SessionPlan {
+  previousPlanId?: string;
   id: string;
   goal?: string;
   turnId: string;
@@ -24,6 +26,21 @@ export interface SessionPlan {
   currentStepId?: string;
   revision?: number;
   steps: PlanStep[];
+}
+
+export function saveProgressPlan(workspace: string, session: string, turn: string, title: string, steps: PlanStep[], previousPlanId?: string): SessionPlan {
+  const current = readSessionPlan(workspace, session, turn);
+  if (previousPlanId && !listSessionPlans(workspace, session).some(plan => plan.id === previousPlanId)) throw new Error("当前会话中不存在所关联的计划");
+  const now = new Date().toISOString();
+  const plan: SessionPlan = {
+    id: current?.id ?? randomUUID(), turnId: turn, goal: title, steps,
+    previousPlanId: previousPlanId === current?.id ? current?.previousPlanId : previousPlanId ?? current?.previousPlanId,
+    createdAt: current?.createdAt ?? now, updatedAt: now, revision: (current?.revision ?? 0) + 1,
+    currentStepId: steps.find(step => step.status === "in_progress")?.id,
+    status: steps.every(step => step.status === "completed" || step.status === "skipped") ? "completed" : "executing",
+  };
+  writeSessionPlan(workspace, session, plan);
+  return plan;
 }
 
 export function plansDir(workspacePath: string, sessionId: string): string {
@@ -59,11 +76,21 @@ export function findActiveSessionPlan(workspacePath: string, sessionId: string, 
     ?? listSessionPlans(workspacePath, sessionId).find((plan) => plan.relatedTurnIds?.includes(turnId));
 }
 
-export function resumeSessionPlan(workspacePath: string, sessionId: string, turnId: string, planId: string): SessionPlan {
+export function planExecutionIssue(plan: SessionPlan | undefined): string | undefined {
+  if (!plan) return "本轮尚未绑定计划";
+  if (plan.status === "completed" || plan.status === "failed") return "已结束的计划不能恢复";
+  if (!plan.goal?.trim()) return "旧计划缺少目标，请在 plan_resume 中明确提供 goal 后恢复，不要猜测用户目标";
+  if (!plan.steps.some((step) => ["pending", "in_progress", "waiting_user", "waiting_approval"].includes(step.status))) return "计划没有可继续执行的步骤";
+}
+
+export function resumeSessionPlan(workspacePath: string, sessionId: string, turnId: string, planId: string, goal?: string): SessionPlan {
   if (findActiveSessionPlan(workspacePath, sessionId, turnId)) throw new Error("本轮已经绑定计划");
   const plan = listSessionPlans(workspacePath, sessionId).find((item) => item.id === planId);
   if (!plan) throw new Error("当前会话中不存在该计划");
-  if (plan.status === "completed" || plan.status === "failed") throw new Error("已结束的计划不能恢复");
+  if (!plan.goal?.trim() && goal?.trim()) plan.goal = goal.trim();
+  const issue = planExecutionIssue(plan);
+  if (issue) throw new Error(issue);
+  if (listRuns(workspacePath, sessionId).some((run) => run.planId === plan.id && (run.state === "running" || run.state === "waiting_approval"))) throw new Error("原计划仍在运行或等待审批");
   if (plan.steps.some((step) => step.status === "waiting_approval")) throw new Error("请先处理原任务的工具审批");
   plan.relatedTurnIds = [...(plan.relatedTurnIds ?? []), turnId];
   plan.updatedAt = new Date().toISOString();
@@ -128,8 +155,8 @@ export function revisePendingPlanSteps(
     throw new Error("只能调整计划末尾连续的待执行步骤");
   }
   const retained = plan.steps.slice(0, firstPendingIndex);
-  if (retained.length + titles.length < 2 || retained.length + titles.length > maxSteps) {
-    throw new Error(`调整后计划步骤数必须在 2 到 ${maxSteps} 之间`);
+  if (retained.length + titles.length < 1 || retained.length + titles.length > maxSteps) {
+    throw new Error(`调整后计划步骤数必须在 1 到 ${maxSteps} 之间`);
   }
   const nextStepNumber = plan.steps.reduce((max, step) => {
     const match = /^step-(\d+)$/.exec(step.id);
@@ -149,36 +176,13 @@ export function markCurrentPlanStep(
   workspacePath: string,
   sessionId: string,
   turnId: string,
-  status: "in_progress" | "waiting_approval" | "failed",
+  status: "in_progress" | "waiting_approval" | "waiting_user" | "failed",
   summary?: string,
 ): SessionPlan | undefined {
   const plan = readSessionPlan(workspacePath, sessionId, turnId);
   const step = plan?.steps.find((item) => item.id === plan.currentStepId);
   if (!plan || !step) return plan;
   return updateSessionPlanStep(workspacePath, sessionId, turnId, step.id, status, summary);
-}
-
-export function completeFinalPlanStep(
-  workspacePath: string,
-  sessionId: string,
-  turnId: string,
-): SessionPlan | undefined {
-  const plan = readSessionPlan(workspacePath, sessionId, turnId);
-  if (!plan?.currentStepId) return plan;
-  const currentIndex = plan.steps.findIndex((step) => step.id === plan.currentStepId);
-  if (currentIndex < 0 || plan.steps[currentIndex].status !== "in_progress") return plan;
-  const hasUnfinishedOtherStep = plan.steps.some((step, index) => (
-    index !== currentIndex && step.status !== "completed" && step.status !== "skipped"
-  ));
-  if (hasUnfinishedOtherStep) return plan;
-  return updateSessionPlanStep(
-    workspacePath,
-    sessionId,
-    turnId,
-    plan.currentStepId,
-    "completed",
-    "已完成并输出最终结果",
-  );
 }
 
 export function failSessionPlan(workspacePath: string, sessionId: string, turnId: string, summary: string): SessionPlan {
@@ -198,7 +202,7 @@ function validateTransition(plan: SessionPlan, index: number, next: PlanStepStat
   const allowed: Record<PlanStepStatus, PlanStepStatus[]> = {
     pending: ["in_progress", "skipped"],
     in_progress: ["completed", "failed", "waiting_approval", "waiting_user"],
-    waiting_approval: ["in_progress", "failed"],
+    waiting_approval: ["in_progress", "waiting_user", "failed"],
     waiting_user: ["in_progress", "failed"],
     completed: [],
     failed: [],
@@ -222,4 +226,21 @@ function writeSessionPlan(workspacePath: string, sessionId: string, plan: Sessio
   mkdirSync(plansDir(workspacePath, sessionId), { recursive: true });
   writeFileSync(tempPath, `${JSON.stringify(plan, null, 2)}\n`, "utf-8");
   renameSync(tempPath, path);
+}
+
+export function savePlanSnapshot(workspace: string, session: string, turn: string): void {
+  const plan = findActiveSessionPlan(workspace, session, turn);
+  if (!plan) return;
+  const dir = resolve(sessionDir(workspace, session), "plan-snapshots");
+  mkdirSync(dir, { recursive: true });
+  const path = resolve(dir, `${encodeURIComponent(turn)}.json`);
+  const temp = `${path}.${randomUUID()}.tmp`;
+  writeFileSync(temp, JSON.stringify(plan), "utf8");
+  renameSync(temp, path);
+}
+
+export function readPlanSnapshot(workspace: string, session: string, turn: string): SessionPlan | undefined {
+  const path = resolve(sessionDir(workspace, session), "plan-snapshots", `${encodeURIComponent(turn)}.json`);
+  if (!existsSync(path)) return;
+  return JSON.parse(readFileSync(path, "utf8")) as SessionPlan;
 }

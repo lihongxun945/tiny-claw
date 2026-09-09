@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { rmSync } from "node:fs";
 import { createSessionMeta } from "../../src/session-store.js";
 import {
-  completeFinalPlanStep,
   createSessionPlan,
   findActiveSessionPlan,
   readSessionPlan,
@@ -18,6 +17,7 @@ import { PluginManager } from "../../src/plugin-manager.js";
 import { loadConfig } from "../../src/config.js";
 import { MessageHistory } from "../../src/history.js";
 import { FakeModelClient } from "../helpers/fake-model-client.js";
+import { startRun, updateRun } from "../../src/run-store.js";
 
 describe("session plans", () => {
   const turnId = "11111111-1111-4111-8111-111111111111";
@@ -69,33 +69,6 @@ describe("session plans", () => {
     expect(() => updateSessionPlanStep(workspace, "plan-session", turnId, "step-2", "in_progress")).toThrow();
   });
 
-  it("completes the final active step when the agent returns its final response", () => {
-    const workspace = setup();
-    createSessionPlan(workspace, "plan-session", turnId, ["分析", "输出结论"]);
-    updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
-    updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "completed");
-    updateSessionPlanStep(workspace, "plan-session", turnId, "step-2", "in_progress");
-
-    const completed = completeFinalPlanStep(workspace, "plan-session", turnId);
-
-    expect(completed?.status).toBe("completed");
-    expect(completed?.steps[1]).toEqual(expect.objectContaining({
-      status: "completed",
-      summary: "已完成并输出最终结果",
-    }));
-  });
-
-  it("does not complete an active step while later steps are still pending", () => {
-    const workspace = setup();
-    createSessionPlan(workspace, "plan-session", turnId, ["分析", "实现"]);
-    updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
-
-    const unchanged = completeFinalPlanStep(workspace, "plan-session", turnId);
-
-    expect(unchanged?.status).toBe("executing");
-    expect(unchanged?.steps.map((step) => step.status)).toEqual(["in_progress", "pending"]);
-  });
-
   it("only exposes plan tools in plan execution mode", () => {
     const workspace = setup();
     const registry = new ToolRegistry();
@@ -104,40 +77,11 @@ describe("session plans", () => {
     expect(registry.getDefinitions({ mode: "chat" }, "plan")).toEqual([expect.objectContaining({ name: "plan_create" })]);
   });
 
-  it("allows read-only discovery before planning and gates side effects until a step starts", async () => {
-    const workspace = setup();
-    const manager = new PluginManager(workspace);
-    await manager.loadCorePlugins();
-    manager.setRuntimeDeps(loadConfig(workspace), new FakeModelClient([]), new MessageHistory(), "plan-session");
-    await manager.beginTurn("plan-session", turnId, "plan");
-    const names = () => manager.getToolDefinitions({ mode: "chat" }, "plan", "plan-session").map((tool) => tool.name);
-
-    try {
-      expect(names()).toEqual(expect.arrayContaining(["plan_create", "file_read", "web_search", "memory_search", "profile_read", "skill_list"]));
-      for (const name of ["file_write", "file_edit", "bash", "skill_use", "sub_agent_run"]) expect(names()).not.toContain(name);
-      expect(await manager.callOnBeforeTool("file_read", {}, 1, "plan-session")).toEqual({});
-      expect(await manager.callOnBeforeTool("file_write", {}, 1, "plan-session")).toEqual({
-        abort: "计划模式执行写入或有副作用的工具前必须先调用 plan_create",
-      });
-
-      createSessionPlan(workspace, "plan-session", turnId, ["修改实现", "运行测试"]);
-      expect(names()).toEqual(expect.arrayContaining(["plan_update", "plan_revise", "file_read", "memory_search"]));
-      for (const name of ["plan_create", "file_write", "bash", "skill_use"]) expect(names()).not.toContain(name);
-      expect(await manager.callOnBeforeTool("file_read", {}, 1, "plan-session")).toEqual({});
-      expect((await manager.callOnBeforeTool("file_write", {}, 1, "plan-session")).abort).toContain("plan_update");
-
-      updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
-      expect(names()).toEqual(expect.arrayContaining(["file_read", "file_write", "bash", "skill_use", "plan_update"]));
-      expect(names()).not.toContain("plan_create");
-      expect(await manager.callOnBeforeTool("file_write", {}, 1, "plan-session")).toEqual({});
-    } finally {
-      await manager.destroy();
-    }
-  });
 
   it("only resolves a paused plan after an explicit persisted resume", async () => {
     const workspace = setup();
-    createSessionPlan(workspace, "plan-session", turnId, ["设计方案", "实现"]);
+    startRun(workspace, "plan-session", turnId, "plan");
+    createSessionPlan(workspace, "plan-session", turnId, ["设计方案", "实现"], "确认并实现方案");
     updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
     const pauseTool = createPlanPauseTool(workspace);
     const result = JSON.parse(await pauseTool.execute(
@@ -145,7 +89,8 @@ describe("session plans", () => {
       { executionMode: "plan", sessionId: "plan-session", turnId, config: {} as never },
     ));
 
-    expect(result.plan.steps[0].status).toBe("waiting_user");
+    expect(result.plan.steps[0].status).toBe("in_progress");
+    expect(result.run.state).toBe("waiting_user");
     const nextTurn = "22222222-2222-4222-8222-222222222222";
     expect(findActiveSessionPlan(workspace, "plan-session", nextTurn)).toBeUndefined();
     resumeSessionPlan(workspace, "plan-session", nextTurn, result.plan.id);
@@ -157,6 +102,8 @@ describe("session plans", () => {
   it("allows a new task beside a paused plan and rejects invalid resumes", async () => {
     const workspace = setup();
     const old = createSessionPlan(workspace, "plan-session", turnId, ["旧任务", "验证"]);
+    expect(() => resumeSessionPlan(workspace, "plan-session", "invalid-resume", old.id)).toThrow("缺少目标");
+    expect(findActiveSessionPlan(workspace, "plan-session", "invalid-resume")).toBeUndefined();
     updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
     updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "waiting_user");
     const tool = createPlanCreateTool(workspace, () => loadConfig(workspace));
@@ -185,30 +132,33 @@ describe("session plans", () => {
       return data!;
     };
     try {
-      const plan = createSessionPlan(workspace, "plan-session", turnId, ["设计", "执行"]);
+      const plan = createSessionPlan(workspace, "plan-session", turnId, ["设计", "执行"], "完成任务");
       updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
       expect((await snapshot()).activePlan).toBeNull();
+      startRun(workspace, "plan-session", turnId, "plan");
       await manager.beginTurn("plan-session", turnId, "plan");
       await manager.callOnBuildTurnPrompt("", 0, "plan-session");
       expect((await snapshot()).activePlan?.id).toBe(plan.id);
       await manager.callOnTurnEnd("approval_required", 1, "plan-session");
-      expect((await snapshot()).activePlan?.steps[0].status).toBe("waiting_approval");
+      expect((await snapshot()).activePlan?.steps[0].status).toBe("in_progress");
       updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
       updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "waiting_user");
       await manager.callOnTurnEnd("completed", 2, "plan-session");
+      updateRun(workspace, "plan-session", turnId, { state: "waiting_user" });
       expect((await snapshot()).activePlan).toBeNull();
       await manager.endTurn("plan-session", turnId);
       await manager.beginTurn("plan-session", "resume-turn", "plan");
+      startRun(workspace, "plan-session", "resume-turn", "plan");
       await manager.callOnBuildTurnPrompt("", 0, "plan-session");
       expect((await snapshot()).activePlan).toBeNull();
       resumeSessionPlan(workspace, "plan-session", "resume-turn", plan.id);
       updateSessionPlanStep(workspace, "plan-session", turnId, "step-1", "in_progress");
-      expect(await snapshot()).toMatchObject({ currentTurnId: "resume-turn", activePlan: { id: plan.id } });
+      expect(await snapshot()).toMatchObject({ currentTurnId: "resume-turn", activePlan: null });
       await manager.callOnTurnEnd("approval_required", 1, "plan-session");
-      expect((await snapshot()).activePlan?.steps[0].status).toBe("waiting_approval");
       await manager.callOnError(new Error("会话已取消"), 1, "plan-session");
+      updateRun(workspace, "plan-session", "resume-turn", { state: "cancelled" });
       expect((await snapshot()).activePlan).toBeNull();
-      expect(readSessionPlan(workspace, "plan-session", turnId)?.steps[0]).toMatchObject({ status: "failed", summary: "会话已取消" });
+      expect(readSessionPlan(workspace, "plan-session", turnId)?.steps[0]).toMatchObject({ status: "in_progress" });
     } finally {
       await manager.destroy();
     }
@@ -242,6 +192,6 @@ describe("session plans", () => {
       { steps: ["一", "二", "三"] },
       { executionMode: "plan", sessionId: "plan-session", turnId: secondTurn, config: { plan: { maxSteps: 2 } } as never },
     ));
-    expect(result.error).toContain("2 到 2");
+    expect(result.error).toContain("1 到 2");
   });
 });

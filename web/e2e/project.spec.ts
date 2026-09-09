@@ -1,5 +1,47 @@
 import { test, expect } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  const trust = new Map<string, boolean>();
+  await page.route("**/projects/settings", (route) => {
+    const body = route.request().postDataJSON();
+    if (route.request().method() === "PUT") trust.set(body.path, body.trusted);
+    return route.fulfill({ json: { root: body.path, trusted: trust.get(body.path) ?? false } });
+  });
+});
+
+test("does not grant trust on cancel and keeps failed saves visible", async ({ page }) => {
+  let writes = 0;
+  await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [] } }));
+  await page.route("**/projects/inspect", (route) => route.fulfill({ json: { project: {
+    root: "/projects/example", name: "example", stack: [], rules: "(无)",
+  } } }));
+  await page.route("**/projects/settings", (route) => {
+    if (route.request().method() === "PUT") {
+      writes++;
+      return route.fulfill({ status: 500, json: { error: "保存项目设置失败" } });
+    }
+    return route.fulfill({ json: { root: "/projects/example", trusted: false } });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "项目", exact: true }).click();
+  await page.getByPlaceholder("例如 /Users/you/my-project").fill("/projects/example");
+  await page.getByRole("button", { name: "打开项目", exact: true }).click();
+  await page.getByLabel("信任此项目").check();
+  await page.screenshot({ path: "/tmp/tiny-claw-project-settings-desktop.png" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("dialog")).toBeInViewport();
+  await page.screenshot({ path: "/tmp/tiny-claw-project-settings-mobile.png" });
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  expect(writes).toBe(0);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.getByRole("button", { name: "打开项目", exact: true }).click();
+  await expect(page.getByLabel("信任此项目")).not.toBeChecked();
+  await page.getByRole("button", { name: "创建项目", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText("保存项目设置失败");
+  await expect(page.getByRole("dialog")).toBeVisible();
+  expect(writes).toBe(1);
+});
+
 test("persists project approval mode without changing the global mode", async ({ page }) => {
   const session = {
     id: "project-permission-session",
@@ -78,10 +120,20 @@ test("creates and restores a project session as soon as a directory is selected"
   await expect(selectDirectory).toHaveCSS("background-color", "rgb(240, 238, 255)");
   await expect(selectDirectory).toHaveCSS("color", "rgb(70, 60, 207)");
   await selectDirectory.click();
+  await expect(page.getByLabel("信任此项目")).not.toBeChecked();
+  await page.getByLabel("信任此项目").check();
+  await page.getByRole("button", { name: "创建项目", exact: true }).click();
 
   await expect(page.locator(".project-group-title")).toHaveText("tiny-claw");
   await expect(page.locator(".project-conversation-item .session-id")).toHaveText("新对话");
   await expect(page.locator(".project-toolbar-path")).toHaveText("/Users/test/tiny-claw");
+  await page.getByRole("button", { name: "项目设置", exact: true }).click();
+  await expect(page.getByLabel("信任此项目")).toBeChecked();
+  await page.getByLabel("信任此项目").uncheck();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("button", { name: "项目设置", exact: true }).click();
+  await expect(page.getByLabel("信任此项目")).not.toBeChecked();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
   await expect(page.locator(".project-toolbar-meta")).toContainText("main · 1 个变更");
   await page.getByRole("button", { name: /1 个文件变更/ }).click();
   await page.locator(".project-changes-files").getByRole("button", { name: /src\/app\.ts/ }).click();
@@ -119,6 +171,7 @@ test("prevents duplicate project sessions while a project is opening", async ({ 
   const button = page.getByRole("button", { name: "选择目录" });
   await button.dblclick();
   await expect(page.locator(".project-picker-select-btn")).toBeDisabled();
+  await page.getByRole("button", { name: "创建项目", exact: true }).click();
   await expect.poll(() => createCount).toBe(1);
 });
 

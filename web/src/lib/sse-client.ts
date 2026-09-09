@@ -7,23 +7,26 @@ export async function* streamChat(
   signal?: AbortSignal,
   executionMode: ExecutionMode = "normal",
   turnId?: string,
+  planId?: string,
 ): AsyncGenerator<SSEEvent> {
   const body: Record<string, unknown> = { message };
   if (sessionId) body.session_id = sessionId;
   if (attachmentIds?.length) body.attachments = attachmentIds;
   body.execution_mode = executionMode;
   if (turnId) body.turn_id = turnId;
+  if (planId) body.plan_id = planId;
 
   yield* streamPost("/chat", body, signal);
 }
 
 export async function* streamApprovalResume(
   approvalId: string,
-  allowTurn = false,
+  action: "approve" | "approve-turn" | "reject" = "approve",
   signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
-  const action = allowTurn ? "approve-turn-and-resume" : "approve-and-resume";
-  yield* streamPost(`/approvals/${encodeURIComponent(approvalId)}/${action}`, undefined, signal);
+  const route = action === "approve-turn" ? "approve-turn-and-resume"
+    : action === "reject" ? "reject-and-resume" : "approve-and-resume";
+  yield* streamPost(`/approvals/${encodeURIComponent(approvalId)}/${route}`, undefined, signal);
 }
 
 async function* streamPost(

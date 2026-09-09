@@ -3,11 +3,13 @@ import { requestApproval } from "./approval.js";
 import type { ToolExecutionContext } from "../types.js";
 import { appendLog } from "../workspace/logger.js";
 import { evaluateAutoApproval, type AutoApprovalDecision } from "../security/auto-approval.js";
+import { isTrustedProject, projectTempDirectory } from "../security/project-trust.js";
 
 const DEFAULT_PERMISSION_MODE: PermissionMode = "auto";
 
 export function getToolPermissionMode(config: Config, toolName: string): PermissionMode {
   return config.security?.tools?.[toolName]?.mode
+    ?? (toolName === "background_start" ? config.security?.tools?.bash?.mode : undefined)
     ?? config.security?.mode
     ?? DEFAULT_PERMISSION_MODE;
 }
@@ -26,12 +28,18 @@ export function checkDangerousToolPermission(options: {
 
   let autoDecision: AutoApprovalDecision | undefined;
   if (mode === "auto") {
+    const root = options.context?.rootPath ?? options.workspacePath;
+    const projectMode = options.context?.sessionContext?.mode === "project";
+    const trustedProject = projectMode && isTrustedProject(options.config, root, options.workspacePath);
     autoDecision = evaluateAutoApproval({
-      toolName: options.toolName,
+      toolName: options.toolName === "background_start" ? "bash" : options.toolName,
       args: options.args,
       command: options.command,
       cwd: options.cwd,
       rootPath: options.context?.rootPath ?? options.workspacePath,
+      projectMode,
+      trustedProject,
+      tempPath: trustedProject ? projectTempDirectory(options.workspacePath, root) : undefined,
     });
     appendLog(
       options.workspacePath,
@@ -54,7 +62,7 @@ export function checkDangerousToolPermission(options: {
     options.workspacePath,
     options.toolName,
     options.args,
-    undefined,
+    options.config.security?.approvalTtlMs,
     options.context?.actor,
     options.context?.sessionId,
     {
@@ -84,6 +92,8 @@ export function checkDangerousToolPermission(options: {
         : `${options.toolName} 执行需要用户确认。批准后系统会立即继续执行。`,
       requiresConfirmation: true,
       approvalId: approval.approval!.id,
+      approvalStatus: approval.approval!.status,
+      expiresAt: approval.approval!.expiresAt,
       approvalCommand,
       approvalTurnCommand: options.context?.actor?.channel === "feishu"
         ? `/approve-all ${approval.approval!.id}`

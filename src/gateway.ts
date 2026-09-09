@@ -20,8 +20,12 @@ import {
 } from "./tools/memory.js";
 import {
   approveRequest,
+  renewApprovalRequest,
   approveTurnRequest,
   clearTurnApproval,
+  clearSessionApprovals,
+  getApprovalRequest,
+  listSessionApprovalContinuations,
   listApprovals,
   rejectRequest,
 } from "./tools/approval.js";
@@ -34,7 +38,9 @@ import { startSSEHeartbeat } from "./gateway-sse.js";
 import { GatewayStream } from "./gateway-streams.js";
 import { inspectProject } from "./project.js";
 import type { ExecutionMode, SessionContext } from "./types.js";
-import { listSessionPlans, type SessionPlan } from "./plan-store.js";
+import { listSessionPlans, readPlanSnapshot, type SessionPlan } from "./plan-store.js";
+import { listRuns, readRun, updateRun } from "./run-store.js";
+import { legacyPlanNotice } from "./plugins/core/plan-notices.js";
 import { ensureWebBuild } from "./web-build.js";
 import { maskPluginConfig, restoreMaskedPluginConfig } from "./kernel/plugin-config.js";
 
@@ -189,9 +195,11 @@ function readBuffer(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
-type FormattedToolCall = { id?: string; name: string; input: Record<string, unknown>; result?: string };
+type FormattedToolCall = { id?: string; name: string; input: Record<string, unknown>; result?: string; status?: "running" | "interrupted" | "unknown"; statusReason?: string; startedAt?: number; completedAt?: number };
 type FormattedAttachment = { id: string; name: string; mediaType: string; url: string };
 type FormattedMessage = {
+  run?: import("./run-store.js").SessionRun;
+  runState?: string;
   role: string;
   text: string;
   toolCalls: FormattedToolCall[];
@@ -206,7 +214,8 @@ function isSubAgentSessionId(id: string): boolean {
 }
 
 function buildMessageListFromMessages(msgs: Message[], sessionId: string, workspacePath: string): FormattedMessage[] {
-  const plansByTurn = new Map(listSessionPlans(workspacePath, sessionId).flatMap((plan) => (
+  const plans = listSessionPlans(workspacePath, sessionId);
+  const plansByTurn = new Map(plans.flatMap((plan) => (
     [plan.turnId, ...(plan.relatedTurnIds ?? [])].map((turnId) => [turnId, plan] as const)
   )));
   // 第一步：解析原始消息，将 tool_result 合并到前一条 assistant
@@ -266,9 +275,72 @@ function buildMessageListFromMessages(msgs: Message[], sessionId: string, worksp
     }
   }
   for (const message of result) {
-    const plan = message.turnId ? plansByTurn.get(message.turnId) : undefined;
+    const run = message.turnId ? readRun(workspacePath, sessionId, message.turnId) : undefined;
+    message.runState = run?.state;
+    message.run = run;
+    for (const call of message.toolCalls) {
+      const timing = call.id ? run?.toolTimings?.[call.id] : undefined;
+      if (timing) Object.assign(call, timing);
+    }
+    const plan = message.turnId ? readPlanSnapshot(workspacePath, sessionId, message.turnId) ?? plansByTurn.get(message.turnId) : undefined;
     if (message.role === "assistant" && plan) {
       message.plan = plan;
+      const run = message.turnId ? readRun(workspacePath, sessionId, message.turnId) : undefined;
+      message.runState = run?.state;
+      const hasNotice = msgs.some((item) => item._turnId === message.turnId && item._messageId?.startsWith(`plan-notice:${message.turnId}:`));
+      if (!hasNotice && run) {
+        const notice = legacyPlanNotice(run);
+        if (notice) message.text += `\n\n${notice}`;
+      }
+    }
+  }
+  const approvalContinuations = listSessionApprovalContinuations(workspacePath, sessionId);
+  for (const { approval, continuation } of approvalContinuations) {
+    const toolCall = result.flatMap((message) => message.toolCalls)
+      .find((item) => item.id === continuation.toolCall.id && item.result === undefined);
+    if (toolCall) {
+      toolCall.result = JSON.stringify({
+        ...(continuation.displayResult ? JSON.parse(continuation.displayResult) : {}),
+        error: `${approval.toolName} 执行需要用户确认。批准后系统会立即继续执行。`,
+        requiresConfirmation: true,
+        approvalId: approval.id,
+        approvalStatus: approval.status,
+        expiresAt: approval.expiresAt,
+        toolName: approval.toolName,
+        args: approval.args,
+        command: approval.command,
+        cwd: approval.cwd,
+      });
+    }
+  }
+  const approvalTurns = new Set(approvalContinuations.map(({ continuation }) => continuation.turnId));
+  const orphanedApprovalTurns = new Set(plans
+    .filter((plan) => plan.steps.some((step) => step.status === "waiting_approval"
+      || (step.status === "waiting_user" && step.summary?.startsWith("审批上下文已过期或丢失")))
+      && ![plan.turnId, ...(plan.relatedTurnIds ?? [])].some((turnId) => approvalTurns.has(turnId)))
+    .flatMap((plan) => [plan.turnId, ...(plan.relatedTurnIds ?? [])]));
+  for (const message of result) {
+    if (!message.turnId || !orphanedApprovalTurns.has(message.turnId)) continue;
+    for (const toolCall of message.toolCalls) {
+      if (toolCall.result === undefined) {
+        toolCall.result = JSON.stringify({
+          status: "blocked",
+          error: "审批上下文已过期或丢失，工具未执行",
+        });
+      }
+    }
+  }
+  // Missing results are not evidence that a process is still executing.
+  for (const message of result) {
+    const run = message.turnId ? readRun(workspacePath, sessionId, message.turnId) : undefined;
+    for (const toolCall of message.toolCalls) {
+      if (toolCall.result !== undefined) continue;
+      if (run?.state === "running" && run.pendingToolCallId === toolCall.id) {
+        toolCall.status = "running";
+      } else {
+        toolCall.status = run?.state === "interrupted" || run?.state === "cancelled" ? "interrupted" : "unknown";
+        toolCall.statusReason = run?.reason ?? "未记录工具执行结果，当前无法确认执行情况";
+      }
     }
   }
   return result;
@@ -352,10 +424,14 @@ function sendSSE(res: ServerResponse, event: string, data: unknown): void {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-function sendAgentEventSSE(res: ServerResponse, event: AgentEvent, sessionId?: string): void {
+function sendAgentEventSSE(res: ServerResponse, event: AgentEvent, sessionId?: string, sequence?: number, turnId?: string): void {
+  const send = (name: string, data: Record<string, unknown>) => sendSSE(res, name, { ...data, sequence, turnId });
   switch (event.type) {
+    case "run_state":
+      send("run_state", { run: event.run });
+      break;
     case "status":
-      sendSSE(res, "status", {
+      send("status", {
         stage: event.stage,
         state: event.state,
         message: event.message,
@@ -364,26 +440,26 @@ function sendAgentEventSSE(res: ServerResponse, event: AgentEvent, sessionId?: s
       });
       break;
     case "context_usage":
-      sendSSE(res, "context_usage", {
+      send("context_usage", {
         usage: event.usage,
         iteration: event.iteration,
         attempt: event.attempt,
       });
       break;
     case "text_delta":
-      sendSSE(res, "text_delta", { text: event.text });
+      send("text_delta", { text: event.text });
       break;
     case "tool_call":
-      sendSSE(res, "tool_call", { tool_call_id: event.toolCallId, name: event.name, input: event.input });
+      send("tool_call", { tool_call_id: event.toolCallId, name: event.name, input: event.input, startedAt: event.startedAt });
       break;
     case "tool_result":
-      sendSSE(res, "tool_result", { tool_call_id: event.toolCallId, name: event.name, result: event.result });
+      send("tool_result", { tool_call_id: event.toolCallId, name: event.name, result: event.result, completedAt: event.completedAt });
       break;
     case "done":
-      sendSSE(res, "done", { text: event.text, reason: event.reason, session_id: sessionId });
+      send("done", { text: event.text, reason: event.reason, session_id: sessionId });
       break;
     case "error":
-      sendSSE(res, "error", { message: event.message });
+      send("error", { message: event.message });
       break;
   }
 }
@@ -454,8 +530,8 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
   const streams = new Map<string, GatewayStream>();
   const attachStream = (res: ServerResponse, sessionId: string, stream: GatewayStream) => {
     sendSSE(res, "snapshot", stream.snapshot);
-    const unsubscribe = stream.subscribe((event) => {
-      if (!res.destroyed && !res.writableEnded) sendAgentEventSSE(res, event, sessionId);
+    const unsubscribe = stream.subscribe((event, sequence) => {
+      if (!res.destroyed && !res.writableEnded) sendAgentEventSSE(res, event, sessionId, sequence, stream.snapshot.turnId);
     });
     res.once("close", unsubscribe);
     void stream.finished.then(() => {
@@ -542,7 +618,16 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     if (req.method === "GET" && eventsMatch) {
       const sessionId = decodeURIComponent(eventsMatch[1]);
       const stream = streams.get(sessionId);
-      if (!stream) { res.writeHead(204); res.end(); return; }
+      if (!stream) {
+        const run = listRuns(workspacePath, sessionId).at(-1);
+        if (run?.state === "running" && run.ownerPid === process.pid && !sessions.get(sessionId)?.isBusy()) {
+          updateRun(workspacePath, sessionId, run.turnId, {
+            state: "interrupted", reason: "执行器已结束但运行记录未收尾，请核实上次操作结果后继续",
+            pendingToolCallId: undefined,
+          });
+        }
+        res.writeHead(204); res.end(); return;
+      }
       sendSSEHeader(res);
       startSSEHeartbeat(res, config.security?.gateway?.sseHeartbeatIntervalMs ?? DEFAULT_SSE_HEARTBEAT_INTERVAL_MS);
       attachStream(res, sessionId, stream);
@@ -628,7 +713,12 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
           res.end();
           return;
         }
-        await runStream(res, session.id, turnId, session.chat(message, undefined, userContent, executionMode, turnId));
+        if (body.plan_id !== undefined && (executionMode !== "plan" || typeof body.plan_id !== "string" || !body.plan_id.trim())) {
+          sendSSE(res, "error", { message: "plan_id 仅可在计划模式中使用，且必须为非空字符串" });
+          res.end();
+          return;
+        }
+        await runStream(res, session.id, turnId, session.chat(message, undefined, userContent, executionMode, turnId, body.plan_id as string | undefined));
       } catch (err) {
         if (!res.headersSent) {
           sendJSON(res, 500, { error: err instanceof Error ? err.message : String(err) });
@@ -715,6 +805,19 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       return;
     }
 
+    // Renew only the request. Execution still requires a separate approval.
+    if (req.method === "POST" && url.pathname.startsWith("/approvals/") && url.pathname.endsWith("/renew")) {
+      const id = decodeURIComponent(url.pathname.slice("/approvals/".length, -"/renew".length));
+      const approval = renewApprovalRequest(workspacePath, id, config.security?.approvalTtlMs);
+      if (!approval) {
+        sendJSON(res, 409, { error: "审批不存在或尚未过期，无法重新申请" });
+        return;
+      }
+      appendLog(workspacePath, "AUDIT", `重新申请审批 ${id}，有效期至 ${approval.expiresAt}，未执行命令`);
+      sendJSON(res, 200, { approval });
+      return;
+    }
+
     // POST /approvals/:id/approve[-turn]-and-resume — 批准并继续原 Agent Loop
     const approveTurnAndResume = url.pathname.endsWith("/approve-turn-and-resume");
     const approveOnceAndResume = url.pathname.endsWith("/approve-and-resume");
@@ -738,12 +841,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         sendJSON(res, 409, { error: "审批已通过，但原会话没有可恢复的待执行任务。" });
         return;
       }
-      const session = sessions.get(approval.sessionId);
-      if (!session) {
-        if (approveTurnAndResume) clearTurnApproval(workspacePath, approval.sessionId, approval.actor);
-        sendJSON(res, 409, { error: "审批已通过，但原会话不可恢复；可能是服务重启或会话已被清理。" });
-        return;
-      }
+      const session = getOrCreateSession(approval.sessionId, workspacePath, pm);
 
       sendSSEHeader(res);
       startSSEHeartbeat(
@@ -760,6 +858,30 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       } finally {
         if (approveTurnAndResume) clearTurnApproval(workspacePath, approval.sessionId, approval.actor);
       }
+      return;
+    }
+
+    // POST /approvals/:id/reject-and-resume — 拒绝并把结果送回原 Agent Loop
+    if (req.method === "POST" && url.pathname.startsWith("/approvals/") && url.pathname.endsWith("/reject-and-resume")) {
+      const id = decodeURIComponent(url.pathname.slice("/approvals/".length, -"/reject-and-resume".length));
+      const approval = getApprovalRequest(workspacePath, id);
+      if (!approval?.sessionId) {
+        sendJSON(res, 404, { error: "审批记录不存在或已过期" });
+        return;
+      }
+      const session = getOrCreateSession(approval.sessionId, workspacePath, pm);
+      if (!rejectRequest(workspacePath, id)) {
+        sendJSON(res, 404, { error: "审批记录不存在或已过期" });
+        return;
+      }
+      sendSSEHeader(res);
+      startSSEHeartbeat(res, config.security?.gateway?.sseHeartbeatIntervalMs ?? DEFAULT_SSE_HEARTBEAT_INTERVAL_MS);
+      if (streams.has(session.id) || session.isBusy()) {
+        sendSSE(res, "error", { message: "会话正在执行中，请等待完成或先取消当前任务" });
+        res.end();
+        return;
+      }
+      await runStream(res, session.id, pm.getTurnId(session.id) ?? randomUUID(), session.rejectApproval(id), id);
       return;
     }
 
@@ -865,12 +987,13 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     // POST /sessions/:id/cancel
     if (req.method === "POST" && url.pathname.startsWith("/sessions/") && url.pathname.endsWith("/cancel")) {
       const id = decodeURIComponent(url.pathname.slice("/sessions/".length, -"/cancel".length));
-      const session = sessions.get(id);
+      const session = sessions.get(id) ?? (listSessionApprovalContinuations(workspacePath, id).length
+        ? getOrCreateSession(id, workspacePath, pm) : undefined);
       if (!session) {
         sendJSON(res, 404, { error: "会话不存在" });
         return;
       }
-      const cancelled = session.cancel();
+      const cancelled = session.cancel() || await session.cancelPendingApprovals();
       sendJSON(res, cancelled ? 200 : 409, cancelled ? { cancelled: true } : { error: "会话当前没有正在执行的任务" });
       return;
     }
@@ -880,6 +1003,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const id = decodeURIComponent(url.pathname.slice("/sessions/".length));
       sessions.get(id)?.cancel();
       const deletedActive = sessions.delete(id);
+      clearSessionApprovals(workspacePath, id);
       await pm.clearRuntimeDeps(id);
       const stored = deleteStoredSession(workspacePath, id);
       if (deletedActive || stored.deleted) {
@@ -1082,12 +1206,14 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 
     // GET /history/sessions — 从 session 元数据 + 活跃会话合并
     if (req.method === "GET" && url.pathname === "/history/sessions") {
-      const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string; context: SessionContext; executionMode: ExecutionMode; busy?: boolean }>();
+      const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string; context: SessionContext; executionMode: ExecutionMode; busy?: boolean; attention?: "approval" }>();
 
       for (const meta of listSessionMetas(workspacePath)) {
         if (isSubAgentSessionId(meta.id) || meta.archived) continue;
         const active = sessions.get(meta.id);
-        sessionMap.set(meta.id, { id: meta.id, lastActivity: meta.lastActivity, preview: meta.preview, context: meta.context, executionMode: meta.preferences.executionMode, busy: active?.isBusy() ?? false });
+        const awaitingApproval = active?.hasPendingApproval() ?? listSessionApprovalContinuations(workspacePath, meta.id).length > 0;
+        const run = listRuns(workspacePath, meta.id).at(-1);
+        sessionMap.set(meta.id, { id: meta.id, lastActivity: meta.lastActivity, preview: meta.preview, context: meta.context, executionMode: meta.preferences.executionMode, busy: run ? run.state === "running" : active?.isBusy() ?? false, attention: awaitingApproval ? "approval" : undefined });
       }
 
       // 合并活跃会话（新创建的但还未写入历史文件的）
@@ -1095,7 +1221,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         if (isSubAgentSessionId(id)) continue;
         if (!sessionMap.has(id)) {
           const meta = readSessionMeta(workspacePath, id);
-          sessionMap.set(id, { id, lastActivity: session.lastActivity, preview: "", context: meta?.context ?? { mode: "chat" }, executionMode: meta?.preferences.executionMode ?? "normal", busy: session.isBusy() });
+          sessionMap.set(id, { id, lastActivity: session.lastActivity, preview: "", context: meta?.context ?? { mode: "chat" }, executionMode: meta?.preferences.executionMode ?? "normal", busy: session.isBusy(), attention: session.hasPendingApproval() ? "approval" : undefined });
         }
       }
 

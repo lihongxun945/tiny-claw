@@ -10,6 +10,7 @@ workspace/logs/
 workspace/debug/
 workspace/memory/
 workspace/profile/
+workspace/approvals/
 workspace/sessions/
 workspace/skills/
 web/dist/

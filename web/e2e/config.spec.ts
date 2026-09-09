@@ -126,6 +126,7 @@ test("edits list and JSON configuration", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "配置" }).click();
   await page.getByLabel("启用的内置插件").fill("feishu\ncustom");
+  await expect(page.getByLabel("可信项目绝对路径")).toHaveCount(0);
   await page.getByLabel("插件私有配置").fill('{"feishu":{"appId":"cli_test","appSecret":"secret"}}');
   await page.getByRole("button", { name: "保存", exact: true }).click();
 

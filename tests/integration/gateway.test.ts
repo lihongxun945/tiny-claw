@@ -6,8 +6,10 @@ import { startTestGateway, type TestGateway } from "../helpers/start-gateway.js"
 import { loadSessionState, saveSessionState } from "../../src/session-state.js";
 import { appendSessionMessage, readSessionMeta } from "../../src/session-store.js";
 import { attachmentToImageBlock, readAttachment } from "../../src/attachments.js";
-import { createSessionPlan, resumeSessionPlan, updateSessionPlanStep } from "../../src/plan-store.js";
+import { createSessionPlan, markCurrentPlanStep, resumeSessionPlan, updateSessionPlanStep } from "../../src/plan-store.js";
 import { createServer } from "node:http";
+import { startRun, updateRun } from "../../src/run-store.js";
+import { requestApproval, attachApprovalContinuation } from "../../src/tools/approval.js";
 
 async function json(url: string, init?: RequestInit): Promise<{ status: number; body: any }> {
   const response = await fetch(url, init);
@@ -332,7 +334,7 @@ describe("Gateway HTTP API", () => {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: "chat" }),
     });
     const sessionId = created.body.session.id;
-    const original = createSessionPlan(workspacePath, sessionId, "initial", ["确认", "执行"]);
+    const original = createSessionPlan(workspacePath, sessionId, "initial", ["确认", "执行"], "确认并执行任务");
     updateSessionPlanStep(workspacePath, sessionId, "initial", "step-1", "in_progress");
     updateSessionPlanStep(workspacePath, sessionId, "initial", "step-1", "waiting_user");
     const plan = resumeSessionPlan(workspacePath, sessionId, "continued", original.id);
@@ -346,6 +348,14 @@ describe("Gateway HTTP API", () => {
       expect.objectContaining({ turnId: "continued", plan }),
     ]);
     expect((await json(`${gateway.webUrl}/plan?session_id=${sessionId}`)).body).toEqual({ plans: [plan], activePlan: null });
+    startRun(workspacePath, sessionId, "continued", "plan");
+    updateRun(workspacePath, sessionId, "continued", { state: "interrupted", reason: "门禁拦截，未执行" });
+    for (let i = 0; i < 2; i++) {
+      const restored = await json(`${gateway.webUrl}/history/sessions/${sessionId}/messages`);
+      const message = restored.body.messages.find((item: { role: string; turnId?: string }) => item.role === "assistant" && item.turnId === "continued");
+      expect(message.runState).toBe("interrupted");
+      expect(message.text.match(/本轮已中断/g)).toHaveLength(1);
+    }
   });
 
   it("persists each session execution mode and rejects invalid values", async () => {
@@ -389,10 +399,10 @@ describe("Gateway HTTP API", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ message: "hello", session_id: "config-reload" }),
     });
-    expect(before).toContainEqual({
+    expect(before).toContainEqual(expect.objectContaining({
       event: "error",
-      data: { message: "尚未配置模型 API Key，请先在配置页面填写并保存。" },
-    });
+      data: expect.objectContaining({ message: "尚未配置模型 API Key，请先在配置页面填写并保存。" }),
+    }));
 
     const saved = await json(`${gateway.apiUrl}/config`, {
       method: "PUT",
@@ -573,6 +583,84 @@ describe("Gateway HTTP API", () => {
     ]);
   });
 
+  it("projects persisted run and tool times into history after restart", async () => {
+    const sessionId = "timed-history";
+    const turnId = "timed-turn";
+    appendSessionMessage(workspacePath, sessionId, { role: "assistant", _turnId: turnId,
+      content: [{ type: "tool_use", id: "timed-call", name: "bash", input: { command: "test" } }] });
+    appendSessionMessage(workspacePath, sessionId, { role: "user", _turnId: turnId,
+      content: [{ type: "tool_result", tool_use_id: "timed-call", content: "ok" }] });
+    const started = startRun(workspacePath, sessionId, turnId, "normal");
+    const ended = updateRun(workspacePath, sessionId, turnId, { state: "completed", toolTimings: { "timed-call": { startedAt: 1000, completedAt: 6000 } } });
+    await gateway.stop();
+    gateway = await startTestGateway(workspacePath);
+    const history = await json(`${gateway.apiUrl}/history/sessions/${sessionId}/messages`);
+    expect(history.body.messages[0]).toMatchObject({
+      run: { startedAt: started.startedAt, completedAt: ended?.completedAt, state: "completed" },
+      toolCalls: [{ id: "timed-call", startedAt: 1000, completedAt: 6000, result: "ok" }],
+    });
+  });
+
+  it("does not show an orphaned approval tool call as still running", async () => {
+    const sessionId = "orphaned-approval";
+    const turnId = "approval-turn";
+    await appendSessionMessage(workspacePath, sessionId, {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "call-orphaned", name: "bash", input: { command: "pwd" } }],
+      _timestamp: 2,
+      _turnId: turnId,
+    });
+    const plan = createSessionPlan(workspacePath, sessionId, turnId, ["运行命令", "检查结果"]);
+    updateSessionPlanStep(workspacePath, sessionId, turnId, plan.steps[0].id, "in_progress");
+    markCurrentPlanStep(workspacePath, sessionId, turnId, "waiting_approval");
+
+    await json(`${gateway.apiUrl}/plan?session_id=${sessionId}`);
+    const messages = (await json(`${gateway.apiUrl}/history/sessions/${sessionId}/messages`)).body.messages;
+    expect(messages[0].toolCalls[0]).toEqual(expect.objectContaining({
+      id: "call-orphaned",
+      result: JSON.stringify({ status: "blocked", error: "审批上下文已过期或丢失，工具未执行" }),
+    }));
+  });
+
+  it.each(["plan", "normal"] as const)("restores an interrupted tool independently of plan steps (%s)", async (mode) => {
+    const sessionId = `expired-${mode}`;
+    const turnId = "expired-turn";
+    await appendSessionMessage(workspacePath, sessionId, {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "expired-call", name: "bash", input: { command: "npm test" } }],
+      _turnId: turnId,
+    });
+    if (mode === "plan") {
+      const plan = createSessionPlan(workspacePath, sessionId, turnId, ["运行评测"]);
+      updateSessionPlanStep(workspacePath, sessionId, turnId, plan.steps[0].id, "in_progress");
+    }
+    startRun(workspacePath, sessionId, turnId, mode);
+    updateRun(workspacePath, sessionId, turnId, {
+      state: "interrupted", pendingToolCallId: "expired-call", reason: "审批已过期或丢失，请核实操作结果后重新发起",
+    });
+    for (let i = 0; i < 2; i++) {
+      const messages = (await json(`${gateway.apiUrl}/history/sessions/${sessionId}/messages`)).body.messages;
+      expect(messages[0]).toMatchObject({ runState: "interrupted", toolCalls: [{
+        id: "expired-call", status: "interrupted", statusReason: "审批已过期或丢失，请核实操作结果后重新发起",
+      }] });
+      expect(messages[0].toolCalls[0].result).toBeUndefined();
+    }
+  });
+
+  it("reads and updates project trust through the project plugin", async () => {
+    const root = createTempWorkspace();
+    const request = (method: string, body: unknown) => json(`${gateway.apiUrl}/projects/settings`, {
+      method, headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    try {
+      expect((await request("POST", { path: root })).body.trusted).toBe(false);
+      expect((await request("PUT", { path: root, trusted: "true" })).status).toBe(400);
+      expect((await request("PUT", { path: root, trusted: true })).body.trusted).toBe(true);
+      expect((await request("POST", { path: root })).body.trusted).toBe(true);
+      expect((await request("PUT", { path: root, trusted: false })).body.trusted).toBe(false);
+    } finally { removeTempWorkspace(root); }
+  });
+
   it("serves WebUI static files and proxies core plugin APIs", async () => {
     const page = await fetch(`${gateway.webUrl}/`);
     expect(page.status).toBe(200);
@@ -729,6 +817,32 @@ describe("Gateway HTTP API", () => {
     expect((await json(`${gateway.apiUrl}/approvals/missing/approve`, { method: "POST" })).status).toBe(404);
     expect((await json(`${gateway.apiUrl}/approvals/missing/approve-turn-and-resume`, { method: "POST" })).status).toBe(404);
     expect((await json(`${gateway.apiUrl}/approvals/missing/reject`, { method: "POST" })).status).toBe(404);
+  });
+
+  it("retains expired approvals across restart, renews without execution, and allows cancellation", async () => {
+    const sessionId = "renew-expired";
+    const turnId = "renew-turn";
+    const toolCall = { type: "tool_use" as const, id: "renew-call", name: "bash", input: { command: "echo must-not-run" } };
+    appendSessionMessage(workspacePath, sessionId, { role: "assistant", content: [toolCall], _turnId: turnId });
+    const approval = requestApproval(workspacePath, "bash", toolCall.input, -1, undefined, sessionId).approval!;
+    attachApprovalContinuation(workspacePath, approval.id, { toolCall, skippedToolCalls: [], iteration: 0, executionMode: "normal", turnId });
+    startRun(workspacePath, sessionId, turnId, "normal");
+    updateRun(workspacePath, sessionId, turnId, { state: "waiting_approval", approvalId: approval.id });
+    await gateway.stop();
+    gateway = await startTestGateway(workspacePath);
+    const history = await json(`${gateway.apiUrl}/history/sessions/${sessionId}/messages`);
+    expect(JSON.parse(history.body.messages[0].toolCalls[0].result)).toMatchObject({ approvalStatus: "expired", expiresAt: approval.expiresAt });
+    expect((await json(`${gateway.apiUrl}/approvals/${approval.id}/approve`, { method: "POST" })).status).toBe(404);
+    const renewed = await json(`${gateway.webUrl}/approvals/${approval.id}/renew`, { method: "POST" });
+    expect(renewed.status).toBe(200);
+    expect(renewed.body.approval.status).toBe("pending");
+    expect(Date.parse(renewed.body.approval.expiresAt)).toBeGreaterThan(Date.now() + 86_000_000);
+    expect((await json(`${gateway.apiUrl}/approvals/${approval.id}/renew`, { method: "POST" })).status).toBe(409);
+    const plan = await json(`${gateway.apiUrl}/plan?session_id=${sessionId}`);
+    expect(plan.body.run.state).toBe("waiting_approval");
+    expect((await json(`${gateway.apiUrl}/history/sessions/${sessionId}/messages`)).body.messages).toHaveLength(1);
+    expect((await json(`${gateway.apiUrl}/sessions/${sessionId}/cancel`, { method: "POST" })).status).toBe(200);
+    expect((await json(`${gateway.apiUrl}/approvals`)).body.approvals).toEqual([]);
   });
 
   it("returns not found when cancelling an unknown session", async () => {

@@ -17,6 +17,7 @@ import { readInitialTheme, saveTheme, type Theme } from "./lib/theme.js";
 type View = "chat" | "project" | "memory" | "logs" | "plugins" | "config";
 
 interface SessionUiState {
+  isStopping?: boolean;
   messages: Message[];
   summaryNotice?: { state: "completed" | "failed"; message: string };
   streamingText: string;
@@ -31,6 +32,9 @@ interface SessionUiState {
   planExecutionTurnId?: string;
   contextUsage?: ContextTokenUsage;
   backendBusy: boolean;
+  awaitingApproval: boolean;
+  run?: import("./types.js").RunView;
+  latestPlans?: SessionPlan[];
 }
 
 function emptySessionState(): SessionUiState {
@@ -45,6 +49,7 @@ function emptySessionState(): SessionUiState {
     plan: null,
     planLoaded: false,
     backendBusy: false,
+    awaitingApproval: false,
   };
 }
 
@@ -94,10 +99,16 @@ export default function App() {
   const abortControllersRef = useRef(new Map<string, AbortController>());
   const sessionModesRef = useRef(new Map<string, ExecutionMode>());
   const backendBusyRef = useRef(new Map<string, boolean>());
+  const backendApprovalRef = useRef(new Map<string, boolean>());
   const planRequestsRef = useRef(new Map<string, number>());
 
   const activeState = activeSessionId ? sessionStates[activeSessionId] ?? emptySessionState() : emptySessionState();
-  const activeBusy = activeState.isStreaming || activeState.backendBusy;
+  const activeBusy = activeState.isStreaming || activeState.backendBusy || activeState.awaitingApproval;
+  useEffect(() => {
+    if (activeSessionId && !activeBusy && activeState.isStopping) {
+      updateSessionState(activeSessionId, (state) => ({ ...state, isStopping: false }));
+    }
+  }, [activeSessionId, activeBusy, activeState.isStopping]);
 
   useEffect(() => {
     saveTheme(theme);
@@ -130,7 +141,14 @@ export default function App() {
         plan: snapshot.activePlan,
         planExecutionTurnId: snapshot.currentTurnId,
         planLoaded: true,
-        messages: state.messages.map((message) => message.plan
+        run: snapshot.run,
+        latestPlans: snapshot.plans,
+        ...(snapshot.run ? {
+          backendBusy: snapshot.run.state === "running",
+          streamingStatus: snapshot.run.state === "running" && snapshot.run.status ? snapshot.run.status.message : state.streamingStatus,
+          summaryNotice: snapshot.run.state === "interrupted" || snapshot.run.state === "cancelled" ? { state: "failed" as const, message: snapshot.run.reason ?? "运行已中断" } : state.summaryNotice,
+        } : {}),
+        messages: state.messages.map((message) => message.plan && message.turnId === snapshot.currentTurnId
           ? { ...message, plan: snapshot.plans.find((plan) => plan.id === message.plan?.id) ?? message.plan }
           : message),
       }));
@@ -146,15 +164,22 @@ export default function App() {
     const activeId = activeSessionRef.current;
     const activeWasBusy = activeId ? backendBusyRef.current.get(activeId) === true : false;
     const activeIsBusy = activeId ? nextBusy.get(activeId) === true : false;
+    const approvalEnded = activeId && backendApprovalRef.current.get(activeId) === true
+      && sessions.some((session) => session.id === activeId && session.attention !== "approval");
+    backendApprovalRef.current = new Map(sessions.map((session) => [session.id, session.attention === "approval"]));
     backendBusyRef.current = nextBusy;
     setReconnectKey((key) => key + 1);
 
     for (const session of sessions) {
-      updateSessionState(session.id, (state) => ({ ...state, backendBusy: session.busy === true }));
+      updateSessionState(session.id, (state) => ({
+        ...state,
+        backendBusy: session.busy === true,
+        awaitingApproval: session.attention === "approval",
+      }));
     }
     if (activeId && activeIsBusy && !abortControllersRef.current.has(activeId)) void refreshSessionPlan(activeId);
 
-    if (activeId && activeWasBusy && !activeIsBusy && !abortControllersRef.current.has(activeId)) {
+    if (activeId && ((activeWasBusy && !activeIsBusy) || approvalEnded) && !abortControllersRef.current.has(activeId)) {
       fetchHistoryMessages(activeId)
         .then((messages) => updateSessionState(activeId, (state) => ({ ...state, messages, loaded: true })))
         .catch(() => {});
@@ -169,12 +194,31 @@ export default function App() {
     turnId?: string,
   ) => {
     let fullText = "";
+    let sequence = -1;
+    let currentRun: import("./types.js").RunView | undefined;
     const toolCalls: ToolCallInfo[] = [];
 
     for await (const event of events) {
       const d = event.data as Record<string, unknown>;
+      if (typeof d.sequence === "number") {
+        if (d.sequence <= sequence) continue;
+        sequence = d.sequence;
+      }
       switch (event.event) {
+        case "run_state": {
+          const run = d.run as unknown as import("./types.js").RunView;
+          currentRun = run;
+          turnId = run.turnId;
+          updateSessionState(sourceSessionId, (state) => ({ ...state,
+            run, streamingTurnId: run.turnId, backendBusy: run.state === "running",
+            summaryNotice: run.state === "interrupted" || run.state === "cancelled" ? { state: "failed", message: run.reason ?? "运行已中断" } : state.summaryNotice,
+            awaitingApproval: run.state === "waiting_approval",
+            streamingStatus: run.state === "interrupted" ? run.reason ?? "运行已中断" : run.status?.message ?? state.streamingStatus,
+          }));
+          break;
+        }
         case "snapshot":
+          currentRun = d.run as typeof currentRun;
           turnId = typeof d.turnId === "string" ? d.turnId : turnId;
           approvalId = typeof d.approvalId === "string" ? d.approvalId : undefined;
           fullText = typeof d.text === "string" ? d.text : "";
@@ -182,6 +226,7 @@ export default function App() {
           updateSessionState(sourceSessionId, (state) => ({
             ...state, streamingTurnId: turnId, streamingText: fullText,
             streamingToolCalls: [...toolCalls], streamingStatus: String(d.status ?? ""), streamingApprovalId: approvalId,
+            ...(d.run ? { backendBusy: (d.run as { state: string }).state === "running", awaitingApproval: (d.run as { state: string }).state === "waiting_approval" } : {}),
           }));
           break;
         case "status":
@@ -211,7 +256,8 @@ export default function App() {
             id: typeof d.tool_call_id === "string" ? d.tool_call_id : undefined,
             name: (d.name as string) ?? "",
             input: (d.input as Record<string, unknown>) ?? {},
-            startedAt: Date.now(),
+            startedAt: typeof d.startedAt === "number" ? d.startedAt : undefined,
+            status: "running",
           });
           updateSessionState(sourceSessionId, (state) => ({ ...state, streamingToolCalls: [...toolCalls], streamingStatus: "" }));
           break;
@@ -222,13 +268,20 @@ export default function App() {
             t.result === undefined && (toolCallId ? t.id === toolCallId : t.name === name)
           ));
           if (tc) tc.result = (d.result as string) ?? "";
-          if (tc) tc.completedAt = Date.now();
+          if (tc) tc.completedAt = typeof d.completedAt === "number" ? d.completedAt : undefined;
           updateSessionState(sourceSessionId, (state) => ({ ...state, streamingToolCalls: [...toolCalls] }));
-          if (["plan_create", "plan_resume", "plan_update", "plan_revise", "plan_pause"].includes(name) || approvalId) await refreshSessionPlan(sourceSessionId);
+          if (name === "update_plan" || approvalId) await refreshSessionPlan(sourceSessionId);
           break;
         }
         case "done": {
+          for (const toolCall of toolCalls) {
+            if (toolCall.result === undefined) {
+              toolCall.status = "unknown";
+              toolCall.statusReason = "本轮已结束，未记录工具执行结果，请核实操作结果";
+            }
+          }
           const sid = (d.session_id as string) || sourceSessionId;
+          backendApprovalRef.current.set(sid, d.reason === "approval_required");
           planRequestsRef.current.set(sourceSessionId, (planRequestsRef.current.get(sourceSessionId) ?? 0) + 1);
           if (d.reason !== "approval_required") {
             updateSessionState(sourceSessionId, (state) => ({ ...state, plan: null, planExecutionTurnId: undefined }));
@@ -236,27 +289,27 @@ export default function App() {
           const completedText = typeof d.text === "string" ? d.text : fullText;
           const plans = await fetchSessionPlans(sid).catch(() => []);
           const completedPlan = turnId ? plans.find((item) => item.turnId === turnId || item.relatedTurnIds?.includes(turnId!)) : undefined;
-          const assistantMessage = { role: "assistant" as const, text: completedText, toolCalls: [...toolCalls], timestamp: Date.now(), turnId, plan: completedPlan };
+          const assistantMessage = { role: "assistant" as const, text: completedText, toolCalls: [...toolCalls], timestamp: Date.now(), turnId, plan: completedPlan, run: currentRun, runState: currentRun?.state };
           setSessionStates((previous) => {
             const source = previous[sourceSessionId] ?? emptySessionState();
             const target = previous[sid] ?? emptySessionState();
-            const baseMessages = (sid === sourceSessionId || target.loaded ? target.messages : source.messages).map((message) => (
-              message.plan ? { ...message, plan: plans.find((item) => item.id === message.plan?.id) ?? message.plan } : message
-            ));
+            const baseMessages = sid === sourceSessionId || target.loaded ? target.messages : source.messages;
             const next = {
               ...previous,
               [sid]: {
                 ...target,
+                latestPlans: plans,
                 messages: d.clear_messages === true
                   ? [assistantMessage]
                   : approvalId
-                    ? mergeApprovalResume(baseMessages, approvalId, completedText, toolCalls, { turnId, plan: completedPlan })
+                    ? mergeApprovalResume(baseMessages, approvalId, completedText, toolCalls, { turnId, plan: completedPlan, run: currentRun, runState: currentRun?.state })
                     : [...baseMessages.filter((message) => !(turnId && message.role === "assistant" && message.turnId === turnId)), assistantMessage],
                 streamingText: "",
                 streamingStatus: "",
                 streamingToolCalls: [],
                 streamingApprovalId: undefined,
                 backendBusy: false,
+                awaitingApproval: d.reason === "approval_required",
                 loaded: true,
               },
             };
@@ -268,6 +321,7 @@ export default function App() {
                 streamingToolCalls: [],
                 streamingApprovalId: undefined,
                 backendBusy: false,
+                awaitingApproval: false,
               };
             }
             return next;
@@ -303,6 +357,7 @@ export default function App() {
             streamingToolCalls: [],
             streamingApprovalId: undefined,
             backendBusy: false,
+            awaitingApproval: false,
           }));
           await refreshSessionPlan(sourceSessionId);
           break;
@@ -322,7 +377,7 @@ export default function App() {
         await consumeAgentStream(sessionId, streamSessionEvents(sessionId, controller.signal));
         if (!controller.signal.aborted) {
           const messages = await fetchHistoryMessages(sessionId);
-          updateSessionState(sessionId, (state) => ({ ...state, messages, loaded: true, backendBusy: false }));
+          updateSessionState(sessionId, (state) => ({ ...state, messages, loaded: true }));
           await refreshSessionPlan(sessionId);
         }
       } catch {
@@ -330,7 +385,9 @@ export default function App() {
       } finally {
         if (abortControllersRef.current.get(sessionId) === controller) {
           abortControllersRef.current.delete(sessionId);
-          updateSessionState(sessionId, (state) => ({ ...state, isStreaming: false, streamingText: "", streamingToolCalls: [], streamingTurnId: undefined }));
+          updateSessionState(sessionId, (state) => ({ ...state, isStreaming: false,
+            ...(!state.backendBusy ? { streamingText: "", streamingToolCalls: [], streamingTurnId: undefined } : {}),
+          }));
         }
       }
     })();
@@ -389,8 +446,9 @@ export default function App() {
     if (activeSessionId) void refreshSessionPlan(activeSessionId);
   }, [activeSessionId, refreshSessionPlan]);
 
-  const handleSend = useCallback(async (text: string, files: File[]) => {
+  const handleSend = useCallback(async (text: string, files: File[], planId?: string) => {
     if (activeBusy) return;
+    if (planId) setExecutionMode("plan");
     const turnId = crypto.randomUUID();
     let sessionId = activeSessionId;
     if (!sessionId && view === "project" && projectRoot) {
@@ -439,8 +497,9 @@ export default function App() {
         sessionId,
         attachments.map((attachment) => attachment.id),
         controller.signal,
-        executionMode,
+        "normal",
         turnId,
+        planId,
       ), undefined, turnId);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
@@ -486,7 +545,7 @@ export default function App() {
     }
   }, [activeBusy, activeSessionId, consumeAgentStream, updateSessionState, projectRoot, view, executionMode]);
 
-  const resumeApproval = useCallback(async (approvalId: string, allowTurn: boolean) => {
+  const resumeApproval = useCallback(async (approvalId: string, action: "approve" | "approve-turn" | "reject") => {
     if (!activeSessionId) return;
     const sessionId = activeSessionId;
     abortControllersRef.current.get(sessionId)?.abort();
@@ -496,13 +555,14 @@ export default function App() {
       ...state,
       isStreaming: true,
       backendBusy: false,
+      awaitingApproval: false,
       streamingText: "",
       streamingStatus: "",
       streamingToolCalls: [],
       streamingApprovalId: approvalId,
     }));
     try {
-      await consumeAgentStream(sessionId, streamApprovalResume(approvalId, allowTurn, controller.signal), approvalId, activeState.planExecutionTurnId);
+      await consumeAgentStream(sessionId, streamApprovalResume(approvalId, action, controller.signal), approvalId, activeState.planExecutionTurnId);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       const msg = err instanceof Error ? err.message : String(err);
@@ -524,12 +584,17 @@ export default function App() {
   }, [activeSessionId, activeState.planExecutionTurnId, consumeAgentStream, updateSessionState]);
 
   const handleApproveAndResume = useCallback(
-    (approvalId: string) => resumeApproval(approvalId, false),
+    (approvalId: string) => resumeApproval(approvalId, "approve"),
     [resumeApproval],
   );
 
   const handleApproveTurnAndResume = useCallback(
-    (approvalId: string) => resumeApproval(approvalId, true),
+    (approvalId: string) => resumeApproval(approvalId, "approve-turn"),
+    [resumeApproval],
+  );
+
+  const handleRejectAndResume = useCallback(
+    (approvalId: string) => resumeApproval(approvalId, "reject"),
     [resumeApproval],
   );
 
@@ -608,20 +673,22 @@ export default function App() {
     }
   }, []);
 
-  const handleStop = useCallback(() => {
+  const handleStop = useCallback(async () => {
     if (!activeSessionId) return;
     planRequestsRef.current.set(activeSessionId, (planRequestsRef.current.get(activeSessionId) ?? 0) + 1);
-    abortControllersRef.current.get(activeSessionId)?.abort();
-    abortControllersRef.current.delete(activeSessionId);
-    cancelSession(activeSessionId).catch(() => {});
-    updateSessionState(activeSessionId, (state) => ({
-      ...state,
-      isStreaming: false,
-      backendBusy: false,
-      streamingApprovalId: undefined,
-      plan: null,
-    }));
-  }, [activeSessionId, updateSessionState]);
+    const id = activeSessionId;
+    updateSessionState(id, (state) => ({ ...state, isStopping: true }));
+    try {
+      await cancelSession(id);
+      if (activeState.awaitingApproval) {
+        const messages = await fetchHistoryMessages(id);
+        updateSessionState(id, (state) => ({ ...state, messages, awaitingApproval: false, isStreaming: false, backendBusy: false, plan: null }));
+      }
+      await refreshSessionPlan(id);
+    } catch (error) {
+      updateSessionState(id, (state) => ({ ...state, isStopping: false, summaryNotice: { state: "failed", message: `停止失败：${error instanceof Error ? error.message : String(error)}` } }));
+    }
+  }, [activeSessionId, activeState.awaitingApproval, refreshSessionPlan, updateSessionState]);
 
   const handleSelectSession = useCallback(async (session: Session) => {
     const id = session.id;
@@ -775,6 +842,9 @@ export default function App() {
             <ChatView
               messages={activeState.messages}
               activePlanId={activeState.plan?.id}
+              activePlanTurnId={activeState.planExecutionTurnId}
+              latestPlans={activeState.latestPlans}
+              onResumePlan={activeBusy ? undefined : (id) => void handleSend("继续此计划", [], id)}
               streamingText={activeState.streamingText}
               streamingTurnId={activeState.streamingTurnId}
               streamingStatus={activeState.streamingStatus}
@@ -788,11 +858,13 @@ export default function App() {
               onRefreshMessages={handleRefreshMessages}
               onApproveAndResume={handleApproveAndResume}
               onApproveTurnAndResume={handleApproveTurnAndResume}
+              onRejectAndResume={handleRejectAndResume}
             />
-            <PlanProgress plan={activeState.plan} />
+            <PlanProgress plan={activeState.plan} runState={activeState.run?.state} run={activeState.run} />
             <ChatInput
               onSend={handleSend}
               onStop={handleStop}
+              isStopping={activeState.isStopping}
               disabled={activeBusy}
               executionMode={executionMode}
               onExecutionModeChange={handleExecutionModeChange}
@@ -807,6 +879,13 @@ export default function App() {
         )}
         {view === "project" && (
           <ProjectView
+            summaryNotice={activeState.summaryNotice}
+            latestPlans={activeState.latestPlans}
+            runState={activeState.run?.state}
+            run={activeState.run}
+            awaitingApproval={activeState.awaitingApproval}
+            activePlanTurnId={activeState.planExecutionTurnId}
+            onResumePlan={activeBusy ? undefined : (id) => void handleSend("继续此计划", [], id)}
             messages={activeState.messages}
             streamingText={activeState.streamingText}
             streamingTurnId={activeState.streamingTurnId}
@@ -820,8 +899,10 @@ export default function App() {
             onRefreshMessages={handleRefreshMessages}
             onSend={handleSend}
             onStop={handleStop}
+            isStopping={activeState.isStopping}
             onApproveAndResume={handleApproveAndResume}
             onApproveTurnAndResume={handleApproveTurnAndResume}
+            onRejectAndResume={handleRejectAndResume}
             projectRoot={projectRoot}
             statusRefreshKey={projectStatusRefreshKey}
             onProjectChange={handleProjectChange}

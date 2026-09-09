@@ -6,6 +6,7 @@ import {
   clearTurnApproval,
   listApprovals,
   rejectRequest,
+  renewApprovalRequest,
 } from "../../tools/approval.js";
 import { deleteStoredSession } from "../../session-store.js";
 import type { ChatCommand, ChatCommandContext, Plugin } from "../types.js";
@@ -66,6 +67,19 @@ export const coreChatCommandsPlugin: Plugin = {
         description: "拒绝一条命令审批",
         usage: "/reject <审批 ID>",
         execute: (commandCtx) => ({ text: rejectApprovalText(commandCtx) }),
+      },
+      {
+        name: "renew-approval",
+        description: "重新申请已过期的审批，不执行命令",
+        usage: "/renew-approval <审批 ID>",
+        execute: (commandCtx) => {
+          const id = commandCtx.args[0];
+          if (!id) return { text: "用法：/renew-approval <审批 ID>" };
+          const approval = renewApprovalRequest(commandCtx.workspacePath, id, commandCtx.config?.security?.approvalTtlMs, commandCtx.actor);
+          return { text: approval
+            ? `已重新申请，有效期至 ${approval.expiresAt}。命令尚未执行，请核对后使用 /approve ${approval.id} 批准。`
+            : "审批不存在、尚未过期，或你无权处理该审批。" };
+        },
       },
     ];
 
@@ -179,12 +193,14 @@ function listApprovalText(ctx: ChatCommandContext): string {
   if (approvals.length === 0) return "暂无你可以处理的命令审批。";
   return approvals.map((approval) => [
     `审批 ID：${approval.id}`,
-    `状态：${approval.status === "approved" ? "已允许一次" : "待审批"}`,
+    `状态：${approval.status === "expired" ? "已过期" : approval.status === "approved" ? "已允许一次" : "待审批"}`,
     `工具：${approval.toolName}`,
     approval.command ? `命令：${approval.command}` : `参数：${JSON.stringify(approval.args)}`,
     `有效期至：${approval.expiresAt}`,
-    `批准：/approve ${approval.id}`,
-    `允许本轮：/approve-all ${approval.id}`,
+    ...(approval.status === "expired" ? [`重新申请：/renew-approval ${approval.id}`] : [
+      `批准：/approve ${approval.id}`,
+      `允许本轮：/approve-all ${approval.id}`,
+    ]),
     `拒绝：/reject ${approval.id}`,
   ].join("\n")).join("\n\n");
 }

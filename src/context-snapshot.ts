@@ -39,6 +39,7 @@ export function calculateContextTokenUsage(
 }
 
 export function createPreparedModelRequest(options: {
+  contextSummaries?: PreparedModelRequest["contextSummaries"];
   config: Config;
   sessionId: string;
   turnId?: string;
@@ -51,6 +52,7 @@ export function createPreparedModelRequest(options: {
   const messages = cleanMessages(options.messages);
   return {
     sessionId: options.sessionId,
+    contextSummaries: (options.contextSummaries ?? []).map((section) => ({ ...section })),
     turnId: options.turnId,
     iteration: options.iteration,
     attempt: options.attempt,

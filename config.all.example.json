@@ -18,6 +18,7 @@
   "contextCompressionToolResultMaxChars": 500,
   "contextCompressionMaxOutputTokens": 2048,
   "toolResultInitialMaxChars": 12000,
+  "bashTerminationGraceMs": 1000,
   "historyWindowSize": 20,
   "maxAgentIterations": 100,
   "sessionSummary": {
@@ -85,7 +86,10 @@
     "rawStreamEvents": true
   },
   "security": {
+    "trustedProjects": [],
+    "background": { "timeoutSeconds": 3600, "maxRunning": 4, "maxLogChars": 20000 },
     "mode": "auto",
+    "approvalTtlMs": 86400000,
     "tools": {
       "bash": {
         "mode": "auto"

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { relative, resolve } from "node:path";
@@ -7,7 +7,7 @@ import { createFileEditTool } from "../../src/tools/file_edit.js";
 import { createFileReadTool } from "../../src/tools/file_read.js";
 import { createFileWriteTool } from "../../src/tools/file_write.js";
 import { createSkillListTool, createSkillUseTool } from "../../src/tools/skill.js";
-import { loadConfig } from "../../src/config.js";
+import { createDefaultConfig, loadConfig } from "../../src/config.js";
 import { PluginManager } from "../../src/plugin-manager.js";
 import {
   approveRequest,
@@ -17,6 +17,9 @@ import {
   listApprovals,
   rejectRequest,
   requestApproval,
+  renewApprovalRequest,
+  attachApprovalContinuation,
+  listSessionApprovalContinuations,
 } from "../../src/tools/approval.js";
 import { checkDangerousToolPermission } from "../../src/tools/permission.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
@@ -25,6 +28,7 @@ describe("security boundary", () => {
   const paths: string[] = [];
 
   afterEach(() => {
+    vi.useRealTimers();
     for (const path of paths.splice(0)) removeTempWorkspace(path);
   });
 
@@ -333,7 +337,33 @@ describe("security boundary", () => {
     expect(rejectRequest(workspacePath, rejected.approval!.id)).toBe(false);
 
     requestApproval(workspacePath, "bash", { command: "expired", cwd: workspacePath }, -1);
-    expect(listApprovals(workspacePath)).toEqual([]);
+    expect(listApprovals(workspacePath)).toEqual([expect.objectContaining({ status: "expired" })]);
+  });
+
+  it("defaults to 24 hours and preserves expired continuations without granting permission", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const workspacePath = createTempWorkspace();
+    paths.push(workspacePath);
+    expect(createDefaultConfig()).toMatchObject({ security: { approvalTtlMs: 86_400_000 } });
+    const actor = { channel: "web" as const, requesterId: "owner" };
+    const args = { command: "pwd" };
+    const approval = requestApproval(workspacePath, "bash", args, undefined, actor, "session").approval!;
+    expect(Date.parse(approval.expiresAt) - Date.parse(approval.createdAt)).toBe(86_400_000);
+    const continuation = { toolCall: { type: "tool_use" as const, id: "call", name: "bash", input: args }, skippedToolCalls: [], iteration: 0, executionMode: "normal" as const, turnId: "turn" };
+    attachApprovalContinuation(workspacePath, approval.id, continuation);
+    vi.setSystemTime(Date.now() + 86_400_000);
+    expect(approveRequest(workspacePath, approval.id, actor)).toBeUndefined();
+    expect(approveTurnRequest(workspacePath, approval.id, actor)).toBeUndefined();
+    expect(hasTurnApproval(workspacePath, "session", actor)).toBe(false);
+    expect(listSessionApprovalContinuations(workspacePath, "session")[0]?.continuation).toEqual(continuation);
+    expect(JSON.parse(readFileSync(resolve(workspacePath, "approvals", `${approval.id}.json`), "utf8"))).toMatchObject({ status: "expired", continuation });
+    expect(renewApprovalRequest(workspacePath, approval.id, 1000, { ...actor, requesterId: "other" })).toBeUndefined();
+    expect(renewApprovalRequest(workspacePath, approval.id, 1000, actor)?.status).toBe("pending");
+    expect(Date.parse(approval.expiresAt) - Date.now()).toBe(1000);
+    expect(renewApprovalRequest(workspacePath, approval.id, 1000, actor)).toBeUndefined();
+    expect(requestApproval(workspacePath, "bash", args, undefined, actor, "session").approved).toBe(false);
+    expect(rejectRequest(workspacePath, approval.id, actor)).toBe(true);
+    expect(listSessionApprovalContinuations(workspacePath, "session")).toEqual([]);
   });
 
   it("does not deduplicate identical approvals across sessions", () => {
@@ -345,6 +375,20 @@ describe("security boundary", () => {
 
     expect(first.approval?.id).not.toBe(second.approval?.id);
     expect(listApprovals(workspacePath)).toHaveLength(2);
+  });
+
+  it("allows project scripts in auto mode but preserves explicit ask and tool overrides", () => {
+    const workspacePath = createTempWorkspace();
+    paths.push(workspacePath);
+    const command = "node scripts/eval.js --output reports/result.json";
+    const base = {
+      workspacePath, toolName: "bash", args: { command }, command, cwd: workspacePath,
+      context: { rootPath: workspacePath, sessionId: "project-auto", sessionContext: { mode: "project" as const, project: { root: workspacePath, name: "project" } } },
+    };
+    const config = loadConfig(workspacePath);
+    expect(checkDangerousToolPermission({ ...base, config: { ...config, security: { mode: "auto" } } }).allowed).toBe(true);
+    expect(checkDangerousToolPermission({ ...base, config: { ...config, security: { mode: "ask" } } }).allowed).toBe(false);
+    expect(checkDangerousToolPermission({ ...base, config: { ...config, security: { mode: "auto", tools: { bash: { mode: "ask" } } } } }).allowed).toBe(false);
   });
 
   it("scopes turn approvals to the current session and actor until cleared", () => {

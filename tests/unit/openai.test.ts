@@ -55,6 +55,27 @@ function streamResponse(text = "ok"): Response {
 }
 
 describe("OpenAIChatClient", () => {
+  it("round trips reasoning metadata without streaming it as visible text", async () => {
+    const bodies: any[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      bodies.push(JSON.parse(String(init.body)));
+      if (bodies.length > 1) return streamResponse("done");
+      const deltas = [{ reasoning_content: "reason-" }, { reasoning_content: "data" }, {
+        tool_calls: [{ index: 0, id: "call-r", function: { name: "test", arguments: "{}" } }],
+      }];
+      return new Response(deltas.map(delta => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`).join("") + "data: [DONE]\n\n");
+    }));
+    const client = new OpenAIChatClient(config());
+    const onDelta = vi.fn();
+    const first = await client.chat([{ role: "user", content: "run" }], onDelta);
+    expect(first.reasoningContent).toBe("reason-data");
+    expect(onDelta).not.toHaveBeenCalled();
+    await client.chat([
+      { role: "assistant", content: first.toolCalls, _reasoningContent: first.reasoningContent },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call-r", content: "ok" }] },
+    ], onDelta);
+    expect(bodies[1].messages[0].reasoning_content).toBe("reason-data");
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
   });
