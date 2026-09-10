@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createDefaultConfig, ensureConfigFile, loadConfig, validateConfig } from "../../src/config.js";
+import { createDefaultConfig, ensureConfigFile, loadConfig, stripDeprecatedConfigFields, validateConfig } from "../../src/config.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
 describe("loadConfig", () => {
@@ -28,16 +28,32 @@ describe("loadConfig", () => {
       maxTokens: 16384,
       maxContextTokens: 128000,
       contextCompressionThreshold: 0.7,
-      contextCompressionMaxChars: 5000,
-      contextCompressionToolResultMaxChars: 500,
-      contextCompressionMaxOutputTokens: 2048,
-      toolResultInitialMaxChars: 12000,
-      historyWindowSize: 5,
       maxAgentIterations: 100,
-      searchProvider: "ollama",
+      searchProvider: "duckduckgo",
       workspacePath,
       systemPrompt: "You are tiny-claw.",
     });
+  });
+
+  it("ignores obsolete values without changing active custom settings or the original file", () => {
+    const legacy = {
+      contextCompressionMaxChars: -1, historyWindowSize: "old",
+      sessionSummary: { turnThreshold: 0, maxChars: 0, recentTurns: 7 },
+      plan: { maxGateCorrections: -1, decisionRetries: -1, maxSteps: 12 },
+      project: { historyWindowSize: -1, maxAgentIterations: 20 },
+      profile: { enabled: false, maxItemChars: 4000, maxTotalChars: 9000 },
+      searchProvider: "brave",
+    };
+    const workspace = createTempWorkspace(legacy);
+    workspaces.push(workspace);
+    const loaded = loadConfig(workspace);
+    expect(loaded.sessionSummary).not.toHaveProperty("recentTurns");
+    expect(loaded).toMatchObject({ plan: { maxSteps: 12 }, profile: legacy.profile, searchProvider: "brave" });
+    expect(stripDeprecatedConfigFields(legacy)).toEqual({
+      sessionSummary: {}, plan: { maxSteps: 12 }, project: { maxAgentIterations: 20 }, profile: legacy.profile, searchProvider: "brave",
+    });
+    expect(readFileSync(resolve(workspace, "config.json"), "utf8")).toContain("historyWindowSize");
+    expect(JSON.stringify(createDefaultConfig())).not.toContain("maxGateCorrections");
   });
 
   it.each(["config.simple.example.json", "config.all.example.json"])("keeps %s valid", (fileName) => {
@@ -151,10 +167,6 @@ describe("loadConfig", () => {
 
   it.each([
     [{ maxTokens: 0 }, "配置字段 maxTokens 超出允许范围"],
-    [{ contextCompressionMaxChars: 99 }, "配置字段 contextCompressionMaxChars 超出允许范围"],
-    [{ contextCompressionToolResultMaxChars: 99 }, "配置字段 contextCompressionToolResultMaxChars 超出允许范围"],
-    [{ contextCompressionMaxOutputTokens: 255 }, "配置字段 contextCompressionMaxOutputTokens 超出允许范围"],
-    [{ toolResultInitialMaxChars: 999 }, "配置字段 toolResultInitialMaxChars 超出允许范围"],
     [{ maxAgentIterations: -1 }, "配置字段 maxAgentIterations 超出允许范围"],
     [{ emptyResponseRetries: 6 }, "配置字段 emptyResponseRetries 超出允许范围"],
     [{ searchProvider: "unknown" }, "配置字段 searchProvider 不受支持"],
@@ -170,7 +182,6 @@ describe("loadConfig", () => {
     [{ project: { treeMaxDepth: 0 } }, "配置字段 project.treeMaxDepth 超出允许范围"],
     [{ project: { searchMaxResults: 0 } }, "配置字段 project.searchMaxResults 超出允许范围"],
     [{ plan: { maxSteps: 0 } }, "配置字段 plan.maxSteps 超出允许范围"],
-    [{ plan: { maxGateCorrections: -1 } }, "配置字段 plan.maxGateCorrections 超出允许范围"],
     [{ subAgent: { maxConcurrency: 9 } }, "配置字段 subAgent.maxConcurrency 超出允许范围"],
     [{ autoMemory: { lockTimeoutSeconds: 0 } }, "配置字段 autoMemory.lockTimeoutSeconds 超出允许范围"],
     [{ memory: { maxItemChars: 999 } }, "配置字段 memory.maxItemChars 超出允许范围"],
@@ -192,18 +203,9 @@ describe("loadConfig", () => {
     expect(() => loadConfig(workspacePath)).toThrow(message);
   });
 
-  it("loads custom context compression limits", () => {
-    const workspacePath = createTempWorkspace({
-      contextCompressionMaxChars: 1200,
-      contextCompressionToolResultMaxChars: 300,
-      contextCompressionMaxOutputTokens: 1024,
-      toolResultInitialMaxChars: 6000,
-    });
+  it("loads profile custom limits", () => {
+    const workspacePath = createTempWorkspace({ profile: { enabled: false, maxItemChars: 4000, maxTotalChars: 9000 } });
     workspaces.push(workspacePath);
-
-    expect(loadConfig(workspacePath).contextCompressionMaxChars).toBe(1200);
-    expect(loadConfig(workspacePath).contextCompressionToolResultMaxChars).toBe(300);
-    expect(loadConfig(workspacePath).contextCompressionMaxOutputTokens).toBe(1024);
-    expect(loadConfig(workspacePath).toolResultInitialMaxChars).toBe(6000);
+    expect(loadConfig(workspacePath).profile).toEqual({ enabled: false, maxItemChars: 4000, maxTotalChars: 9000 });
   });
 });

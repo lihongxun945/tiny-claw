@@ -43,6 +43,7 @@ export class GatewayStream {
         if (event.type === "run_state") {
           this.snapshot.run = event.run;
           this.snapshot.turnId = event.run.turnId;
+          this.snapshot.status = event.run.state === "running" ? event.run.status?.message ?? "" : "";
         }
         if (event.type === "text_delta") this.snapshot.text += event.text;
         if (event.type === "status") this.snapshot.status = event.message;

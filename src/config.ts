@@ -8,15 +8,12 @@ const DEFAULTS: Partial<Config> = {
   maxTokens: 16384,
   maxContextTokens: 128000,
   contextCompressionThreshold: 0.7,
-  contextCompressionMaxChars: 5000,
-  contextCompressionToolResultMaxChars: 500,
-  contextCompressionMaxOutputTokens: 2048,
-  toolResultInitialMaxChars: 12_000,
   bashTerminationGraceMs: 1000,
-  historyWindowSize: 5,
+  bashMaxOutputChars: 10000,
+  fileReadMaxChars: 20000,
   maxAgentIterations: 100,
   emptyResponseRetries: 1,
-  searchProvider: "ollama",
+  searchProvider: "duckduckgo",
 };
 
 export function createDefaultConfig(): Record<string, unknown> {
@@ -34,21 +31,15 @@ export function createDefaultConfig(): Record<string, unknown> {
     maxTokens: DEFAULTS.maxTokens,
     maxContextTokens: DEFAULTS.maxContextTokens,
     contextCompressionThreshold: DEFAULTS.contextCompressionThreshold,
-    contextCompressionMaxChars: DEFAULTS.contextCompressionMaxChars,
-    contextCompressionToolResultMaxChars: DEFAULTS.contextCompressionToolResultMaxChars,
-    contextCompressionMaxOutputTokens: DEFAULTS.contextCompressionMaxOutputTokens,
-    toolResultInitialMaxChars: DEFAULTS.toolResultInitialMaxChars,
     bashTerminationGraceMs: DEFAULTS.bashTerminationGraceMs,
-    historyWindowSize: DEFAULTS.historyWindowSize,
+    bashMaxOutputChars: DEFAULTS.bashMaxOutputChars,
+    fileReadMaxChars: DEFAULTS.fileReadMaxChars,
     maxAgentIterations: DEFAULTS.maxAgentIterations,
     emptyResponseRetries: DEFAULTS.emptyResponseRetries,
     sessionSummary: {
       enabled: true,
       persistent: true,
-      turnThreshold: 5,
-      recentTurns: 3,
       maxInputChars: 40000,
-      maxChars: 10000,
       maxOutputTokens: 10000,
       maxOperations: 32,
       maxItemChars: 1000,
@@ -105,6 +96,7 @@ export function createDefaultConfig(): Record<string, unknown> {
       rawStreamEvents: false,
     },
     security: {
+      background: { timeoutSeconds: 3600, maxRunning: 4, maxLogChars: 20000 },
       mode: "auto",
       approvalTtlMs: 86400000,
       tools: {},
@@ -129,7 +121,6 @@ export function createDefaultConfig(): Record<string, unknown> {
           git_diff: { mode: "allow" },
         },
       },
-      historyWindowSize: 8,
       maxAgentIterations: 100,
       gitTimeoutMs: 10000,
       diffMaxChars: 200000,
@@ -143,7 +134,6 @@ export function createDefaultConfig(): Record<string, unknown> {
     plan: {
       enabled: true,
       maxSteps: 8,
-      maxGateCorrections: 2,
     },
     searchProvider: "duckduckgo",
     ollamaApiKey: "",
@@ -160,6 +150,25 @@ export function createDefaultConfig(): Record<string, unknown> {
     plugins: {},
     pluginStates: {},
   };
+}
+
+export function stripDeprecatedConfigFields(config: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...config };
+  for (const key of ["contextCompressionMaxChars", "contextCompressionToolResultMaxChars", "contextCompressionMaxOutputTokens", "toolResultInitialMaxChars", "historyWindowSize"]) delete result[key];
+  const obsolete: Record<string, string[]> = {
+    sessionSummary: ["turnThreshold", "maxChars", "recentTurns"],
+    plan: ["maxGateCorrections", "decisionRetries"],
+    project: ["historyWindowSize"],
+    autoMemory: ["minConfidence"],
+  };
+  for (const [section, keys] of Object.entries(obsolete)) {
+    const value = result[section];
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const copy = { ...value } as Record<string, unknown>;
+    for (const key of keys) delete copy[key];
+    result[section] = copy;
+  }
+  return result;
 }
 
 export function ensureConfigFile(workspacePath: string): string {
@@ -234,12 +243,9 @@ export function validateConfig(raw: Record<string, unknown>): void {
   assertNumber(raw.maxTokens ?? DEFAULTS.maxTokens, "maxTokens", { min: 1, max: 1_000_000, integer: true });
   assertNumber(raw.maxContextTokens ?? DEFAULTS.maxContextTokens, "maxContextTokens", { min: 1, max: 10_000_000, integer: true });
   assertNumber(raw.contextCompressionThreshold ?? DEFAULTS.contextCompressionThreshold, "contextCompressionThreshold", { min: 0.1, max: 1 });
-  assertNumber(raw.contextCompressionMaxChars ?? DEFAULTS.contextCompressionMaxChars, "contextCompressionMaxChars", { min: 100, max: 1_000_000, integer: true });
-  assertNumber(raw.contextCompressionToolResultMaxChars ?? DEFAULTS.contextCompressionToolResultMaxChars, "contextCompressionToolResultMaxChars", { min: 100, max: 1_000_000, integer: true });
-  assertNumber(raw.contextCompressionMaxOutputTokens ?? DEFAULTS.contextCompressionMaxOutputTokens, "contextCompressionMaxOutputTokens", { min: 256, max: 1_000_000, integer: true });
-  assertNumber(raw.toolResultInitialMaxChars ?? DEFAULTS.toolResultInitialMaxChars, "toolResultInitialMaxChars", { min: 1000, max: 10_000_000, integer: true });
   assertNumber(raw.bashTerminationGraceMs ?? DEFAULTS.bashTerminationGraceMs, "bashTerminationGraceMs", { min: 0, max: 60000, integer: true });
-  assertNumber(raw.historyWindowSize ?? DEFAULTS.historyWindowSize, "historyWindowSize", { min: 0, max: 10_000, integer: true });
+  assertOptionalNumber(raw.bashMaxOutputChars, "bashMaxOutputChars", { min: 1, integer: true });
+  assertOptionalNumber(raw.fileReadMaxChars, "fileReadMaxChars", { min: 1, integer: true });
   assertNumber(raw.maxAgentIterations ?? DEFAULTS.maxAgentIterations, "maxAgentIterations", { min: 0, max: 1_000, integer: true });
   assertNumber(raw.emptyResponseRetries ?? DEFAULTS.emptyResponseRetries, "emptyResponseRetries", { min: 0, max: 5, integer: true });
 
@@ -274,10 +280,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertObject(raw.sessionSummary, "sessionSummary");
     assertOptionalBoolean(raw.sessionSummary.enabled, "sessionSummary.enabled");
     assertOptionalBoolean(raw.sessionSummary.persistent, "sessionSummary.persistent");
-    assertOptionalNumber(raw.sessionSummary.turnThreshold, "sessionSummary.turnThreshold", { min: 1, integer: true });
-    assertOptionalNumber(raw.sessionSummary.recentTurns, "sessionSummary.recentTurns", { min: 0, integer: true });
     assertOptionalNumber(raw.sessionSummary.maxInputChars, "sessionSummary.maxInputChars", { min: 1, integer: true });
-    assertOptionalNumber(raw.sessionSummary.maxChars, "sessionSummary.maxChars", { min: 1, integer: true });
     assertOptionalNumber(raw.sessionSummary.maxOutputTokens, "sessionSummary.maxOutputTokens", { min: 256, integer: true });
     assertOptionalNumber(raw.sessionSummary.maxOperations, "sessionSummary.maxOperations", { min: 1, integer: true });
     assertOptionalNumber(raw.sessionSummary.maxItemChars, "sessionSummary.maxItemChars", { min: 1, integer: true });
@@ -444,7 +447,6 @@ export function validateConfig(raw: Record<string, unknown>): void {
         }
       }
     }
-    assertOptionalNumber(project.historyWindowSize, "project.historyWindowSize", { min: 0, max: 10_000, integer: true });
     assertOptionalNumber(project.maxAgentIterations, "project.maxAgentIterations", { min: 0, max: 1_000, integer: true });
     assertOptionalNumber(project.gitTimeoutMs, "project.gitTimeoutMs", { min: 1000, max: 120_000, integer: true });
     assertOptionalNumber(project.diffMaxChars, "project.diffMaxChars", { min: 1000, max: 5_000_000, integer: true });
@@ -460,8 +462,6 @@ export function validateConfig(raw: Record<string, unknown>): void {
     const plan = raw.plan as Record<string, unknown>;
     assertOptionalBoolean(plan.enabled, "plan.enabled");
     assertOptionalNumber(plan.maxSteps, "plan.maxSteps", { min: 1, max: 50, integer: true });
-    assertOptionalNumber(plan.maxGateCorrections, "plan.maxGateCorrections", { min: 0, integer: true });
-    assertOptionalNumber(plan.decisionRetries, "plan.decisionRetries", { min: 0, max: 10, integer: true });
   }
 }
 
@@ -478,6 +478,7 @@ export function loadConfig(workspacePath: string): Config {
   if (!raw.apiUrl) throw new Error("配置缺少 apiUrl");
   if (raw.apiKey === undefined) throw new Error("配置缺少 apiKey");
   if (!raw.model) throw new Error("配置缺少 model");
+  raw = stripDeprecatedConfigFields(raw);
   validateConfig(raw);
 
   return {
@@ -494,12 +495,9 @@ export function loadConfig(workspacePath: string): Config {
     maxTokens: (raw.maxTokens as number) ?? DEFAULTS.maxTokens!,
     maxContextTokens: (raw.maxContextTokens as number) ?? DEFAULTS.maxContextTokens!,
     contextCompressionThreshold: (raw.contextCompressionThreshold as number) ?? DEFAULTS.contextCompressionThreshold!,
-    contextCompressionMaxChars: (raw.contextCompressionMaxChars as number) ?? DEFAULTS.contextCompressionMaxChars!,
-    contextCompressionToolResultMaxChars: (raw.contextCompressionToolResultMaxChars as number) ?? DEFAULTS.contextCompressionToolResultMaxChars!,
-    contextCompressionMaxOutputTokens: (raw.contextCompressionMaxOutputTokens as number) ?? DEFAULTS.contextCompressionMaxOutputTokens!,
-    toolResultInitialMaxChars: (raw.toolResultInitialMaxChars as number) ?? DEFAULTS.toolResultInitialMaxChars!,
     bashTerminationGraceMs: (raw.bashTerminationGraceMs as number) ?? DEFAULTS.bashTerminationGraceMs!,
-    historyWindowSize: (raw.historyWindowSize as number) ?? DEFAULTS.historyWindowSize!,
+    bashMaxOutputChars: (raw.bashMaxOutputChars as number) ?? DEFAULTS.bashMaxOutputChars!,
+    fileReadMaxChars: (raw.fileReadMaxChars as number) ?? DEFAULTS.fileReadMaxChars!,
     maxAgentIterations: (raw.maxAgentIterations as number) ?? DEFAULTS.maxAgentIterations!,
     emptyResponseRetries: (raw.emptyResponseRetries as number) ?? DEFAULTS.emptyResponseRetries!,
     searchProvider: (raw.searchProvider as Config["searchProvider"]) ?? DEFAULTS.searchProvider!,
@@ -513,6 +511,7 @@ export function loadConfig(workspacePath: string): Config {
     subAgent: raw.subAgent as Config["subAgent"] | undefined,
     sessionSummary: raw.sessionSummary as Config["sessionSummary"] | undefined,
     autoMemory: normalizeAutoMemoryConfig(raw.autoMemory),
+    profile: raw.profile as Config["profile"] | undefined,
     memory: raw.memory as Config["memory"] | undefined,
     attachments: raw.attachments as Config["attachments"] | undefined,
     debug: raw.debug as Config["debug"] | undefined,

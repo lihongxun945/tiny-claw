@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { downloadLocalModel, fetchConfig, fetchLocalModels, testModel, updateConfig, type LocalModelStatus } from "../lib/api.js";
+import { downloadLocalModel, fetchConfigSettings, fetchLocalModels, testModel, updateConfig, type LocalModelStatus } from "../lib/api.js";
 
 type FieldType = "text" | "password" | "number" | "select" | "checkbox" | "list" | "json";
 
@@ -9,7 +9,7 @@ interface FieldDef {
   type: FieldType;
   options?: string[];
   optionLabels?: Record<string, string>;
-  defaultValue?: unknown;
+
   required?: boolean;
   description?: string;
 }
@@ -68,7 +68,7 @@ const REMOTE_MODEL_FIELDS: FieldDef[] = [
   { key: "apiUrl", label: "API URL", type: "text", required: true },
   { key: "apiKey", label: "API Key", type: "password", description: "仅远程模型需要；后端只返回脱敏值。" },
   { key: "model", label: "模型", type: "text", required: true },
-  { key: "modelProvider", label: "模型协议", type: "select", options: ["anthropic-messages", "openai-chat", "chatgpt"], defaultValue: "anthropic-messages" },
+  { key: "modelProvider", label: "模型协议", type: "select", options: ["anthropic-messages", "openai-chat", "chatgpt"] },
 ];
 
 const LOCAL_MODEL_FIELDS: FieldDef[] = [
@@ -76,78 +76,78 @@ const LOCAL_MODEL_FIELDS: FieldDef[] = [
     key: "localModel.modelId",
     label: "本地模型",
     type: "select",
-    defaultValue: "qwen3.5-4b-q4",
+
   },
-  { key: "localModel.contextSize", label: "本地上下文 Token", type: "number", defaultValue: 32768 },
+  { key: "localModel.contextSize", label: "本地上下文 Token", type: "number" },
 ];
 
 const FIELD_GROUPS: FieldGroup[] = [
   {
     title: "上下文与执行",
     fields: [
-      { key: "maxTokens", label: "单次回复 Token", type: "number", defaultValue: 4096 },
-      { key: "emptyResponseRetries", label: "空响应重试次数", type: "number", defaultValue: 1 },
-      { key: "maxContextTokens", label: "上下文 Token 上限", type: "number", defaultValue: 128000 },
-      { key: "contextCompressionThreshold", label: "上下文压缩阈值", type: "number", defaultValue: 0.7 },
-      { key: "contextCompressionMaxChars", label: "压缩摘要字符上限", type: "number", defaultValue: 5000 },
-      { key: "contextCompressionToolResultMaxChars", label: "压缩工具结果字符上限", type: "number", defaultValue: 500 },
-      { key: "toolResultInitialMaxChars", label: "工具结果初始字符上限", type: "number", defaultValue: 12000 },
-      { key: "historyWindowSize", label: "历史窗口轮数", type: "number", defaultValue: 5 },
-      { key: "maxAgentIterations", label: "最大 Agent 迭代", type: "number", defaultValue: 100, description: "达到上限时任务会停止并明确提示；设置为 0 表示不限制。" },
+      { key: "maxTokens", label: "单次回复 Token", type: "number" },
+      { key: "emptyResponseRetries", label: "空响应重试次数", type: "number" },
+      { key: "maxContextTokens", label: "上下文 Token 上限", type: "number" },
+      { key: "contextCompressionThreshold", label: "上下文压缩阈值", type: "number" },
+      { key: "fileReadMaxChars", label: "文件读取输出字符上限", type: "number" },
+      { key: "bashMaxOutputChars", label: "命令单路输出字符上限", type: "number" },
+      { key: "maxAgentIterations", label: "最大 Agent 迭代", type: "number", description: "达到上限时任务会停止并明确提示；设置为 0 表示不限制。" },
     ],
   },
   {
     title: "会话摘要",
     fields: [
-      { key: "sessionSummary.enabled", label: "启用", type: "checkbox", defaultValue: true },
-      { key: "sessionSummary.persistent", label: "持久化", type: "checkbox", defaultValue: true },
-      { key: "sessionSummary.turnThreshold", label: "整理轮数阈值", type: "number", defaultValue: 5 },
-      { key: "sessionSummary.recentTurns", label: "保留近期原文轮数", type: "number", defaultValue: 3 },
-      { key: "sessionSummary.maxChars", label: "摘要字符上限", type: "number", defaultValue: 4000 },
-      { key: "sessionSummary.maxInputChars", label: "Delta 输入字符上限", type: "number", defaultValue: 40000 },
-      { key: "sessionSummary.maxOutputTokens", label: "Delta 输出 Token 上限", type: "number", defaultValue: 10000 },
-      { key: "sessionSummary.maxOperations", label: "单次最大变更数", type: "number", defaultValue: 32 },
-      { key: "sessionSummary.maxItemChars", label: "单条摘要字符上限", type: "number", defaultValue: 1000 },
-      { key: "sessionSummary.maxSourcesPerOperation", label: "单次变更最大来源数", type: "number", defaultValue: 8 },
-      { key: "sessionSummary.checkpointDeltaThreshold", label: "Checkpoint Delta 阈值", type: "number", defaultValue: 20 },
-      { key: "sessionSummary.checkpointMaxChars", label: "Checkpoint 字符阈值", type: "number", defaultValue: 50000 },
-      { key: "sessionSummary.recallMaxResults", label: "原文召回条数上限", type: "number", defaultValue: 20 },
-      { key: "sessionSummary.recallMaxOutputChars", label: "原文召回输出上限", type: "number", defaultValue: 20000 },
-      { key: "sessionSummary.recallMaxQueryChars", label: "原文检索词长度上限", type: "number", defaultValue: 500 },
+      { key: "sessionSummary.enabled", label: "启用", type: "checkbox" },
+      { key: "sessionSummary.persistent", label: "持久化", type: "checkbox" },
+      { key: "sessionSummary.maxInputChars", label: "摘要请求输入字符上限", type: "number" },
+      { key: "sessionSummary.maxOutputTokens", label: "摘要输出 Token 上限", type: "number" },
+    ],
+  },
+  {
+    title: "会话摘要高级设置",
+    fields: [
+      { key: "sessionSummary.maxOperations", label: "单次最大变更数", type: "number" },
+      { key: "sessionSummary.maxItemChars", label: "单条摘要字符上限", type: "number" },
+      { key: "sessionSummary.maxSourcesPerOperation", label: "单次变更最大来源数", type: "number" },
+      { key: "sessionSummary.checkpointDeltaThreshold", label: "摘要存储整理批次阈值", type: "number" },
+      { key: "sessionSummary.checkpointMaxChars", label: "摘要存储整理字符阈值", type: "number" },
+      { key: "sessionSummary.recallMaxResults", label: "原文召回条数上限", type: "number" },
+      { key: "sessionSummary.recallMaxOutputChars", label: "原文召回输出上限", type: "number" },
+      { key: "sessionSummary.recallMaxQueryChars", label: "原文检索词长度上限", type: "number" },
     ],
   },
   {
     title: "自动记忆",
     fields: [
-      { key: "autoMemory.enabled", label: "启用", type: "checkbox", defaultValue: true },
-      { key: "autoMemory.mode", label: "整理模式", type: "select", options: ["auto", "hybrid", "suggest"], defaultValue: "hybrid" },
-      { key: "autoMemory.turnThreshold", label: "整理轮数阈值", type: "number", defaultValue: 10 },
-      { key: "autoMemory.maxCandidates", label: "最大工具调用次数", type: "number", defaultValue: 5 },
-      { key: "autoMemory.maxBatchChars", label: "整理输入字符上限", type: "number", defaultValue: 8000 },
-      { key: "autoMemory.lockTimeoutSeconds", label: "整理锁超时（秒）", type: "number", defaultValue: 300 },
-      { key: "profile.enabled", label: "启用固定 Profile", type: "checkbox", defaultValue: true, description: "稳定用户身份、偏好和长期约束会在每轮固定注入。" },
-      { key: "profile.maxItemChars", label: "单条 Profile 字符上限", type: "number", defaultValue: 2000 },
-      { key: "profile.maxTotalChars", label: "全部 Profile 字符上限", type: "number", defaultValue: 8000 },
-      { key: "memory.enabled", label: "启用向量长期记忆", type: "checkbox", defaultValue: true },
-      { key: "memory.embedding.provider", label: "Embedding 提供方", type: "select", options: ["local-hash", "openai-compatible"], defaultValue: "local-hash", description: "local-hash 无需下载或密钥，仅提供词法相似度；需要语义检索时配置 OpenAI-compatible Embedding。" },
-      { key: "memory.embedding.model", label: "Embedding 模型", type: "text", defaultValue: "local-hash-v1" },
-      { key: "memory.embedding.dimensions", label: "Embedding 维度", type: "number", defaultValue: 384 },
+      { key: "autoMemory.enabled", label: "启用", type: "checkbox" },
+      { key: "autoMemory.mode", label: "整理模式", type: "select", options: ["auto", "hybrid", "suggest"] },
+      { key: "autoMemory.turnThreshold", label: "整理轮数阈值", type: "number" },
+      { key: "autoMemory.maxCandidates", label: "最大工具调用次数", type: "number" },
+      { key: "autoMemory.maxBatchChars", label: "整理输入字符上限", type: "number" },
+      { key: "autoMemory.lockTimeoutSeconds", label: "整理锁超时（秒）", type: "number" },
+      { key: "profile.enabled", label: "启用固定 Profile", type: "checkbox", description: "稳定用户身份、偏好和长期约束会在每轮固定注入。" },
+      { key: "profile.maxItemChars", label: "单条 Profile 字符上限", type: "number" },
+      { key: "profile.maxTotalChars", label: "全部 Profile 字符上限", type: "number" },
+      { key: "memory.enabled", label: "启用向量长期记忆", type: "checkbox" },
+      { key: "memory.embedding.provider", label: "Embedding 提供方", type: "select", options: ["local-hash", "openai-compatible"], description: "local-hash 无需下载或密钥，仅提供词法相似度；需要语义检索时配置 OpenAI-compatible Embedding。" },
+      { key: "memory.embedding.model", label: "Embedding 模型", type: "text" },
+      { key: "memory.embedding.dimensions", label: "Embedding 维度", type: "number" },
       { key: "memory.embedding.apiUrl", label: "Embedding API URL", type: "text" },
       { key: "memory.embedding.apiKey", label: "Embedding API Key", type: "password" },
-      { key: "memory.maxItemChars", label: "单条记忆字符上限", type: "number", defaultValue: 20000 },
-      { key: "memory.maxTotalChars", label: "全部记忆字符上限", type: "number", defaultValue: 80000 },
-      { key: "memory.retrieval.maxResults", label: "自动召回条数", type: "number", defaultValue: 5 },
-      { key: "memory.retrieval.maxContextChars", label: "召回上下文字符上限", type: "number", defaultValue: 6000 },
-      { key: "memory.retrieval.minScore", label: "最低召回分数", type: "number", defaultValue: 0.35 },
-      { key: "memory.maintenance.inactiveTurns", label: "未使用轮次阈值", type: "number", defaultValue: 200 },
-      { key: "memory.maintenance.inactiveDays", label: "未使用天数阈值", type: "number", defaultValue: 30 },
-      { key: "memory.maintenance.trashRetentionDays", label: "回收站保留天数", type: "number", defaultValue: 30 },
+      { key: "memory.maxItemChars", label: "单条记忆字符上限", type: "number" },
+      { key: "memory.maxTotalChars", label: "全部记忆字符上限", type: "number" },
+      { key: "memory.retrieval.maxResults", label: "自动召回条数", type: "number" },
+      { key: "memory.retrieval.maxContextChars", label: "召回上下文字符上限", type: "number" },
+      { key: "memory.retrieval.minScore", label: "最低召回分数", type: "number" },
+      { key: "memory.maintenance.inactiveTurns", label: "未使用轮次阈值", type: "number" },
+      { key: "memory.maintenance.inactiveDays", label: "未使用天数阈值", type: "number" },
+      { key: "memory.maintenance.trashRetentionDays", label: "回收站保留天数", type: "number" },
     ],
   },
   {
     title: "搜索",
     fields: [
-      { key: "searchProvider", label: "搜索引擎", type: "select", options: ["ollama", "duckduckgo", "searxng", "brave"], defaultValue: "duckduckgo" },
+      { key: "searchProvider", label: "搜索引擎", type: "select", options: ["ollama", "duckduckgo", "searxng", "brave"] },
       { key: "ollamaApiKey", label: "Ollama API Key", type: "password" },
       { key: "searxngUrl", label: "SearXNG URL", type: "text" },
       { key: "braveApiKey", label: "Brave API Key", type: "password" },
@@ -156,71 +156,70 @@ const FIELD_GROUPS: FieldGroup[] = [
   {
     title: "图片附件",
     fields: [
-      { key: "attachments.enabled", label: "允许上传图片", type: "checkbox", defaultValue: true },
-      { key: "attachments.maxFilesPerMessage", label: "每条消息图片上限", type: "number", defaultValue: 4 },
-      { key: "attachments.maxFileSize", label: "单张图片字节上限", type: "number", defaultValue: 10485760 },
-      { key: "attachments.allowedImageTypes", label: "允许的图片类型", type: "list", defaultValue: ["image/png", "image/jpeg", "image/webp", "image/gif"] },
+      { key: "attachments.enabled", label: "允许上传图片", type: "checkbox" },
+      { key: "attachments.maxFilesPerMessage", label: "每条消息图片上限", type: "number" },
+      { key: "attachments.maxFileSize", label: "单张图片字节上限", type: "number" },
+      { key: "attachments.allowedImageTypes", label: "允许的图片类型", type: "list" },
     ],
   },
   {
     title: "权限与 Gateway",
     fields: [
-      { key: "security.tools", label: "工具权限覆盖", type: "json", defaultValue: {}, description: "按工具名设置 mode，可覆盖全局配置。" },
-      { key: "security.background.timeoutSeconds", label: "后台任务超时（秒）", type: "number", defaultValue: 3600 },
-      { key: "security.background.maxRunning", label: "后台任务并发上限", type: "number", defaultValue: 4 },
-      { key: "security.background.maxLogChars", label: "后台任务日志字符上限", type: "number", defaultValue: 20000 },
-      { key: "security.gateway.host", label: "Gateway Host", type: "text", defaultValue: "127.0.0.1" },
+      { key: "security.tools", label: "工具权限覆盖", type: "json", description: "按工具名设置 mode，可覆盖全局配置。" },
+      { key: "security.background.timeoutSeconds", label: "后台任务超时（秒）", type: "number" },
+      { key: "security.background.maxRunning", label: "后台任务并发上限", type: "number" },
+      { key: "security.background.maxLogChars", label: "后台任务日志字符上限", type: "number" },
+      { key: "security.gateway.host", label: "Gateway Host", type: "text" },
       { key: "security.gateway.token", label: "Gateway Token", type: "password" },
-      { key: "security.gateway.sseHeartbeatIntervalMs", label: "SSE 心跳间隔（毫秒）", type: "number", defaultValue: 15000 },
-      { key: "security.auditTools", label: "记录工具审计日志", type: "checkbox", defaultValue: true },
+      { key: "security.gateway.sseHeartbeatIntervalMs", label: "SSE 心跳间隔（毫秒）", type: "number" },
+      { key: "security.auditTools", label: "记录工具审计日志", type: "checkbox" },
     ],
   },
   {
     title: "项目开发模式",
     fields: [
-      { key: "project.security.tools", label: "项目工具权限覆盖", type: "json", defaultValue: { file_read: { mode: "allow" }, file_write: { mode: "auto" }, file_edit: { mode: "auto" }, bash: { mode: "auto" }, project_tree: { mode: "allow" }, project_search: { mode: "allow" }, git_status: { mode: "allow" }, git_diff: { mode: "allow" } } },
-      { key: "project.historyWindowSize", label: "项目历史窗口轮数", type: "number", defaultValue: 8 },
-      { key: "project.maxAgentIterations", label: "项目最大 Agent 迭代", type: "number", defaultValue: 100 },
-      { key: "project.gitTimeoutMs", label: "Git 操作超时（毫秒）", type: "number", defaultValue: 10000 },
-      { key: "project.diffMaxChars", label: "Diff 最大字符数", type: "number", defaultValue: 200000 },
-      { key: "project.openTimeoutMs", label: "打开项目超时（毫秒）", type: "number", defaultValue: 30000 },
-      { key: "project.treeMaxDepth", label: "目录树最大深度", type: "number", defaultValue: 4 },
-      { key: "project.treeMaxEntries", label: "目录树最大条目数", type: "number", defaultValue: 2000 },
-      { key: "project.searchMaxResults", label: "项目搜索最大结果数", type: "number", defaultValue: 200 },
-      { key: "project.searchMaxChars", label: "项目搜索最大字符数", type: "number", defaultValue: 50000 },
-      { key: "project.searchTimeoutMs", label: "项目搜索超时（毫秒）", type: "number", defaultValue: 10000 },
+      { key: "project.security.tools", label: "项目工具权限覆盖", type: "json" },
+      { key: "project.maxAgentIterations", label: "项目最大 Agent 迭代", type: "number" },
+      { key: "project.gitTimeoutMs", label: "Git 操作超时（毫秒）", type: "number" },
+      { key: "project.diffMaxChars", label: "Diff 最大字符数", type: "number" },
+      { key: "project.openTimeoutMs", label: "打开项目超时（毫秒）", type: "number" },
+      { key: "project.treeMaxDepth", label: "目录树最大深度", type: "number" },
+      { key: "project.treeMaxEntries", label: "目录树最大条目数", type: "number" },
+      { key: "project.searchMaxResults", label: "项目搜索最大结果数", type: "number" },
+      { key: "project.searchMaxChars", label: "项目搜索最大字符数", type: "number" },
+      { key: "project.searchTimeoutMs", label: "项目搜索超时（毫秒）", type: "number" },
     ],
   },
   {
     title: "Sub-agent",
     fields: [
-      { key: "subAgent.allowedTools", label: "允许工具", type: "list", defaultValue: [] },
-      { key: "subAgent.disabledTools", label: "禁用工具", type: "list", defaultValue: [] },
-      { key: "subAgent.maxIterations", label: "最大迭代次数", type: "number", defaultValue: 3 },
-      { key: "subAgent.maxConcurrency", label: "最大并发数", type: "number", defaultValue: 3 },
+      { key: "subAgent.allowedTools", label: "允许工具", type: "list" },
+      { key: "subAgent.disabledTools", label: "禁用工具", type: "list" },
+      { key: "subAgent.maxIterations", label: "最大迭代次数", type: "number" },
+      { key: "subAgent.maxConcurrency", label: "最大并发数", type: "number" },
     ],
   },
   {
-    title: "计划执行模式",
+    title: "任务计划",
     fields: [
-      { key: "plan.enabled", label: "显示任务计划", type: "checkbox", defaultValue: true },
-      { key: "plan.maxSteps", label: "最大计划步骤数", type: "number", defaultValue: 8 },
+      { key: "plan.enabled", label: "显示任务计划", type: "checkbox" },
+      { key: "plan.maxSteps", label: "最大计划步骤数", type: "number" },
     ],
   },
   {
     title: "插件",
     fields: [
-      { key: "enabledPlugins", label: "启用的内置插件", type: "list", defaultValue: [], description: "每行填写一个插件名，如 feishu。" },
-      { key: "externalPlugins", label: "外部插件入口", type: "list", defaultValue: [] },
-      { key: "plugins", label: "插件私有配置", type: "json", defaultValue: {}, description: "按插件名组织的 JSON 配置；密钥会自动脱敏。" },
+      { key: "enabledPlugins", label: "启用的内置插件", type: "list", description: "每行填写一个插件名，如 feishu。" },
+      { key: "externalPlugins", label: "外部插件入口", type: "list" },
+      { key: "plugins", label: "插件私有配置", type: "json", description: "按插件名组织的 JSON 配置；密钥会自动脱敏。" },
     ],
   },
   {
     title: "调试",
     fields: [
-      { key: "debug.enabled", label: "启用 Debug", type: "checkbox", defaultValue: false },
-      { key: "debug.modelIO", label: "记录模型输入输出", type: "checkbox", defaultValue: false },
-      { key: "debug.rawStreamEvents", label: "记录原始流事件", type: "checkbox", defaultValue: false },
+      { key: "debug.enabled", label: "启用 Debug", type: "checkbox" },
+      { key: "debug.modelIO", label: "记录模型输入输出", type: "checkbox" },
+      { key: "debug.rawStreamEvents", label: "记录原始流事件", type: "checkbox" },
     ],
   },
 ];
@@ -228,14 +227,15 @@ const FIELD_GROUPS: FieldGroup[] = [
 const DRAFT_FIELDS = [...REMOTE_MODEL_FIELDS, ...LOCAL_MODEL_FIELDS, ...FIELD_GROUPS.flatMap((group) => group.fields)]
   .filter((field) => field.type === "list" || field.type === "json");
 
-function buildDrafts(config: Record<string, unknown>): Record<string, string> {
+function buildDrafts(config: Record<string, unknown>, defaults: Record<string, unknown>): Record<string, string> {
   return Object.fromEntries(DRAFT_FIELDS.map((field) => [
     field.key,
-    formatDraft(getValue(config, field.key) ?? field.defaultValue, field.type),
+    formatDraft(getValue(config, field.key) ?? getValue(defaults, field.key), field.type),
   ]));
 }
 
 export default function ConfigEditor() {
+  const [defaults, setDefaults] = useState<Record<string, unknown>>({});
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [edited, setEdited] = useState<Record<string, unknown>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -269,10 +269,11 @@ export default function ConfigEditor() {
   }, [refreshLocalModels]);
 
   useEffect(() => {
-    fetchConfig()
-      .then((value) => {
+    fetchConfigSettings()
+      .then(({ config: value, defaults }) => {
+        setDefaults(defaults);
         const normalized = normalizeConfig(value);
-        const nextDrafts = buildDrafts(normalized);
+        const nextDrafts = buildDrafts(normalized, defaults);
         setConfig(normalized);
         setEdited(normalized);
         setDrafts(nextDrafts);
@@ -302,6 +303,7 @@ export default function ConfigEditor() {
       let next = edited;
       for (const field of DRAFT_FIELDS) {
         const draft = drafts[field.key] ?? "";
+        if (draft === savedDrafts[field.key]) continue;
         if (field.type === "list") {
           next = setValue(next, field.key, parseList(draft));
           continue;
@@ -312,7 +314,7 @@ export default function ConfigEditor() {
       }
 
       const updated = normalizeConfig(await updateConfig(next));
-      const nextDrafts = buildDrafts(updated);
+      const nextDrafts = buildDrafts(updated, defaults);
       setConfig(updated);
       setEdited(updated);
       setDrafts(nextDrafts);
@@ -361,13 +363,13 @@ export default function ConfigEditor() {
 
   const hasChanges = JSON.stringify(edited) !== JSON.stringify(config)
     || JSON.stringify(drafts) !== JSON.stringify(savedDrafts);
-  const selectedModelId = String(getValue(edited, "localModel.modelId") ?? "qwen3.5-4b-q4");
+  const selectedModelId = String(getValue(edited, "localModel.modelId") ?? getValue(defaults, "localModel.modelId") ?? "");
   const selectedLocalModel = localModels.find((model) => model.id === selectedModelId);
-  const remoteEnabled = Boolean(getValue(edited, "remoteModel.enabled") ?? true);
-  const localEnabled = Boolean(getValue(edited, "localModel.enabled") ?? false);
+  const remoteEnabled = Boolean(getValue(edited, "remoteModel.enabled") ?? getValue(defaults, "remoteModel.enabled") ?? true);
+  const localEnabled = Boolean(getValue(edited, "localModel.enabled") ?? getValue(defaults, "localModel.enabled") ?? false);
 
   const renderField = (field: FieldDef) => {
-    const value = getValue(edited, field.key) ?? field.defaultValue;
+    const value = getValue(edited, field.key) ?? getValue(defaults, field.key);
     const id = `config-${field.key}`;
     return (
       <div key={field.key} className={`config-field ${field.type === "json" || field.type === "list" ? "config-field-multiline" : ""}`}>

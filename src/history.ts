@@ -1,5 +1,5 @@
 import type { Message } from "./types.js";
-import { sanitizeToolMessageChains, stripToolMessagesForNewTurn } from "./message-sanitizer.js";
+import { sanitizeToolMessageChains } from "./message-sanitizer.js";
 
 export class MessageHistory {
   private messages: Message[] = [];
@@ -41,7 +41,7 @@ export class MessageHistory {
   private _buildContext(windowSize: number): { messages: Message[]; turnStartIndex: number } {
     const currentTurn = this.messages.slice(this.currentTurnStart);
     const previousMessages = this.messages.slice(0, this.currentTurnStart);
-    const readablePrevious = stripToolMessagesForNewTurn(previousMessages);
+    const readablePrevious = sanitizeToolMessageChains(previousMessages);
     const sanitizedPrevious = takeRecentUserTurns(readablePrevious, windowSize);
     const sanitizedCurrentTurn = sanitizeToolMessageChains(currentTurn);
 
@@ -59,7 +59,8 @@ function takeRecentUserTurns(messages: Message[], windowSize: number): Message[]
   let userTurns = 0;
   let startIndex = messages.length;
   for (let index = messages.length - 1; index >= 0; index--) {
-    if (messages[index].role !== "user") continue;
+    const message = messages[index];
+    if (message.role !== "user" || (Array.isArray(message.content) && message.content.every((block) => block.type === "tool_result"))) continue;
     userTurns++;
     startIndex = index;
     if (userTurns >= windowSize) break;

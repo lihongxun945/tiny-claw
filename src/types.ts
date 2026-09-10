@@ -57,12 +57,9 @@ export interface Config {
   maxTokens: number;
   maxContextTokens: number;
   contextCompressionThreshold: number;
-  contextCompressionMaxChars: number;
-  contextCompressionToolResultMaxChars: number;
-  contextCompressionMaxOutputTokens?: number;
-  toolResultInitialMaxChars: number;
   bashTerminationGraceMs: number;
-  historyWindowSize: number;
+  bashMaxOutputChars?: number;
+  fileReadMaxChars?: number;
   maxAgentIterations: number;
   emptyResponseRetries?: number;
   searchProvider: "ollama" | "searxng" | "brave" | "duckduckgo";
@@ -93,8 +90,6 @@ export type ExecutionMode = "normal" | "plan";
 export interface PlanConfig {
   enabled?: boolean;
   maxSteps?: number;
-  decisionRetries?: number;
-  maxGateCorrections?: number;
 }
 
 export interface ProjectConfig {
@@ -103,7 +98,6 @@ export interface ProjectConfig {
     tools?: Record<string, ToolSecurityConfig>;
   };
   /** 项目模式历史窗口（轮数，默认 8） */
-  historyWindowSize?: number;
   /** 项目模式最大 agent 迭代数（默认 100） */
   maxAgentIterations?: number;
   /** Git 命令超时（毫秒，默认 10000） */
@@ -165,12 +159,8 @@ export interface SubAgentConfig {
 export interface SessionSummaryConfig {
   enabled?: boolean;
   persistent?: boolean;
-  turnThreshold?: number;
-  recentTurns?: number;
   /** 摘要输入（本次新增上下文）字符上限（默认 40000） */
   maxInputChars?: number;
-  /** 摘要存储字符上限（默认 10000） */
-  maxChars?: number;
   /** 摘要 LLM 输出的 token 上限（默认 10000），避免通用 complete 的 1024 限制 */
   maxOutputTokens?: number;
   maxOperations?: number;
@@ -278,6 +268,8 @@ export interface Tool {
 }
 
 export interface ToolExecutionContext {
+  /** Report observable activity after permission checks, without changing run state. */
+  reportActivity?: (message: string) => void;
   signal?: AbortSignal;
   sessionId?: string;
   actor?: AgentActor;

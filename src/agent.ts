@@ -17,7 +17,7 @@ import { applySessionConfig } from "./project.js";
 import { readSessionMeta } from "./session-store.js";
 import type { AgentActor, ChatResponse, Config, ContentBlock, Message, ToolUseBlock, ToolResultBlock, SessionContext, ExecutionMode } from "./types.js";
 import { randomUUID } from "node:crypto";
-import { calculateMessageTokenBudget } from "./context-budget.js";
+import { calculateMessageTokenBudget, calculateHardMessageTokenBudget, getEffectiveMaxContextTokens } from "./context-budget.js";
 import { estimateTokens } from "./estimate-tokens.js";
 import type { AgentStatusUpdate } from "./plugins/types.js";
 import { createPreparedModelRequest } from "./context-snapshot.js";
@@ -262,6 +262,7 @@ export class AgentSession {
       started = true;
       await this.pluginManager.beginTurn(this.id, turnId, executionMode);
       yield { type: "run_state", run };
+      yield this.activity("execution:preparing", "正在准备上下文...");
       this.lastActivity = Date.now();
 
       // 1. Before Chat Hook：日志记录 + 可能的阻断或输入修改
@@ -407,6 +408,13 @@ export class AgentSession {
     }
   }
 
+  private activity(stage: string, message: string): AgentEvent {
+    const status = { stage, state: "started" as const, message, startedAt: Date.now() };
+    const turn = this.pluginManager.getTurnId(this.id);
+    const run = turn ? updateRun(this.workspacePath, this.id, turn, { status }) : undefined;
+    return run ? { type: "run_state", run } : { type: "status", ...status };
+  }
+
   private async *runModelLoop(
     controller: AbortController,
     actor: AgentActor | undefined,
@@ -429,13 +437,15 @@ export class AgentSession {
       }
 
       const executionMode = this.pluginManager.getExecutionMode(this.id);
+      yield this.activity("execution:preparing", "正在准备上下文...");
       const toolDefs = this.pluginManager.getToolDefinitions(this.sessionContext, executionMode, this.id, agentIteration);
       const turnPrompt = await this.pluginManager.callOnBuildTurnPrompt(this.systemPrompt, agentIteration, this.id);
 
       // 4. 获取上下文和完整请求预算
-      const context = this.history.getRecentMessages(this.config.historyWindowSize);
-      const turnStartIdx = this.history.getTurnStartIndexInContext(this.config.historyWindowSize);
+      const context = this.history.getRecentMessages(Infinity);
+      const turnStartIdx = this.history.getTurnStartIndexInContext(Infinity);
       const messageTokenBudget = calculateMessageTokenBudget(this.config, turnPrompt, toolDefs);
+      const hardMessageTokenBudget = calculateHardMessageTokenBudget(this.config, turnPrompt, toolDefs);
 
       // 5. Before Model Call Hook：上下文压缩等
       const hookEventQueue = new EventQueue();
@@ -444,7 +454,16 @@ export class AgentSession {
           messages: context,
           turnStartIndex: turnStartIdx,
           messageTokenBudget,
-          reportStatus: (status) => hookEventQueue.push({ type: "status", ...status }),
+          hardMessageTokenBudget,
+          fixedInputTokens: getEffectiveMaxContextTokens(this.config) - this.config.maxTokens - hardMessageTokenBudget,
+          reportStatus: (status) => {
+            const turn = this.pluginManager.getTurnId(this.id);
+            if (turn) {
+              const run = updateRun(this.workspacePath, this.id, turn, { status: status.state === "started" ? { ...status, startedAt: status.startedAt ?? Date.now() } : undefined });
+              if (run) hookEventQueue.push({ type: "run_state", run });
+            }
+            hookEventQueue.push({ type: "status", ...status });
+          },
         },
         agentIteration,
         this.id,
@@ -463,8 +482,8 @@ export class AgentSession {
         ? `${turnPrompt}\n\n${modifiedContext.systemPromptSuffix}`
         : turnPrompt;
       const effectiveMessageTokenBudget = Math.min(
-        modifiedContext.messageTokenBudget,
-        calculateMessageTokenBudget(this.config, effectiveTurnPrompt, toolDefs),
+        modifiedContext.hardMessageTokenBudget ?? hardMessageTokenBudget,
+        calculateHardMessageTokenBudget(this.config, effectiveTurnPrompt, toolDefs),
       );
 
       const modelMessages = modifiedContext.derivedContext
@@ -510,6 +529,8 @@ export class AgentSession {
         await this.pluginManager.callOnModelRequestPrepared(preparedRequest, agentIteration, this.id);
         yield { type: "context_usage", usage: preparedRequest.usage, iteration: agentIteration, attempt: attempt + 1 };
         if (controller.signal.aborted) throw new Error("会话已取消");
+        yield this.activity("execution:model_wait", "正在等待模型响应...");
+        let receivedText = false;
         const chatPromise = this.client.chat(
           modelMessages.map(({
             _turnId: _ignoredTurnId,
@@ -518,6 +539,10 @@ export class AgentSession {
             ...message
           }) => message),
           (delta) => {
+            if (!receivedText && delta) {
+              receivedText = true;
+              eventQueue.push(this.activity("execution:model_output", "正在生成回答..."));
+            }
             fullText += delta;
             eventQueue.push({ type: "text_delta", text: delta });
           },
@@ -668,12 +693,19 @@ export class AgentSession {
     let result: string;
     let completedAt: number;
     try {
-      result = await this.executeToolCall(toolCall, controller, actor, agentIteration);
+      const queue = new EventQueue();
+      queue.push(this.activity("execution:tool_check", `正在调用工具：${toolCall.name}`));
+      const pending = this.executeToolCall(toolCall, controller, actor, agentIteration,
+        (message) => queue.push(this.activity("execution:tool_running", message)),
+      ).finally(() => queue.close());
+      for (let event = await queue.next(); !event.done; event = await queue.next()) yield event.value;
+      result = await pending;
     } finally {
       completedAt = Date.now();
       saveTiming(completedAt);
     }
     yield { type: "tool_result", toolCallId: toolCall.id, name: toolCall.name, result, completedAt };
+    yield this.activity("execution:tool_finished", "工具已返回，正在处理结果...");
     return result;
   }
 
@@ -682,6 +714,7 @@ export class AgentSession {
     controller: AbortController,
     actor: AgentActor | undefined,
     agentIteration: number,
+    reportActivity?: (message: string) => void,
   ): Promise<string> {
     // Before Tool Hook
     const beforeTool = await this.pluginManager.callOnBeforeTool(
@@ -705,6 +738,7 @@ export class AgentSession {
       try {
         if (turn) updateRun(this.workspacePath, this.id, turn, { pendingToolCallId: toolCall.id });
         result = await tool.execute(toolCall.input, {
+          reportActivity,
           signal: controller.signal,
           sessionId: this.id,
           actor,

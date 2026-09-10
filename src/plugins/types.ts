@@ -156,11 +156,15 @@ export interface ModelCallContext {
   turnStartIndex: number;
   /** 扣除系统提示词、工具定义和最大输出后，可供 messages 使用的 token 预算。 */
   messageTokenBudget: number;
+  /** Full-input accounting and hard limit, distinct from the compression trigger. */
+  hardMessageTokenBudget?: number;
+  fixedInputTokens?: number;
   /** 上报不写入历史的临时执行状态。 */
   reportStatus?: (status: AgentStatusUpdate) => void;
 }
 
 export interface AgentStatusUpdate {
+  startedAt?: number;
   stage: string;
   state: "started" | "completed" | "failed";
   message: string;

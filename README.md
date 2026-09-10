@@ -51,11 +51,12 @@ tiny-claw 面向个人任务自动化与项目开发，注重执行过程可见�
 - 点击“新对话”创建新会话；历史会话会显示在左侧列表中。
 - 会话仍在后台执行时，左侧列表会显示“执行中”状态并自动刷新；选中该会话后只能停止，不能追加发送新消息。
 - 页面刷新或连接中断后会重新订阅当前任务，恢复已有输出并继续流式更新；同一轮输出合并为一条助手消息，关闭页面不会取消任务。
-- 回答后的同步摘要阶段显示“正在进行上下文压缩...”，期间输入框保持锁定；压缩成功或失败后解除锁定，失败时保留原始消息和已有摘要并显示提示。
+- 模型请求前的同步摘要阶段显示“正在进行上下文压缩...”，期间输入框保持锁定；压缩完成后继续请求模型，任务结束才解除锁定；失败时保留原始消息和已有摘要，硬预算允许时继续。
 - 复杂任务可通过 `update_plan` 展示计划和进度，默认折叠；简单问答不需要计划。未创建计划或进度更新失败都不会阻止执行，安全审批保持独立。
 - 点击停止显示“正在停止...”，确认结束后恢复输入；上下文压缩也可取消。macOS/Linux 上命令取消或超时会终止其进程组，包括普通后台子进程；`bashTerminationGraceMs` 配置强制终止前的宽限期，默认 1000 毫秒。
 - 自动审批按 shell 语法分析管道、重定向与工作目录；`2>/dev/null`、`2>&1` 和引号内普通文本不再误判为外部写入。不支持的语法请求确认，并显示具体原因。
 - 自动审批支持只读 `sed` 行打印，例如 `sed -n '15,100p' file`，无需信任项目；支持数字或 `$` 行地址和多个 `-e` 打印表达式。原地编辑、写文件、执行命令、外部脚本及未识别表达式仍需确认；管道和重定向分别检查。“每次审批”模式不受影响。
+- 自动审批也支持 `find` 的常见只读查询，以及 `git status`、`git ls-files`、`git rev-parse` 的已识别只读选项，无需额外信任项目。`find -o` 按“或”处理；执行外部命令、删除、写文件、Git 全局配置覆盖及未知选项仍需确认。
 - 项目模式的自动审批默认允许明确的项目内 Node/Python 脚本、`npm run` / `npm test` / `npm build` 及无额外选项的 make 任务，无需额外勾选“信任此项目”。内联代码、未知解释器选项、外部脚本、系统修改、远程操作和可识别的范围外写入仍需审批；“每次审批”保持不变。这是对项目代码执行的默认授权，不是沙箱，不能保证脚本内部没有其他副作用。
 - “信任此项目”仍保留在创建项目和项目设置中，用于已有的额外授权及托管 TMPDIR；不再是上述项目脚本执行的前提。同一真实目录共享设置，重启后保留。设置变更不自动执行待审批命令，也不终止已启动进程。
 - 可信项目可将临时日志写入 `$TMPDIR`，指向 workspace 下隔离的 `project-tmp/<项目路径哈希>`，不放开整个 `/tmp`。路径按真实目录和符号链接边界检查。
@@ -65,7 +66,7 @@ tiny-claw 面向个人任务自动化与项目开发，注重执行过程可见�
 - 在“日志”页面查看运行日志、模型调用错误和工具审计记录。
 - 在“插件”页面查看插件状态、依赖和权限声明，并编辑插件自己声明的私有配置；保存后会自动重载目标插件。
 - 在“配置”页面修改模型、上下文、搜索、权限、Sub-agent、插件和调试设置。
-- 输入框内审批模式左侧以“上下文 24%”显示最近一次模型调用的上下文占用；点击可查看完整统计、System Prompt、上下文摘要、Messages、Tools 和 Token 估算明细。摘要单独展示本次请求实际使用的会话摘要与临时压缩摘要，不重复计入 Token；旧快照未记录摘要时会明确提示。
+- 输入框内审批模式左侧以“上下文 24%”显示最近一次模型调用的上下文占用；点击可查看完整统计、System Prompt、上下文摘要、Messages、Tools 和 Token 估算明细。摘要单独展示本次请求实际使用的会话摘要；兼容展示旧快照中的临时摘要，不重复计入 Token；旧快照未记录摘要时会明确提示。
 - 每个会话的最新上下文快照保存在会话目录，重启后仍可查看；尚未产生快照时隐藏入口，删除会话时一并删除快照。
 - 当工具需要审批时，在聊天消息的工具块中点击“批准”或“拒绝”；刷新、切换会话或重启 Gateway 后审批仍会保留，批准或拒绝后原任务会自动继续处理。
 - 工具调用区域会显示执行中、成功、失败、已拦截和待审批状态；长任务会持续显示已执行时长。未在当前请求开放的工具不会执行，拦截记录不计入执行失败。
@@ -207,13 +208,8 @@ WebUI 支持浅色和深色主题，可在左侧栏底部切换。首次打开�
 | `emptyResponseRetries` | `1` | `1` | 模型成功返回空文本且无工具调用时的重试次数 |
 | `maxContextTokens` | `128000` | `128000` | 上下文窗口 token 估算上限 |
 | `contextCompressionThreshold` | `0.7` | `0.7` | 超过 `maxContextTokens * threshold` 时触发上下文压缩 |
-| `contextCompressionMaxChars` | `5000` | `5000` | 上下文压缩摘要目标字数上限 |
-| `contextCompressionToolResultMaxChars` | `500` | `500` | 构建历史压缩摘要时每个 tool result 保留的字符数 |
-| `contextCompressionMaxOutputTokens` | `2048` | `2048` | 上下文压缩模型调用允许生成的最大 token 数 |
-| `toolResultInitialMaxChars` | `12000` | `12000` | 对话上下文超预算时 tool result 的初始截断字符数 |
-| `historyWindowSize` | `5` | `20` | 普通历史窗口轮数；会话摘要开启后仍会保留近期原文 |
 | `maxAgentIterations` | `100` | `100` | 单次任务最大 Agent Loop 次数；达到上限时会明确提示，配置 `0` 表示不限 |
-| `searchProvider` | `"ollama"` | `"brave"` | 搜索服务：`ollama`、`searxng`、`brave`、`duckduckgo` |
+| `searchProvider` | `"duckduckgo"` | `"brave"` | 搜索服务：`ollama`、`searxng`、`brave`、`duckduckgo` |
 | `ollamaApiKey` | 无 | `"YOUR_OLLAMA_API_KEY"` | Ollama Web Search API Key，`searchProvider=ollama` 时使用 |
 | `searxngUrl` | 无 | `"http://localhost:8080"` | 自建 SearXNG 地址，`searchProvider=searxng` 时使用 |
 | `braveApiKey` | 无 | `"YOUR_BRAVE_API_KEY"` | Brave Search API Key，`searchProvider=brave` 时使用 |
@@ -261,23 +257,33 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 
 ### 会话摘要配置
 
-`core-session-summary` 为普通会话维护可追溯的 Checkpoint + Delta 结构化摘要，持久化到 `workspace/sessions/<session>/summary/current.json`。模型只输出带 `sourceMessageIds` 的变更意图，代码负责来源校验、ID 生成、Reducer 合并、revision 冲突检测和 Checkpoint 归档。摘要作为明确标记的临时派生上下文插在历史消息之后、当前用户轮次之前，不会伪装成用户消息、写入消息历史或改动稳定的 System Prompt；旧版 `state.json.summary` 会一次性迁移为带 legacy 来源的事实条目。
+设置默认值由后端提供。旧的临时压缩配置、历史窗口、`sessionSummary.maxChars`、`sessionSummary.turnThreshold` 和计划门禁配置兼容忽略，保存设置时清理；已有摘要、原始消息和有效自定义值不删除。旧配置缺少模型协议时仍沿用 Anthropic，新建配置使用 OpenAI Chat，避免隐式切换已有连接。
 
-`sub:` 开头的临时 sub-agent 会话默认不生成摘要。完整原始消息始终保存在 `messages.jsonl`；需要核对摘要来源或引用被压缩的原文时，模型可调用只读工具 `session_history_recall`，按 messageId、序号范围或关键词从当前会话取回。
+执行期间，回答下方的灰色状态行会显示等待模型响应、生成回答、调用工具或具体命令等阶段及耗时；无需展开工具或计划。刷新后可恢复当前阶段，断线、等待审批与正在停止使用独立提示。
+
+会话摘要只在模型请求前达到 Token 预算时同步生成，不再按对话轮数触发。`contextCompressionThreshold`（默认 `0.7`）按系统提示词、工具定义、摘要和消息的完整输入计算，并预留模型最大输出空间。压缩期间显示“正在进行上下文压缩...”；低占用的多轮对话不触发。旧配置 `sessionSummary.turnThreshold` 兼容读取但不再生效，跨会话的 `autoMemory.turnThreshold` 不受影响。
+
+未压缩的历史正文、工具调用和工具结果跨轮完整保留，不按轮数或消息类型裁剪。达到 Token 预算后，从最早的历史完整轮次生成摘要，成功持久化后才移除对应的请求原文；当前执行轮不参与摘要，磁盘 messages.jsonl 始终保留。失败保留原文和已有摘要：未超过模型硬上限则继续，超过时明确报错。旧 recentTurns 设置不再生效。
+
+单次工具输出在进入历史前限制大小：file_read 超限时明确标记并支持 offset/limit 分段读取；bash 保留 stdout/stderr 尾部，超限返回 truncated 和完整日志 outputPath，可通过 file_read 读取。项目搜索沿用 project.searchMaxChars/searchMaxResults。字符上限不等于 Token 保证，请求前仍执行模型硬预算检查。
+
+`core-session-summary` 为主会话及子 Agent 会话维护可追溯的 Checkpoint + Delta 结构化摘要，持久化到 `workspace/sessions/<session>/summary/current.json`。模型只输出带 `sourceMessageIds` 的变更意图，代码负责来源校验、ID 生成、Reducer 合并、revision 冲突检测和 Checkpoint 归档。摘要作为明确标记的临时派生上下文插在历史消息之后、当前用户轮次之前，不会伪装成用户消息、写入消息历史或改动稳定的 System Prompt；旧版 `state.json.summary` 会一次性迁移为带 legacy 来源的事实条目。
+
+主会话和 `sub:` 子 Agent 复用同一套摘要实现。关闭摘要后不再自动裁剪历史，超出模型硬预算时明确报错。完整原始消息始终保存在 `messages.jsonl`；需要核对摘要来源或引用被压缩的原文时，模型可调用只读工具 `session_history_recall`，按 messageId、序号范围或关键词从当前会话取回。
 
 | 配置项 | 默认值 | 说明 |
 |---|---:|---|
 | `sessionSummary.enabled` | `true` | 是否启用结构化会话摘要 |
 | `sessionSummary.persistent` | `true` | 是否持久化到 `summary/current.json` |
-| `sessionSummary.turnThreshold` | `5` | 累积多少个完整用户轮次后生成 Delta |
-| `sessionSummary.recentTurns` | `3` | 模型上下文仍保留的最近原文轮数 |
-| `sessionSummary.maxInputChars` | `40000` | 单次 Delta 提取输入字符上限 |
+| `fileReadMaxChars` | `20000` | 单次文件读取正文字符上限 |
+| `bashMaxOutputChars` | `10000` | stdout/stderr 各自返回的尾部字符上限 |
+| `sessionSummary.maxInputChars` | `40000` | 完整摘要请求的输入字符上限（含提示词、已有摘要和消息元数据），按完整消息分批 |
 | `sessionSummary.maxOutputTokens` | `10000` | Delta 提取模型输出上限 |
 | `sessionSummary.maxOperations` | `32` | 单个 Delta 最大操作数 |
 | `sessionSummary.maxItemChars` | `1000` | 单个摘要条目最大字符数 |
 | `sessionSummary.maxSourcesPerOperation` | `8` | 单个操作最多引用的原始消息数 |
 | `sessionSummary.checkpointDeltaThreshold` | `20` | 达到该 Delta 数量后固化 Checkpoint |
-| `sessionSummary.checkpointMaxChars` | `50000` | 达到该结构化存储大小后固化 Checkpoint |
+| `sessionSummary.checkpointMaxChars` | `50000` | 达到该结构化存储大小后触发整理，不是摘要总容量上限 |
 | `sessionSummary.recallMaxResults` | `20` | 单次原文召回最大消息数 |
 | `sessionSummary.recallMaxOutputChars` | `20000` | 单次原文召回最大输出字符数 |
 | `sessionSummary.recallMaxQueryChars` | `500` | 原文召回关键词最大字符数 |

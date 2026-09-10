@@ -1,10 +1,15 @@
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
-import type { Message, ToolCallInfo, SessionPlan } from "../types.js";
+import type { Message, ToolCallInfo, SessionPlan, RunView } from "../types.js";
+import { formatDuration, useElapsedTime } from "../lib/elapsed-time.js";
 import MessageBubble from "./MessageBubble.js";
 import PlanProgress from "./PlanProgress.js";
 import { mergeApprovalResume } from "../lib/message-merge.js";
 
 interface Props {
+  run?: RunView;
+  isStopping?: boolean;
+  connectionLost?: boolean;
+  awaitingApproval?: boolean;
   messages: Message[];
   activePlanId?: string;
   activePlanTurnId?: string;
@@ -27,6 +32,10 @@ interface Props {
 }
 
 export default function ChatView({
+  run,
+  isStopping,
+  connectionLost,
+  awaitingApproval,
   messages,
   activePlanId,
   activePlanTurnId,
@@ -54,6 +63,16 @@ export default function ChatView({
     ? mergeApprovalResume(messages, streamingApprovalId, streamingText, streamingToolCalls)
     : messages.filter((message) => !((isStreaming || backendBusy) && streamingTurnId && message.role === "assistant" && message.turnId === streamingTurnId));
   const showBackendBusy = backendBusy && !isStreaming;
+  const activity = !streamingTurnId || run?.turnId === streamingTurnId ? run?.status : undefined;
+  const active = isStreaming || backendBusy;
+  const statusText = isStopping ? "正在停止任务..."
+    : awaitingApproval ? "等待您的审批，操作尚未执行"
+    : connectionLost ? "连接已断开，正在重连；任务状态待确认"
+    : activity?.state === "started" ? activity.message
+    : streamingStatus || (streamingText ? "正在生成回答..." : "正在处理");
+  const elapsed = useElapsedTime(activity?.startedAt, undefined, active && !connectionLost && !awaitingApproval);
+  const textStreaming = active && !isStopping && !connectionLost && !awaitingApproval
+    && (activity ? activity.stage === "execution:model_output" : !streamingStatus);
   const lastPlanMessage = new Map<string, number>();
   displayedMessages.forEach((message, index) => {
     if (message.role === "assistant" && message.plan) lastPlanMessage.set(`${message.turnId ?? message.plan.turnId}:${message.plan.id}`, index);
@@ -134,29 +153,20 @@ export default function ChatView({
                 <MessageBubble
                   message={message}
                   {...toolGroupProps(message)}
-                  isStreaming={!streamingStatus}
+                  isStreaming={textStreaming}
                   onApproveAndResume={onApproveAndResume}
                   onApproveTurnAndResume={onApproveTurnAndResume}
                   onRejectAndResume={onRejectAndResume}
                 />
               );
             })()
-          ) : (
-            <div className="message assistant">
-              <div className="message-content processing-indicator" aria-live="polite">
-                <span>{streamingStatus || "正在处理"}</span>
-                <span className="processing-dots" aria-hidden="true">
-                  <span />
-                  <span />
-                  <span />
-                </span>
-                {!streamingStatus && <span className="streaming-cursor" aria-hidden="true" />}
-              </div>
-            </div>
-          )
+          ) : null
         )}
-        {(isStreaming || backendBusy) && streamingStatus && (streamingText || streamingToolCalls.length > 0 || streamingApprovalId) && (
-          <div className="summary-lifecycle-notice" role="status" aria-live="polite">{streamingStatus}</div>
+        {(active || awaitingApproval) && (
+          <div className="execution-status processing-indicator" role="status" aria-live="polite">
+            <span className="execution-status-text" title={statusText}>{statusText}</span>
+            {elapsed !== undefined && !isStopping && <span className="execution-status-time" aria-live="off">已耗时 {formatDuration(elapsed)}</span>}
+          </div>
         )}
         <div ref={bottomRef} />
       </div>

@@ -273,7 +273,6 @@ export function applySessionConfig(config: Config, context: SessionContext): Con
   const project = config.project;
   return {
     ...config,
-    historyWindowSize: project?.historyWindowSize ?? config.historyWindowSize,
     maxAgentIterations: project?.maxAgentIterations ?? config.maxAgentIterations,
     security: {
       ...config.security,

@@ -7,7 +7,7 @@ import { loadConfig } from "../../src/config.js";
 import type { ModelClient } from "../../src/model/index.js";
 import { PluginManager } from "../../src/plugin-manager.js";
 import { loadSessionState, saveSessionState, updateSessionState } from "../../src/session-state.js";
-import { appendSessionMessage, createSessionMeta, sessionDir, sessionMessagesPath, sessionStateFilePath } from "../../src/session-store.js";
+import { appendSessionMessage, readSessionMessages, createSessionMeta, sessionDir, sessionMessagesPath, sessionStateFilePath } from "../../src/session-store.js";
 import { getMemoryRecord, saveMemory } from "../../src/tools/memory.js";
 import { approveRequest, approveTurnRequest, hasTurnApproval, listApprovals, listSessionApprovalContinuations } from "../../src/tools/approval.js";
 import { checkDangerousToolPermission } from "../../src/tools/permission.js";
@@ -171,6 +171,26 @@ describe("AgentSession loop", () => {
         content: [{ type: "text", text: "hello" }],
       }),
     ]);
+  });
+
+  it("publishes observable model and tool activity and clears it at completion", async () => {
+    registerTool(manager, {
+      name: "activity_test", description: "test", inputSchema: { type: "object", properties: {} },
+      execute: async (_args, context) => { context?.reportActivity?.("正在读取测试数据"); return "ok"; },
+    });
+    const client = new FakeModelClient([
+      { text: "", toolCalls: [{ type: "tool_use", id: "activity-call", name: "activity_test", input: {} }] },
+      { text: "完成", toolCalls: [] },
+    ]);
+    const session = new AgentSession("activity-test", workspacePath, manager, {}, client);
+    const events = await collectAll(session.chat("开始"));
+    const runs = events.filter((event) => event.type === "run_state").map((event) => event.run);
+    expect(runs.flatMap((run) => run.status ? [run.status.stage] : [])).toEqual([
+      "execution:preparing", "execution:preparing", "execution:model_wait", "execution:tool_check", "execution:tool_running", "execution:tool_finished",
+      "execution:preparing", "execution:model_wait", "execution:model_output",
+    ]);
+    expect(runs.find((run) => run.status?.stage === "execution:tool_running")?.status).toMatchObject({ message: "正在读取测试数据", startedAt: expect.any(Number) });
+    expect(runs.at(-1)).toMatchObject({ state: "completed", status: undefined });
   });
 
   it("emits context usage before invoking the model", async () => {
@@ -1336,7 +1356,7 @@ describe("AgentSession loop", () => {
     expect(hasTurnApproval(workspacePath, session.id)).toBe(false);
   });
 
-  it("strips persisted tool chains from previous turns when restoring a session", async () => {
+  it("preserves complete persisted tool chains and repairs only orphaned calls on restore", async () => {
     await appendSessionMessage(workspacePath, "restore", { role: "user", content: "legacy request" });
     await appendSessionMessage(workspacePath, "restore", {
       role: "assistant",
@@ -1362,6 +1382,8 @@ describe("AgentSession loop", () => {
             role: "assistant",
             content: [{ type: "text", text: "legacy text" }],
           }),
+          expect.objectContaining({ role: "assistant", content: [{ type: "tool_use", id: "complete-result", name: "echo", input: {} }] }),
+          expect.objectContaining({ role: "user", content: [{ type: "tool_result", tool_use_id: "complete-result", content: "ok" }] }),
           expect.objectContaining({ role: "user", content: "continue" }),
         ]);
         return { text: "done", toolCalls: [] };
@@ -1376,13 +1398,14 @@ describe("AgentSession loop", () => {
   });
 
   it.each([false, true])("keeps the run busy until synchronous compression settles (failure=%s)", async (fails) => {
-    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, sessionSummary: { enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 } });
+    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.1, sessionSummary: { enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 } });
     const pm = new PluginManager(workspace);
     let release!: () => void;
     const waiting = new Promise<void>((resolve) => { release = resolve; });
     let running: Promise<void> | undefined;
     try {
       await pm.loadCorePlugins();
+      await appendSessionMessage(workspace, "slow-summary", { role: "user", content: "历史内容".repeat(7000) });
       const client = new SummaryModelClient([{ text: "您要继续吗？", toolCalls: [] }]);
       const complete = client.complete.bind(client);
       vi.spyOn(client, "complete").mockImplementation(async (messages) => {
@@ -1393,7 +1416,7 @@ describe("AgentSession loop", () => {
       const session = new AgentSession("slow-summary", workspace, pm, {}, client);
       const events: AgentEvent[] = [];
       running = (async () => { for await (const event of session.chat("解释结果", undefined, undefined, "plan", "slow-turn")) events.push(event); })();
-      await vi.waitFor(() => expect(events).toContainEqual({ type: "status", stage: "session_summary", state: "started", message: "正在进行上下文压缩..." }));
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: "status", stage: "session_summary", state: "started", message: "正在进行上下文压缩..." })));
       expect(session.isBusy()).toBe(true);
       expect(readRun(workspace, session.id, "slow-turn")).toMatchObject({ state: "running", status: { stage: "session_summary", state: "started" } });
       expect(events.some((event) => event.type === "done")).toBe(false);
@@ -1405,6 +1428,10 @@ describe("AgentSession loop", () => {
       expect(readRun(workspace, session.id, "slow-turn")?.state).toBe("completed");
       expect(events).toContainEqual(expect.objectContaining({ type: "status", stage: "session_summary", state: fails ? "failed" : "completed" }));
       expect(events.at(-1)).toMatchObject({ type: "done" });
+      if (fails) {
+        expect(loadSessionSummary(workspace, session.id).summarizedThroughSequence).toBe(0);
+        expect(client.calls[0]).toContainEqual(expect.objectContaining({ content: "历史内容".repeat(7000) }));
+      }
       expect(session.getMessages()).toEqual(expect.arrayContaining([expect.objectContaining({ role: "user", content: "解释结果" })]));
     } finally {
       release();
@@ -1415,12 +1442,13 @@ describe("AgentSession loop", () => {
   });
 
   it("cancels synchronous summary without committing it and unlocks the session", async () => {
-    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, sessionSummary: { enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 } });
+    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.1, sessionSummary: { enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 } });
     const pm = new PluginManager(workspace);
     let pending: Promise<AgentEvent[]> | undefined;
     let session: AgentSession | undefined;
     try {
       await pm.loadCorePlugins();
+      await appendSessionMessage(workspace, "cancel-summary", { role: "user", content: "历史内容".repeat(7000) });
       const client = new SummaryModelClient([{ text: "done", toolCalls: [] }, { text: "next", toolCalls: [] }]);
       let started = false;
       vi.spyOn(client, "complete").mockImplementationOnce((_messages, _prompt, options) => new Promise((_resolve, reject) => {
@@ -1447,19 +1475,21 @@ describe("AgentSession loop", () => {
   it("persists session summaries and restores them after rebuilding the session", async () => {
     const summaryWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
+      contextCompressionThreshold: 0.1,
       sessionSummary: { enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 },
     });
     const firstManager = new PluginManager(summaryWorkspace);
     const secondManager = new PluginManager(summaryWorkspace);
     try {
       await firstManager.loadCorePlugins();
+      await appendSessionMessage(summaryWorkspace, "summary-session", { role: "user", content: "旧内容".repeat(10000) });
       const firstClient = new SummaryModelClient([{ text: "第一轮完成", toolCalls: [] }]);
       const firstSession = new AgentSession("summary-session", summaryWorkspace, firstManager, {}, firstClient);
 
       expect(await collect(firstSession.chat("记住这个目标"))).toEqual([
+        { type: "status", stage: "session_summary", state: "started", message: "正在进行上下文压缩...", beforeTokens: expect.any(Number) },
+        { type: "status", stage: "session_summary", state: "completed", message: "上下文压缩完成", beforeTokens: expect.any(Number), afterTokens: expect.any(Number) },
         { type: "text_delta", text: "第一轮完成" },
-        { type: "status", stage: "session_summary", state: "started", message: "正在进行上下文压缩..." },
-        { type: "status", stage: "session_summary", state: "completed", message: "会话记忆整理完成" },
         { type: "done", text: "第一轮完成", reason: "completed" },
       ]);
       const persistedSummary = loadSessionSummary(summaryWorkspace, "summary-session");
@@ -1468,12 +1498,10 @@ describe("AgentSession loop", () => {
 
       await secondManager.loadCorePlugins();
       const secondClient = new SummaryModelClient([{ text: "第二轮完成", toolCalls: [] }]);
-      const secondSession = new AgentSession("summary-session", summaryWorkspace, secondManager, {}, secondClient);
+      const secondSession = new AgentSession("summary-session", summaryWorkspace, secondManager, { contextCompressionThreshold: 0.7 }, secondClient);
 
       expect(await collect(secondSession.chat("继续"))).toEqual([
         { type: "text_delta", text: "第二轮完成" },
-        { type: "status", stage: "session_summary", state: "started", message: "正在进行上下文压缩..." },
-        { type: "status", stage: "session_summary", state: "completed", message: "会话记忆整理完成" },
         { type: "done", text: "第二轮完成", reason: "completed" },
       ]);
       expect(secondClient.calls[0]).toEqual(expect.arrayContaining([
@@ -1508,6 +1536,54 @@ describe("AgentSession loop", () => {
       await firstManager.destroy();
       await secondManager.destroy();
       removeTempWorkspace(summaryWorkspace);
+    }
+  });
+
+  it("does not summarize low-token conversations by round count or lose history to the window", async () => {
+    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, historyWindowSize: 1, sessionSummary: { enabled: true, turnThreshold: 1 } });
+    const pm = new PluginManager(workspace);
+    try {
+      await pm.loadCorePlugins();
+      const client = new SummaryModelClient(Array.from({ length: 12 }, () => ({ text: "ok", toolCalls: [] })));
+      const session = new AgentSession("small-rounds", workspace, pm, {}, client);
+      for (let i = 0; i < 12; i++) {
+        const events = await collect(session.chat(`question ${i}`));
+        expect(events.some((event) => event.type === "status")).toBe(false);
+      }
+      expect(client.completeCalls).toHaveLength(0);
+      expect(client.calls.at(-1)).toContainEqual(expect.objectContaining({ content: "question 0" }));
+      expect(loadSessionSummary(workspace, session.id).revision).toBe(0);
+    } finally {
+      await pm.destroy();
+      removeTempWorkspace(workspace);
+    }
+  });
+
+  it("only extracts uncovered history after restarting a compressed session", async () => {
+    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.1, sessionSummary: { enabled: true, recentTurns: 0 } });
+    const first = new PluginManager(workspace);
+    const second = new PluginManager(workspace);
+    try {
+      await first.loadCorePlugins();
+      const original = await appendSessionMessage(workspace, "incremental", { role: "user", content: "第一批".repeat(10000) });
+      const firstClient = new SummaryModelClient([{ text: "ok", toolCalls: [] }]);
+      const session = new AgentSession("incremental", workspace, first, {}, firstClient);
+      expect((await collect(session.chat("继续"))).at(-1)).toMatchObject({ type: "done" });
+      const saved = loadSessionSummary(workspace, session.id);
+      expect(saved.summarizedThroughSequence).toBe(original._sequence);
+      await appendSessionMessage(workspace, session.id, { role: "user", content: "第二批".repeat(10000) });
+      await second.loadCorePlugins();
+      const client = new SummaryModelClient([{ text: "ok", toolCalls: [] }]);
+      const restored = new AgentSession(session.id, workspace, second, {}, client);
+      expect((await collect(restored.chat("再继续"))).at(-1)).toMatchObject({ type: "done" });
+      const request = JSON.parse(client.completeCalls[0][0].content as string);
+      expect(request.schema.sourceRange.fromSequence).toBe(saved.summarizedThroughSequence + 1);
+      expect(request.messages.every((message: { sequence: number }) => message.sequence > saved.summarizedThroughSequence)).toBe(true);
+      expect(readSessionMessages(workspace, session.id)).toContainEqual(expect.objectContaining({ _messageId: original._messageId, content: original.content }));
+    } finally {
+      await first.destroy();
+      await second.destroy();
+      removeTempWorkspace(workspace);
     }
   });
 
@@ -1631,7 +1707,7 @@ describe("AgentSession loop", () => {
     }
   });
 
-  it("keeps configured recent user turns after stripping tool messages", async () => {
+  it("keeps all uncovered turns including tools when migrating an unbounded legacy summary", async () => {
     const summaryTurnsWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
       sessionSummary: { enabled: true, persistent: true, turnThreshold: 100, recentTurns: 3 },
@@ -1707,7 +1783,7 @@ describe("AgentSession loop", () => {
         expect.objectContaining({ role: "user", content: "历史问题 2" }),
         expect.objectContaining({
           role: "assistant",
-          content: [{ type: "text", text: "我来查一下历史问题 2" }],
+          content: [{ type: "text", text: "我来查一下历史问题 2" }, { type: "tool_use", id: "tool-2", name: "web_search", input: { query: "历史问题 2" } }],
         }),
         expect.objectContaining({
           role: "assistant",
@@ -1720,7 +1796,7 @@ describe("AgentSession loop", () => {
         }),
         expect.objectContaining({ role: "user", content: "当前问题" }),
       ]));
-      expect(client.calls[0]).not.toEqual(expect.arrayContaining([
+      expect(client.calls[0]).toEqual(expect.arrayContaining([
         expect.objectContaining({
           role: "user",
           content: expect.arrayContaining([
@@ -1789,96 +1865,26 @@ describe("AgentSession loop", () => {
     }
   });
 
-  it("preserves recent raw messages when context compression summarizes old history", async () => {
-    const compressWorkspace = createTempWorkspace({
-      autoMemory: { enabled: false },
-      sessionSummary: { enabled: false, recentTurns: 1 },
-      maxTokens: 1000,
-      maxContextTokens: 10_000,
-      contextCompressionThreshold: 0.1,
-      historyWindowSize: 10,
-    });
-    const compressManager = new PluginManager(compressWorkspace);
-    try {
-      await compressManager.loadCorePlugins();
-      const oldText = "旧历史内容".repeat(200);
-    await appendSessionMessage(compressWorkspace, "compress-session", { role: "user", content: `old user ${oldText}`, _timestamp: 1 });
-    await appendSessionMessage(compressWorkspace, "compress-session", { role: "assistant", content: [{ type: "text", text: `old assistant ${oldText}` }], _timestamp: 2 });
-    await appendSessionMessage(compressWorkspace, "compress-session", { role: "user", content: `older user ${oldText}`, _timestamp: 3 });
-    await appendSessionMessage(compressWorkspace, "compress-session", { role: "assistant", content: [{ type: "text", text: `older assistant ${oldText}` }], _timestamp: 4 });
-    await appendSessionMessage(compressWorkspace, "compress-session", { role: "user", content: "recent user raw", _timestamp: 5 });
-    await appendSessionMessage(compressWorkspace, "compress-session", { role: "assistant", content: [{ type: "text", text: "recent assistant raw" }], _timestamp: 6 });
-
-      const client = new SummaryModelClient([{ text: "完成", toolCalls: [] }]);
-      const session = new AgentSession("compress-session", compressWorkspace, compressManager, {}, client);
-
-      expect(await collect(session.chat("current user raw"))).toEqual([
-        { type: "status", stage: "context_compression", state: "started", message: "正在压缩上下文…", beforeTokens: expect.any(Number) },
-        { type: "status", stage: "context_compression", state: "completed", message: "上下文压缩完成，正在调用模型…", beforeTokens: expect.any(Number), afterTokens: expect.any(Number) },
-        { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成", reason: "completed" },
-      ]);
-
-      expect(client.completeCalls[0][0].content).toContain("不超过 5000 字");
-      expect(client.calls[0]).toEqual([
-        expect.objectContaining({ role: "user", content: "recent user raw" }),
-        expect.objectContaining({
-          role: "assistant",
-          content: [{ type: "text", text: "recent assistant raw" }],
-        }),
-        expect.objectContaining({ role: "user", content: "current user raw" }),
-      ]);
-      expect(client.systemPrompts[0]).toContain('<context_compression_summary data-kind="derived-summary" role="internal">');
-      const snapshot = JSON.parse(readFileSync(resolve(sessionDir(compressWorkspace, "compress-session"), "context-snapshot.json"), "utf8"));
-      expect(snapshot.contextSummaries).toEqual([
-        { title: "临时压缩摘要", content: expect.stringContaining('<context_compression_summary data-kind="derived-summary" role="internal">') },
-      ]);
-      expect(client.systemPrompts[0]).toContain(snapshot.contextSummaries[0].content);
-      expect(client.calls[0]).not.toEqual(expect.arrayContaining([
-        expect.objectContaining({ role: "user", content: expect.stringContaining("[当前会话摘要]") }),
-      ]));
-    } finally {
-      await compressManager.destroy();
-      removeTempWorkspace(compressWorkspace);
-    }
+  it("keeps full readable history when summaries are disabled, ignoring legacy window limits", async () => {
+    const oldText = "历史内容".repeat(2000);
+    await appendSessionMessage(workspacePath, "no-summary", { role: "user", content: oldText });
+    await appendSessionMessage(workspacePath, "no-summary", { role: "user", content: "recent" });
+    const client = new SummaryModelClient([{ text: "done", toolCalls: [] }]);
+    const session = new AgentSession("no-summary", workspacePath, manager, { contextCompressionThreshold: 0.1 }, client);
+    expect((await collect(session.chat("continue"))).at(-1)).toMatchObject({ type: "done" });
+    expect(client.completeCalls).toHaveLength(0);
+    expect(client.calls[0]).toContainEqual(expect.objectContaining({ content: oldText }));
   });
 
-  it("uses configured context compression summary length", async () => {
-    const compressLengthWorkspace = createTempWorkspace({
-      autoMemory: { enabled: false },
-      sessionSummary: { enabled: false, recentTurns: 1 },
-      maxTokens: 1000,
-      maxContextTokens: 10_000,
-      contextCompressionThreshold: 0.1,
-      contextCompressionMaxChars: 1200,
-      historyWindowSize: 10,
-    });
-    const compressLengthManager = new PluginManager(compressLengthWorkspace);
-    try {
-      await compressLengthManager.loadCorePlugins();
-      const oldText = "旧历史内容".repeat(200);
-    await appendSessionMessage(compressLengthWorkspace, "compress-length-session", { role: "user", content: `old user ${oldText}`, _timestamp: 1 });
-    await appendSessionMessage(compressLengthWorkspace, "compress-length-session", { role: "assistant", content: [{ type: "text", text: `old assistant ${oldText}` }], _timestamp: 2 });
-    await appendSessionMessage(compressLengthWorkspace, "compress-length-session", { role: "user", content: `older user ${oldText}`, _timestamp: 3 });
-    await appendSessionMessage(compressLengthWorkspace, "compress-length-session", { role: "assistant", content: [{ type: "text", text: `older assistant ${oldText}` }], _timestamp: 4 });
-    await appendSessionMessage(compressLengthWorkspace, "compress-length-session", { role: "user", content: "recent user raw", _timestamp: 5 });
-    await appendSessionMessage(compressLengthWorkspace, "compress-length-session", { role: "assistant", content: [{ type: "text", text: "recent assistant raw" }], _timestamp: 6 });
-
-      const client = new SummaryModelClient([{ text: "完成", toolCalls: [] }]);
-      const session = new AgentSession("compress-length-session", compressLengthWorkspace, compressLengthManager, {}, client);
-
-      expect(await collect(session.chat("current user raw"))).toEqual([
-        { type: "status", stage: "context_compression", state: "started", message: "正在压缩上下文…", beforeTokens: expect.any(Number) },
-        { type: "status", stage: "context_compression", state: "completed", message: "上下文压缩完成，正在调用模型…", beforeTokens: expect.any(Number), afterTokens: expect.any(Number) },
-        { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成", reason: "completed" },
-      ]);
-
-      expect(client.completeCalls[0][0].content).toContain("不超过 1200 字");
-    } finally {
-      await compressLengthManager.destroy();
-      removeTempWorkspace(compressLengthWorkspace);
-    }
+  it("uses the same persistent summary engine in sub-agent sessions", async () => {
+    await appendSessionMessage(workspacePath, "sub:summary", { role: "user", content: "旧内容".repeat(10000) });
+    const client = new SummaryModelClient([{ text: "done", toolCalls: [] }]);
+    const session = new AgentSession("sub:summary", workspacePath, manager, {
+      contextCompressionThreshold: 0.1, sessionSummary: { enabled: true, recentTurns: 0 },
+    }, client);
+    expect((await collect(session.chat("continue"))).at(-1)).toMatchObject({ type: "done" });
+    expect(client.completeCalls).toHaveLength(1);
+    expect(loadSessionSummary(workspacePath, session.id).summarizedThroughSequence).toBe(1);
   });
 
   it("does not summarize an injected session summary again during context compression", async () => {
@@ -1887,7 +1893,7 @@ describe("AgentSession loop", () => {
       sessionSummary: { enabled: true, persistent: true, turnThreshold: 100, recentTurns: 1 },
       maxTokens: 1000,
       maxContextTokens: 10_000,
-      contextCompressionThreshold: 0.1,
+      contextCompressionThreshold: 0.7,
       historyWindowSize: 10,
     });
     const summaryCompressManager = new PluginManager(summaryCompressWorkspace);
@@ -1936,7 +1942,7 @@ describe("AgentSession loop", () => {
     }
   });
 
-  it("coalesces repeated synthetic summaries before sending context to the model", async () => {
+  it("does not reinterpret raw legacy-looking text when summaries are disabled", async () => {
     const summaryNormalizeWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
       sessionSummary: { enabled: false },
@@ -1962,7 +1968,7 @@ describe("AgentSession loop", () => {
 
       const syntheticSummaries = client.calls[0].filter((message) => typeof message.content === "string"
         && (message.content.startsWith("[当前会话摘要]") || message.content.startsWith("[以下是对话历史的摘要]")));
-      expect(syntheticSummaries).toEqual([]);
+      expect(syntheticSummaries).toHaveLength(3);
       expect(client.calls[0]).toEqual(expect.arrayContaining([
         expect.objectContaining({
           role: "assistant",
@@ -1971,21 +1977,21 @@ describe("AgentSession loop", () => {
         expect.objectContaining({ role: "user", content: "继续" }),
       ]));
       expect(client.completeCalls).toHaveLength(0);
-      expect(client.systemPrompts[0]).toContain('<context_compression_summary data-kind="derived-summary" role="internal">');
-      expect(client.systemPrompts[0]).toContain("最新历史摘要");
+      expect(client.systemPrompts[0]).not.toContain('<context_compression_summary');
+      expect(client.calls[0]).toContainEqual(expect.objectContaining({ content: expect.stringContaining("最新历史摘要") }));
     } finally {
       await summaryNormalizeManager.destroy();
       removeTempWorkspace(summaryNormalizeWorkspace);
     }
   });
 
-  it("does not compress tool results from previous turns after a new user message", async () => {
+  it.each([true, false])("retains historical tool results below budget (summary=%s)", async (enabled) => {
     const previousToolWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
-      sessionSummary: { enabled: false },
+      sessionSummary: { enabled },
       maxTokens: 1000,
       maxContextTokens: 10_000,
-      contextCompressionThreshold: 0.1,
+      contextCompressionThreshold: 0.7,
       historyWindowSize: 10,
     });
     const previousToolManager = new PluginManager(previousToolWorkspace);
@@ -2006,7 +2012,7 @@ describe("AgentSession loop", () => {
       });
     await appendSessionMessage(previousToolWorkspace, "previous-tool-session", {
         role: "user",
-        content: [{ type: "tool_result", tool_use_id: "search-1", content: "上一轮巨大工具结果".repeat(20_000) }],
+        content: [{ type: "tool_result", tool_use_id: "search-1", content: "上一轮工具结果".repeat(20) }],
         _timestamp: 3,
       });
     await appendSessionMessage(previousToolWorkspace, "previous-tool-session", {
@@ -2028,7 +2034,7 @@ describe("AgentSession loop", () => {
         expect.objectContaining({ role: "user", content: "上一轮搜索" }),
         expect.objectContaining({
           role: "assistant",
-          content: [{ type: "text", text: "我来搜索" }],
+          content: [{ type: "text", text: "我来搜索" }, { type: "tool_use", id: "search-1", name: "web_search", input: { query: "large" } }],
         }),
         expect.objectContaining({
           role: "assistant",
@@ -2036,7 +2042,7 @@ describe("AgentSession loop", () => {
         }),
         expect.objectContaining({ role: "user", content: "新一轮问题" }),
       ]));
-      expect(client.calls[0]).not.toEqual(expect.arrayContaining([
+      expect(client.calls[0]).toEqual(expect.arrayContaining([
         expect.objectContaining({
           role: "user",
           content: expect.arrayContaining([
@@ -2050,7 +2056,41 @@ describe("AgentSession loop", () => {
     }
   });
 
-  it("truncates oversized recent tool results before sending context to the model", async () => {
+  it("summarizes historical tools at the token threshold and preserves the original on disk and restart", async () => {
+    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.1, sessionSummary: { enabled: true } });
+    const firstManager = new PluginManager(workspace);
+    const secondManager = new PluginManager(workspace);
+    try {
+      await firstManager.loadCorePlugins();
+      const source = [
+        { role: "user" as const, content: "old task" },
+        { role: "assistant" as const, content: [{ type: "tool_use" as const, id: "old-tool", name: "bash", input: { command: "test" } }] },
+        { role: "user" as const, content: [{ type: "tool_result" as const, tool_use_id: "old-tool", content: "历史工具结果".repeat(3500) }] },
+        { role: "assistant" as const, content: "finished" },
+      ];
+      for (const message of source) await appendSessionMessage(workspace, "tool-summary", message);
+      const client = new SummaryModelClient([{ text: "done", toolCalls: [] }]);
+      await collect(new AgentSession("tool-summary", workspace, firstManager, {}, client).chat("new task"));
+      expect(client.completeCalls).toHaveLength(1);
+      const request = JSON.parse(String(client.completeCalls[0][0].content));
+      expect(request.schema.sourceRange.throughSequence).toBe(4);
+      expect(request.messages[2].content).toContain("历史工具结果".repeat(3500));
+      expect(JSON.stringify(client.calls[0])).not.toContain("old-tool");
+      expect(JSON.stringify(readSessionMessages(workspace, "tool-summary"))).toContain("old-tool");
+      await secondManager.loadCorePlugins();
+      const restored = new SummaryModelClient([{ text: "restored", toolCalls: [] }]);
+      await collect(new AgentSession("tool-summary", workspace, secondManager, {}, restored).chat("continue"));
+      expect(restored.completeCalls).toHaveLength(0);
+      expect(JSON.stringify(restored.calls[0])).toContain("持久化摘要");
+      expect(JSON.stringify(restored.calls[0])).toContain("new task");
+    } finally {
+      await firstManager.destroy();
+      await secondManager.destroy();
+      removeTempWorkspace(workspace);
+    }
+  });
+
+  it("rejects oversized current tool results without truncating the original", async () => {
     const toolBudgetWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
       sessionSummary: { enabled: false },
@@ -2076,20 +2116,12 @@ describe("AgentSession loop", () => {
       ]);
       const session = new AgentSession("tool-budget-session", toolBudgetWorkspace, toolBudgetManager, {}, client);
 
-      expect(await collect(session.chat("继续总结"))).toEqual([
-        { type: "tool_call", toolCallId: "search-1", name: "large_result", input: {}, startedAt: expect.any(Number) },
-        { type: "tool_result", toolCallId: "search-1", name: "large_result", result: "超大搜索结果".repeat(20_000), completedAt: expect.any(Number) },
-        { type: "text_delta", text: "完成" },
-        { type: "done", text: "完成", reason: "completed" },
-      ]);
-
-      const toolResultMessage = client.calls[1].find((message) => Array.isArray(message.content)
-        && message.content.some((block) => block.type === "tool_result"));
-      expect(toolResultMessage).toBeDefined();
-      const toolResult = (toolResultMessage!.content as Array<{ type: string; content?: string }>)
-        .find((block) => block.type === "tool_result");
-      expect(toolResult?.content).toContain("[工具结果已截断");
-      expect(toolResult?.content?.length).toBeLessThan(5_000);
+      const events = await collect(session.chat("继续总结"));
+      expect(events.at(-1)).toMatchObject({ type: "error", message: expect.stringContaining("超过模型上下文限制") });
+      expect(client.calls).toHaveLength(1);
+      expect(readSessionMessages(toolBudgetWorkspace, session.id)).toContainEqual(expect.objectContaining({
+        content: [expect.objectContaining({ type: "tool_result", content: "超大搜索结果".repeat(20_000) })],
+      }));
     } finally {
       await toolBudgetManager.destroy();
       removeTempWorkspace(toolBudgetWorkspace);
@@ -2243,11 +2275,11 @@ describe("AgentSession loop", () => {
         expect.objectContaining({ role: "user", content: "需要完整保留的原始任务" }),
         expect.objectContaining({
           role: "assistant",
-          content: [{ type: "text", text: "正在处理原任务" }],
+          content: [{ type: "text", text: "正在处理原任务" }, { type: "tool_use", id: "call-limit", name: "echo", input: {} }],
         }),
         expect.objectContaining({ role: "user", content: "继续" }),
       ]));
-      expect(client.calls[1]).not.toEqual(expect.arrayContaining([
+      expect(client.calls[1]).toEqual(expect.arrayContaining([
         expect.objectContaining({
           content: expect.arrayContaining([expect.objectContaining({ type: "tool_result" })]),
         }),

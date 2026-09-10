@@ -7,6 +7,27 @@ import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-worksp
 const decide = (command: string, trustedProject = false) => evaluateAutoApproval({ toolName: "bash", args: {}, command, rootPath: "/project", cwd: "/project", projectMode: true, trustedProject, tempPath: "/managed-temp" });
 describe("structured shell approval", () => {
   it.each([
+    `echo "===checkpoint files==="; ls -la reports/*.ckpt* reports/*checkpoint* /tmp/*ckpt* 2>/dev/null; find . -maxdepth 2 -name '*.ckpt*' -o -maxdepth 2 -name '*checkpoint*' 2>/dev/null | grep -v node_modules; echo "===git status==="; git status --short`,
+    "find .", "find /tmp -name '*.ckpt*' -print", "find -L . -type f -print0",
+    "find . -name node_modules -prune -o -name '*.js' -print",
+    "find . \\( -name '*.js' -o -name '*.ts' \\) -print",
+    "find . -name '-exec' -print", "find . -name '-delete' -print",
+    "git status", "git status --short", "git status --porcelain=v2 --branch",
+    "git status -- reports/", "git ls-files -o --exclude-standard", "git rev-parse --show-toplevel",
+  ])("allows read-only file and git queries: %s", command => expect(decide(command).action).toBe("allow"));
+  it.each([
+    "find . -delete", "find . -exec touch /tmp/output \\;", "find . -execdir sh -c id \\;",
+    "find . -ok echo {} \\;", "find . -okdir echo {} \\;", "find . -fprint /tmp/output",
+    "find . -fprint0 reports/output", "find . -fprintf reports/output '%p'", "find . -fls reports/output",
+    "find . -unknown", "find . -name", "find . > /tmp/output", "find . | sh",
+    "git -c core.fsmonitor=evil status", "git --exec-path=/tmp status", "git -C /tmp status",
+    "git status --unknown", "git ls-files --format='%(path)'", "git rev-parse --output=/tmp/output",
+    "git status --short > /tmp/output", "git status; sudo reboot", "git push origin master",
+  ])("keeps effectful or unresolved queries behind approval: %s", command => {
+    expect(decide(command).action).not.toBe("allow");
+    expect(decide(command, true).action).not.toBe("allow");
+  });
+  it.each([
     "sed -n '15,100p' scripts/ai-evaluate-strength.cjs",
     "sed -n '1p; 15,100p' file | head -20",
     "sed -n -e '1p' -e '5,$p' file",

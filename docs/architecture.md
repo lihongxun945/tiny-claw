@@ -47,7 +47,7 @@ src/
 │   ├── local.ts      # node-llama-cpp 本地模型适配器
 │   ├── local-catalog.ts # 内置 Qwen / Gemma GGUF 模型目录
 │   └── local-store.ts # 本地模型下载、状态与持久化清单
-├── history.ts        # 滑动窗口消息历史
+├── history.ts        # 消息历史与当前轮工具链保护
 ├── estimate-tokens.ts # Token 估算（供 compress 插件使用）
 ├── sub-agent.ts      # 并行 sub-agent 执行器（受限工具 + 临时 AgentSession）
 ├── types.ts          # 共享类型定义
@@ -63,11 +63,10 @@ src/
 │   │   ├── sub-agent.ts # sub-agent 插件（注册 sub_agent_run 工具）
 │   │   ├── prompts.ts # 提示词构建插件（模板加载+占位符替换）
 │   │   ├── history.ts # 会话历史插件（用户消息进入 MessageHistory）
-│   │   ├── session-summary.ts # 会话滚动摘要插件（摘要 + 最近几轮原文）
+│   │   ├── session-summary.ts # 会话滚动摘要插件（摘要 + 未压缩原文）
 │   │   ├── auto-memory.ts # 自动记忆插件（每 10 轮批量整理长期记忆）
 │   │   ├── plan.ts # 计划执行模式（工具、状态机、恢复 API）
 │   │   ├── attachments.ts # 图片上传路由与 session 附件存储
-│   │   ├── compress.ts # 上下文压缩插件（阈值判断+模型摘要）
 │   │   └── logger.ts # 日志插件（通过钩子记录所有事件）
 │   └── feishu/       # 飞书插件（平台适配器）
 │       ├── index.ts  # 插件入口
@@ -170,6 +169,8 @@ WebUI 先调用 `/projects/inspect` 检查目录，再读取项目设置并展�
 
 `security/shell-analysis.ts` 使用 bash-parser 生成 AST，`security/auto-approval.ts` 遍历命令、管道、逻辑连接和重定向，跟踪可确定的工作目录。丢弃输出到准确的 `/dev/null`、描述符复制以及引号内普通文本不作为外部写入；命令替换中的命令仍分析。未知语法或动态目标请求确认。支持范围内的写入目标经真实路径与符号链接检查；这是审批静态分析，不是完整 Bash 解释器或 OS 沙箱。
 
+`security/read-command-analysis.ts` 按参数识别 find 与 Git 的只读子集。find 查询谓词按参数个数消费，支持路径、名称/类型筛选、深度、逻辑组合和标准输出；执行、删除、文件输出与未知参数请求确认。find 的 -o 不作为输出路径。Git 仅对 status、ls-files、rev-parse 的已识别查询选项免除项目信任检查；全局配置覆盖及未知查询选项保守确认，不放宽其他 Git 子命令的原有授权。shell 管道、动态展开和重定向仍独立检查；显式 ask/allow 不变。
+
 项目模式下，自动审批默认允许工作目录和入口文件均在当前项目内的 Node/Python 脚本；路径检查包含符号链接。允许 npm run/test/build 和不含选项或变量覆盖的 make 任务，不以 trustedProjects 为前提。解释器内联代码、未知选项、外部脚本、npm 执行目录/配置覆盖与未识别命令保守请求确认。外层 AST 仍独立检查管道、重定向、目录切换、系统和远程操作；普通模式及显式 ask/allow 不变。此策略是代码执行授权，不是沙箱，不检测脚本内部所有副作用。
 
 `security.trustedProjects` 在全局用户配置中保存额外授权的项目绝对路径，默认空数组；按真实路径精确匹配，不自动信任子目录、项目声明或已有项目。保留通用 git 命令的原授权逻辑以及托管临时目录授权，不覆盖系统危险操作与可识别的外部写入。`security/project-trust.ts` 创建 workspace 下 `project-tmp/<真实项目路径哈希>`，可信项目命令的 TMPDIR 与审批解析使用同一目录。
@@ -208,17 +209,19 @@ GET /plan 返回计划列表、最新 Run、当前执行 turnId 和 activePlan�
 
 GatewayStream 保留当前 Run、turnId、累计文本、工具调用和事件序号。SSE 先发送 snapshot，再发送带序号的增量和 run_state；前端按序号去重并按轮次合并助手消息。刷新或切换会话重新订阅；连接状态与后端运行状态分开，断线不视为任务完成。历史会话 busy 从运行记录派生，审批入口来自持久化审批事实源。
 
+当前回答下方用灰色状态行展示可观测执行阶段及阶段耗时。Agent 通过 Run.status 上报准备上下文、等待模型响应、接收回答、调用工具和处理结果；工具通过可选的 ToolExecutionContext.reportActivity 上报具体操作，不由模型正文推测。bash 通过审批并收到进程 spawn 事件后才报告执行命令，文件读取和项目搜索在权限检查后报告操作。状态携带 startedAt，经 run_state SSE 和快照恢复；前端按 Run revision 拒绝旧状态覆盖。光标仅在文本输出阶段显示，压缩、工具执行、停止和断线期间不显示；审批单独提示操作尚未执行。连接丢失独立展示，不将断线解释为后台仍在运行。工具详情和计划折叠不影响状态行可见性，终态后移除活动状态。
+
 重连失败保留累计正文、工具调用及 turnId，普通运行统一显示“正在处理”，不以连接有无推断后台执行。无事件流时 Gateway 仅对本进程拥有且执行器已空闲的 running 记录补写 interrupted；不干预其他进程或真实活动任务。模型循环的失败统一抛给发起入口，普通执行与审批恢复均先持久化终态、发送 run_state，再报告 error，避免流结束后遗留 running。
 
 OpenAI-compatible 流响应的 reasoning_content 作为协议元数据合并到 ChatResponse.reasoningContent，并随原助手消息以 _reasoningContent 持久化。工具结果回传及审批恢复时原样映射回 reasoning_content，不加入可见正文、不生成虚构推理内容；未提供该字段的模型不附加字段。旧历史未保存的推理字段无法凭空恢复。
 
-会话摘要保持同步执行：onTurnEnd 收尾钩子完成前不发布 Run 完成状态，输入保持锁定，确保下一轮读取更新后的摘要。收尾阶段的通用状态持久化到 Run.status 并通过 SSE 更新；有正文时仍在回答下方显示“正在进行上下文压缩...”，不显示模型输入光标。刷新后从流快照或 Run.status 恢复提示。摘要失败保留原始消息和已有 Checkpoint，显示失败提示后结束本轮，普通和项目视图采用相同展示规则。
+会话摘要在 onBeforeModelCall 阶段按 Token 预算同步执行，不再在 onTurnEnd 按轮数整理。压缩期间输入保持锁定，通用状态持久化到 Run.status 并通过 SSE 更新，页面显示“正在进行上下文压缩...”。刷新后从流快照或 Run.status 恢复提示。摘要失败保留原始消息和已有 Checkpoint，硬预算允许时继续调用主模型；否则明确报错。
 
 轮次结束或出错时将当前计划保存为 plan-snapshots/<turn>.json。后续轮次的更新创建独立记录，不覆盖以前快照；快照保存失败仅记录告警，不阻断任务。历史未完成记录可通过界面显式关联到新请求，但该关联不构成执行恢复或操作授权。
 
 工具调用仍以单条助手消息聚合，展示执行中、成功、失败、已拦截和待审批；有审批时强制展开。输入框执行期间只能停止，等待审批期间锁定普通发送但审批卡片可操作。
 
-在 macOS/Linux 上，bash 工具为每次调用创建独立进程组；取消与超时先向整组发送 SIGTERM，等待 `bashTerminationGraceMs`（默认 1000ms）后发送 SIGKILL 并释放输出管道，避免后台子进程持有管道导致调用无法返回。普通 `&`/`nohup` 子进程仍受本次调用管理，不作为独立持久任务。显式另建会话的外部进程不在该进程组保证范围内。前端点击停止立即显示“正在停止...”，仍等待服务端终态解锁。模型调用前压缩与轮次结束摘要均接收本轮 AbortSignal；取消时不提交尚未保存的摘要，并保留原始消息供后续处理。
+在 macOS/Linux 上，bash 工具为每次调用创建独立进程组；取消与超时先向整组发送 SIGTERM，等待 `bashTerminationGraceMs`（默认 1000ms）后发送 SIGKILL 并释放输出管道，避免后台子进程持有管道导致调用无法返回。普通 `&`/`nohup` 子进程仍受本次调用管理，不作为独立持久任务。显式另建会话的外部进程不在该进程组保证范围内。前端点击停止立即显示“正在停止...”，仍等待服务端终态解锁。模型调用前的摘要压缩接收本轮 AbortSignal；取消时不提交尚未保存的摘要批次，并保留原始消息供后续处理。
 
 `core-context-inspector` 通过 `onModelRequestPrepared` 观察每一次真正发送给模型的最终请求。该钩子位于提示词注入、工具过滤和上下文压缩之后，因此快照包含实际的 System Prompt、Messages 与 Tools。插件将最新快照写入 `sessions/<session>/context-snapshot.json`，采用异步临时文件加原子重命名，仅保留最新一份；写入失败记录警告，不中断模型请求。`GET /context?session_id=...` 从磁盘读取，缺失或损坏时返回 404，Gateway 重启后可恢复，删除会话目录时一并清理。旧会话没有快照时需等待下一次模型调用生成。Agent 同时通过 SSE 推送 `context_usage`，WebUI 在输入框内审批模式左侧以“上下文 24%”展示占用比例，无数据时隐藏入口；点击后在弹窗中查看完整 Token 统计、占用比例及请求内容。Token 统计复用上下文压缩模块的估算函数；附件只保留类型和名称，不暴露本地文件路径或 Base64 数据。
 
@@ -226,9 +229,11 @@ OpenAI-compatible 流响应的 reasoning_content 作为协议元数据合并到 
 
 ### config.json
 
+设置页面通过 GET /config 同时获取用户配置和 createDefaultConfig 提供的 defaults，不再维护表单默认值副本。显示缺省值不会自动写入未修改的列表/JSON 配置。兼容清理器统一移除临时压缩、历史窗口、无效摘要字符限制及旧计划门禁字段；加载时只忽略，保存时移除，不改写摘要和消息文件。loadConfig 保留 Profile 设置。新建配置使用 openai-chat，旧文件未声明协议时仍按 anthropic-messages 读取并在设置 API 明确返回，避免协议迁移副作用。
+
 仓库提供两个配置示例：`config.simple.example.json` 是推荐入门配置，`config.all.example.json` 是完整配置参考。实际运行时只读取 `workspace/config.json`。
 
-CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensureConfigFile()`，AgentSession 仍保留幂等兜底：配置文件不存在时生成完整默认配置，已存在时绝不覆盖。远程模型与本地模型可分别启用，同时启用时模型工厂固定优先选择远程模型；仅启用本地模型时不要求 API Key。本地模型目录、显式后台下载、字节级进度和独立连通性测试由 `core-local-models` 插件提供，GGUF 文件及清单保存在 `workspace/models/`。目录覆盖 Qwen3.5 与 Gemma 4 的不同参数规模，WebUI 通过插件路由动态读取，不维护独立的硬编码型号列表。选择本地模型不会触发下载，只有调用下载路由后才开始。每个本地模型在目录中声明建议内存、推荐上下文与模型上限，运行时和 `core-compress` 使用同一个实际上下文值，防止压缩逻辑按远程模型窗口计算而让本地推理溢出。配置 API 保存后会释放空闲会话，使模型与上下文配置在下一次消息时重新加载。
+CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensureConfigFile()`，AgentSession 仍保留幂等兜底：配置文件不存在时生成完整默认配置，已存在时绝不覆盖。远程模型与本地模型可分别启用，同时启用时模型工厂固定优先选择远程模型；仅启用本地模型时不要求 API Key。本地模型目录、显式后台下载、字节级进度和独立连通性测试由 `core-local-models` 插件提供，GGUF 文件及清单保存在 `workspace/models/`。目录覆盖 Qwen3.5 与 Gemma 4 的不同参数规模，WebUI 通过插件路由动态读取，不维护独立的硬编码型号列表。选择本地模型不会触发下载，只有调用下载路由后才开始。每个本地模型在目录中声明建议内存、推荐上下文与模型上限，运行时和摘要插件使用同一个实际上下文值，防止压缩逻辑按远程模型窗口计算而让本地推理溢出。配置 API 保存后会释放空闲会话，使模型与上下文配置在下一次消息时重新加载。
 
 本地模型适配器在模型首次输出工具调用时立即终止当前次生成，只把工具调用交回 Agent Loop；它不会向模型注入占位工具结果。工具实际执行并返回真实结果后，Agent Loop 才开始下一次模型调用，确保等待审批期间不会生成基于虚假结果的回答。
 
@@ -243,18 +248,16 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 | maxTokens | 单次响应最大 token | 16384 |
 | maxContextTokens | 上下文最大 token 估计 | 128000 |
 | contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
-| contextCompressionMaxOutputTokens | 压缩摘要模型输出 token 上限 | 2048 |
-| historyWindowSize | 历史窗口（轮） | 5 |
 | maxAgentIterations | Agent Loop 最大迭代次数；达到上限时明确提示，显式配置 0 表示不限 | 100 |
 | emptyResponseRetries | 模型成功返回空文本且无工具调用时的重试次数 | 1 |
-| sessionSummary | 会话滚动摘要配置 | enabled=true, persistent=true, turnThreshold=5, recentTurns=3 |
+| sessionSummary | Token 触发的持久化摘要配置 | enabled=true, persistent=true；旧 turnThreshold/recentTurns 不再生效 |
 | autoMemory | 自动记忆配置 | enabled=true, turnThreshold=10 |
 | memory | 长期记忆容量限制 | maxItemChars=20000, maxTotalChars=80000 |
 | attachments | 图片附件配置 | enabled=true, 每条最多 4 张、单张 10 MB |
 | debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
 | security | 基础安全边界：bash 策略、Gateway host/token、工具审计 | 见下文 |
-| project | 项目会话权限、历史窗口与迭代上限 | security.mode=auto, historyWindowSize=8, maxAgentIterations=100 |
-| searchProvider | 搜索引擎 (ollama/searxng/brave/duckduckgo) | ollama |
+| project | 项目会话权限与迭代上限 | security.mode=auto, maxAgentIterations=100 |
+| searchProvider | 搜索引擎 (ollama/searxng/brave/duckduckgo) | duckduckgo |
 | ollamaApiKey | Ollama Web Search API key | - |
 | searxngUrl | SearXNG 实例地址 | - |
 | braveApiKey | Brave Search API key | - |
@@ -518,32 +521,25 @@ OpenAI Chat 兼容实现会将内部消息格式转换为 `system/user/assistant
 
 Gateway 在聊天和审批续跑的 SSE 响应空闲期间发送注释心跳，间隔由 `security.gateway.sseHeartbeatIntervalMs` 配置，默认 15000 毫秒。心跳只维持连接，不进入 Agent 事件流。插件可以在耗时 Hook 中通过 `ModelCallContext.reportStatus()` 产生临时 `status` 事件；WebUI 只在当前处理状态中展示，收到正文、工具调用或终止事件后清除，不写入会话历史。Web UI 以 `done.text` 作为最终回答的权威内容；`done.reason` 区分正常完成、等待审批和达到迭代上限。达到上限时 Agent 会先输出明确停止提示，再发送 `iteration_limit` 完成事件。如果流在 `done` / `error` 前意外关闭，会重新读取当前 session 的持久化历史，仅在确认当前用户消息之后已有 assistant 结果时恢复界面。
 
-### 消息历史：滑动窗口
+### 消息历史与上下文压缩
 
-`historyWindowSize` 按用户轮次计算。进入新一轮前先移除旧轮次的 `tool_use` / `tool_result`，再从后向前保留最近 N 条用户消息及其后续可读助手文本；工具密集型任务不会因为中间工具消息过多而挤掉原始用户问题。当前轮工具链不参与裁剪。默认 5 轮。
+Agent 向插件提供全部未压缩历史和当前轮消息，不按 historyWindowSize 或工具消息类型裁剪；跨轮保留完整工具调用及结果，只修复孤立的协议记录。唯一摘要路径是 core-session-summary，在 onBeforeModelCall 按完整输入 Token 阈值触发，主会话和子 Agent 共用。
 
-### 上下文压缩（插件化）
+摘要只覆盖已验证的历史完整轮次前缀，成功落盘后推进覆盖序号；尚未覆盖的原文全部保留，不另设 recentTurns。关闭摘要时不生成临时摘要、不按轮数丢弃历史，硬预算不足时明确报错。取消和失败保留原文及已提交的摘要批次。原始 messages.jsonl 不被摘要改写。
 
-上下文压缩逻辑位于 `plugins/core/compress.ts`，通过结构化的 `onBeforeModelCall` 上下文执行。Agent 先从模型上下文窗口中扣除系统提示词、工具定义和最大输出空间，再取 `contextCompressionThreshold` 与硬输入上限中的较小值作为消息预算：
+摘要请求将提示词、已有条目、元数据和完整消息一起计入 maxInputChars，同时预留 maxOutputTokens 并检查模型上下文上限；用二分选择能容纳的完整轮次前缀。单轮无法容纳时失败而不切断工具链、截断正文或推进覆盖序号。所有模型调用继续执行最终硬预算和工具链合法性检查。
 
-1. **只压缩历史轮次**：`turnStartIndex` 之前的消息可生成当前 turn 的临时派生摘要；当前用户轮次及其中完整工具链不参与摘要或任意切分。
-2. **临时摘要不持久化**：压缩结果只作为本次模型调用的内部 system prompt 后缀，结束 turn 后清除，不写入消息历史或 Session Store。
-3. **近期原文按完整用户轮次保留**：压缩后从配置的 `sessionSummary.recentTurns` 开始逐轮缩减，直到满足预算；不会从轮次中间截断消息。
-4. **工具结果受控截断**：仅缩短 `tool_result.content`，保留 `tool_use` / `tool_result` 协议结构；最终调用模型前再次校验工具消息链。
-5. **失败显式终止**：压缩模型失败时保留原始合法上下文，不静默丢弃历史；若仍超预算，Agent 返回明确错误而不调用主模型。
-6. **过程状态可见**：真正调用摘要模型时依次上报压缩开始和完成/失败状态，并附带压缩前后的 token 估算；这些状态只进入实时事件流。
-
-token 估算采用统一粗略规则，只用于预算保护。压缩使用 `client.complete()` 非流式调用，摘要字符硬上限由 `contextCompressionMaxChars` 控制，模型输出 token 上限由 `contextCompressionMaxOutputTokens` 控制。
+工具边界控制单次输出：fileReadMaxChars 默认 20000，超限明确提示按行读取；bashMaxOutputChars 默认 10000，分别限制 stdout/stderr 尾部，超限标记 truncated 并提供 workspace/tool-output/<uuid>.log 完整日志。file_read 仅对该内部日志目录中的 UUID 日志提供受根目录校验的跨项目只读访问。项目搜索保留原有字符及结果数限制。历史层不对工具实际返回内容二次截断。
 
 ### 会话结构化摘要与原文召回
 
-`core-session-summary` 在 `onTurnEnd` 阶段读取已持久化的完整轮次，达到 `turnThreshold` 后生成严格 JSON Delta。校验器要求 revision 与连续 sequence 范围正确，且每个操作只能引用本批真实 `messageId`；代码随后补全来源序号和 turnId、生成确定性 ID，并用纯 Reducer 执行 add/supersede/resolve。达到 Delta 数量或存储字符阈值时，旧 revision 先归档，再固化新 Checkpoint。
+`core-session-summary` 在模型请求前达到 Token 预算时读取已持久化的历史轮次，生成严格 JSON Delta；低占用时不按轮数生成。校验器要求 revision 与连续 sequence 范围正确，且每个操作只能引用本批真实 `messageId`；代码随后补全来源序号和 turnId、生成确定性 ID，并用纯 Reducer 执行 add/supersede/resolve。成功提交后才推进覆盖序号，后续只提取未覆盖消息。摘要请求也检查模型输入和输出预算，超预算的多消息输入分批提取；单条无法容纳时失败而不推进该批覆盖序号。达到 Delta 数量或存储字符阈值时，旧 revision 先归档，再固化新 Checkpoint。
 
-模型调用时，摘要被序列化为带 `data-kind="derived-summary"` 和 `role="internal"` 的临时派生上下文，插在保留的历史消息之后、当前用户轮次之前。Agent 使用跨 Anthropic、OpenAI 与本地模型均支持的 `assistant` 协议角色承载该上下文，但标签和正文明确声明它不是历史助手回复、用户消息或新指令；摘要只存在于本次模型请求，不写入内存历史或 Session Store。基础 System Prompt 因此不再随摘要 revision 变化，可完整保持稳定以提高前缀缓存命中率。近期 `recentTurns` 轮原文继续作为普通消息保留；旧版自由文本摘要只在首次读取时迁移，并带 `legacy_summary` 来源。
+模型调用时，摘要被序列化为带 `data-kind="derived-summary"` 和 `role="internal"` 的临时派生上下文，插在保留的历史消息之后、当前用户轮次之前。Agent 使用跨 Anthropic、OpenAI 与本地模型均支持的 `assistant` 协议角色承载该上下文，但标签和正文明确声明它不是历史助手回复、用户消息或新指令；摘要只存在于本次模型请求，不写入内存历史或 Session Store。基础 System Prompt 因此不再随摘要 revision 变化。未被摘要覆盖的原文全部保留；旧版自由文本摘要只在首次读取时迁移，并带 legacy_summary 来源。旧摘要缺少覆盖时间时不推测覆盖范围，保留历史原文。
 
 `core-session-recall` 单独注册只读工具 `session_history_recall`。工具只能读取执行上下文中的当前 session，可按摘要来源 messageId、sequence 范围或关键词查询 `messages.jsonl`，返回稳定 ID、序号、turnId、角色、时间和原文。条数、查询长度和输出字符上限由 `sessionSummary.recallMaxResults`、`recallMaxQueryChars`、`recallMaxOutputChars` 控制。
 
-摘要开始、完成和失败通过通用 Hook 状态回调进入 SSE，WebUI 显示明确的整理提示；状态不写入消息历史。摘要失败保留当前 Checkpoint 并继续完成用户对话。临时上下文压缩摘要同样只作为当前模型调用的内部系统后缀，不写入 Session Store。
+摘要开始、完成和失败通过通用 Hook 状态回调进入 SSE，WebUI 显示明确的整理提示；状态不写入消息历史。摘要失败保留当前 Checkpoint 并继续完成用户对话。旧快照中的临时摘要仍可展示，但不再生成。
 
 ### 工具注册：插件化
 
@@ -859,7 +855,6 @@ interface PluginManifest {
    - `core-prompts`：系统提示词模板加载与占位符替换
    - `core-history`：将用户输入写入当前会话 `MessageHistory`
    - `core-session-summary`：维护普通会话滚动摘要，减少旧消息原文进入上下文
-   - `core-compress`：上下文压缩（阈值判断 + 模型摘要）
    - `core-logger`：执行日志与对话历史写入
    - `core-debug`：模型调用调试事件的结构化持久化与查询 API
 

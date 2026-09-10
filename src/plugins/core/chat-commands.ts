@@ -132,7 +132,7 @@ async function newConversation(pluginCtx: Parameters<Plugin["init"]>[0], ctx: Ch
 function contextLengthText(ctx: ChatCommandContext): string {
   if (!ctx.history || !ctx.config) return "当前会话上下文尚未初始化。";
 
-  const windowMessages = ctx.history.getRecentMessages(ctx.config.historyWindowSize);
+  const windowMessages = ctx.history.getRecentMessages(Infinity);
   const allMessages = ctx.history.getRecentMessages(Infinity);
   const currentTurnMessages = ctx.history.getCurrentTurnMessages();
   const windowTokens = estimateTokens(windowMessages);

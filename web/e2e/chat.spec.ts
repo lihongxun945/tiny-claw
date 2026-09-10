@@ -4,6 +4,44 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/sessions/*/events", (route) => route.fulfill({ status: 503, body: "No mocked live stream" }));
 });
 
+for (const width of [390, 1280]) {
+  test(`shows a restored activity line without a typing cursor during tools (${width})`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 850 });
+    let received = false;
+    let finished = false;
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    const run = { id: "activity", turnId: "activity-turn", revision: 5, state: "running", startedAt: Date.now() - 10000,
+      status: { stage: "execution:tool_running", state: "started", startedAt: Date.now() - 5000, message: `正在执行命令：npm run evaluate --output reports/${"long-name-".repeat(15)}.json` } };
+    await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [{ id: "activity", preview: "activity", busy: !finished, lastActivity: Date.now(), context: { mode: "chat" } }] } }));
+    await page.route("**/history/sessions/activity/messages", (route) => route.fulfill({ json: { messages: [] } }));
+    await page.route("**/plan?*", async (route) => {
+      if (received) await paused;
+      await route.fulfill({ json: { plans: [], activePlan: null, run: finished ? { ...run, state: "completed", status: undefined, revision: 6 } : run } }).catch(() => {});
+    });
+    await page.route("**/sessions/activity/events", async (route) => {
+      received = true;
+      await route.fulfill({ contentType: "text/event-stream", body: `event: snapshot\ndata: ${JSON.stringify({ run, turnId: run.turnId, text: "开始验证", status: run.status.message, toolCalls: [], sequence: 5 })}\n\nevent: done\ndata: ${JSON.stringify({ text: "开始验证", session_id: "activity", reason: "completed", sequence: 6 })}\n\n` });
+    });
+    try {
+      await page.goto("/#sid=activity");
+      const line = page.locator(".execution-status");
+      await expect(line).toContainText("正在执行命令：npm run evaluate");
+      await expect(line).toContainText("已耗时");
+      await expect(page.locator(".streaming-cursor")).toHaveCount(0);
+      await expect(page.locator("textarea")).toBeDisabled();
+      expect(await line.evaluate((element) => element.getBoundingClientRect().right <= window.innerWidth)).toBe(true);
+      await page.screenshot({ path: `/tmp/activity-status-${width}.png` });
+      finished = true;
+      release();
+      await expect(line).toHaveCount(0);
+      await expect(page.locator("textarea")).toBeEnabled();
+    } finally {
+      release();
+    }
+  });
+}
+
 for (const mode of ["chat", "project"]) {
   test(`shows synchronous compression after an answer and restores it on reload (${mode})`, async ({ page }) => {
     let busy = true;
@@ -266,8 +304,8 @@ test("locks the active composer and refreshes messages while the active session 
 
   await page.goto("/#sid=busy-session");
 
-  await expect(page.getByText("正在处理", { exact: true })).toBeVisible();
-  await expect(page.locator(".processing-indicator .streaming-cursor")).toBeVisible();
+  await expect(page.locator(".execution-status")).toContainText("连接已断开，正在重连");
+  await expect(page.locator(".processing-indicator .streaming-cursor")).toHaveCount(0);
   await expect(page.getByRole("textbox")).toBeDisabled();
   await expect(page.getByRole("button", { name: "停止" })).toBeVisible();
 

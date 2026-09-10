@@ -104,20 +104,3 @@ export function validateToolMessageChains(messages: Message[]): string | undefin
 
   return pendingIds ? "工具调用后缺少对应的工具结果消息" : undefined;
 }
-
-export function stripToolMessagesForNewTurn(messages: Message[]): Message[] {
-  const stripped: Message[] = [];
-
-  for (const message of messages) {
-    if (typeof message.content === "string") {
-      stripped.push(message);
-      continue;
-    }
-
-    const readableContent = message.content.filter((block) => block.type !== "tool_use" && block.type !== "tool_result");
-    if (readableContent.length === 0) continue;
-    stripped.push({ ...message, content: readableContent });
-  }
-
-  return stripped;
-}

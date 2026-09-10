@@ -17,6 +17,7 @@ import {
   validateSummaryDelta,
 } from "../../src/session-memory/validation.js";
 import type { Message } from "../../src/types.js";
+import { estimateTextTokens, estimateTokens } from "../../src/estimate-tokens.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
 const limits = {
@@ -158,10 +159,83 @@ describe("structured session summary engine", () => {
       },
       chat: async () => ({ text: "", toolCalls: [] }),
     } as ModelClient;
-    const engine = createSessionSummaryEngine({ limits, maxOutputTokens: 512, maxInputChars: 1000 });
+    const engine = createSessionSummaryEngine({ limits, maxOutputTokens: 512, maxInputChars: 40000 });
     const delta = await engine.createDelta(client, "session", emptySessionSummary("session"), messages().slice(0, 2));
     expect(prompt).toContain('"messageId":"msg_1"');
     expect(delta.operations).toHaveLength(1);
+  });
+
+  it("bounds summary requests and only covers the prefix actually sent", async () => {
+    let requestTokens = 0;
+    let calls = 0;
+    const client = {
+      complete: async (input: Message[], systemPrompt: string) => {
+        calls++;
+        requestTokens = estimateTokens(input) + estimateTextTokens(systemPrompt);
+        const request = JSON.parse(String(input[0].content));
+        return JSON.stringify({ baseRevision: request.schema.baseRevision, sourceRange: request.schema.sourceRange, operations: [] });
+      },
+    } as unknown as ModelClient;
+    const source: Message[] = Array.from({ length: 64 }, (_, index) => ({
+      role: "user", content: "small message", _messageId: `msg_${index + 1}`, _sequence: index + 1,
+    }));
+    const options = { limits, maxOutputTokens: 512, maxInputChars: 40000 };
+    const current = emptySessionSummary("session");
+    await createSessionSummaryEngine(options).createDelta(client, "session", current, source.slice(0, 1));
+    const maxContextTokens = requestTokens + 512;
+    const delta = await createSessionSummaryEngine({ ...options, maxContextTokens }).createDelta(client, "session", current, source);
+    expect(delta.throughSequence).toBe(1);
+    expect(requestTokens + 512).toBeLessThanOrEqual(maxContextTokens);
+    expect(calls).toBe(2);
+    await expect(createSessionSummaryEngine({ ...options, maxContextTokens: 1 }).createDelta(client, "session", current, source)).rejects.toThrow("摘要请求超过输入字符或模型上下文预算");
+    expect(calls).toBe(2);
+    expect(current.summarizedThroughSequence).toBe(0);
+  });
+
+  it("batches complete source messages by serialized input size without clipping their tails", async () => {
+    const requests: Array<{ messages: Array<{ content: string }>; schema: { baseRevision: number; sourceRange: { fromSequence: number; throughSequence: number } } }> = [];
+    const client = { complete: async (input: Message[], system: string) => {
+      expect(String(input[0].content).length + system.length).toBeLessThanOrEqual(7000);
+      const request = JSON.parse(String(input[0].content));
+      requests.push(request);
+      return JSON.stringify({ ...request.schema, operations: [] });
+    } } as unknown as ModelClient;
+    const engine = createSessionSummaryEngine({ limits, maxOutputTokens: 512, maxInputChars: 7000 });
+    const source: Message[] = [1, 2, 3].map((sequence) => ({ role: "user", content: `${"x".repeat(4000)}TAIL-${sequence}`, _messageId: `msg_${sequence}`, _sequence: sequence }));
+    let current = emptySessionSummary("session");
+    for (let sequence = 1; sequence <= 3; sequence++) {
+      const delta = await engine.createDelta(client, "session", current, source.slice(sequence - 1));
+      expect(delta.throughSequence).toBe(sequence);
+      expect(requests.at(-1)?.messages[0].content).toBe(source[sequence - 1].content);
+      current = engine.applyDelta(current, delta);
+    }
+    const oversized = createSessionSummaryEngine({ limits, maxOutputTokens: 512, maxInputChars: 1000 });
+    await expect(oversized.createDelta(client, "session", emptySessionSummary("session"), source)).rejects.toThrow("保留原文和已有摘要");
+    expect(requests).toHaveLength(3);
+  });
+
+  it("never commits a partial historical turn when its tool result exceeds the extraction budget", async () => {
+    let calls = 0;
+    const client = { complete: async (input: Message[]) => {
+      calls++;
+      const request = JSON.parse(String(input[0].content));
+      return JSON.stringify({ ...request.schema, operations: [] });
+    } } as unknown as ModelClient;
+    const source: Message[] = [
+      { role: "user", content: "first", _messageId: "m1", _sequence: 1 },
+      { role: "assistant", content: "done", _messageId: "m2", _sequence: 2 },
+      { role: "user", content: "second", _messageId: "m3", _sequence: 3 },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "bash", input: {} }], _messageId: "m4", _sequence: 4 },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "x".repeat(8000) }], _messageId: "m5", _sequence: 5 },
+    ];
+    const engine = createSessionSummaryEngine({ limits, maxOutputTokens: 512, maxInputChars: 4000 });
+    const initial = emptySessionSummary("session");
+    const delta = await engine.createDelta(client, "session", initial, source);
+    expect(delta.throughSequence).toBe(2);
+    const current = engine.applyDelta(initial, delta);
+    await expect(engine.createDelta(client, "session", current, source.slice(2))).rejects.toThrow("保留原文");
+    expect(current.summarizedThroughSequence).toBe(2);
+    expect(calls).toBe(1);
   });
 
   it("archives the pre-compaction state and atomically persists a new checkpoint", async () => {

@@ -1,5 +1,32 @@
 import { expect, test } from "@playwright/test";
 
+test("uses server defaults without writing untouched defaults or obsolete fields", async ({ page }) => {
+  let saved: Record<string, unknown> = {};
+  const config = { apiUrl: "https://example.com", apiKey: "", model: "custom", modelProvider: "anthropic-messages", remoteModel: { enabled: true }, customExtension: { keep: true } };
+  await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [] } }));
+  await page.route("**/config", (route) => {
+    if (route.request().method() === "PUT") {
+      saved = route.request().postDataJSON();
+      return route.fulfill({ json: { config: saved } });
+    }
+    return route.fulfill({ json: { config, defaults: { maxTokens: 24576, searchProvider: "duckduckgo", subAgent: { allowedTools: ["file_read"] }, sessionSummary: { maxInputChars: 40000 } } } });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "配置" }).click();
+  await expect(page.getByLabel("单次回复 Token", { exact: true })).toHaveValue("24576");
+  await expect(page.getByLabel("搜索引擎", { exact: true })).toHaveValue("duckduckgo");
+  await expect(page.getByLabel("压缩摘要字符上限", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("历史窗口轮数", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("摘要字符上限", { exact: true })).toHaveCount(0);
+  await page.getByRole("textbox", { name: /^API Key/ }).fill("changed");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/配置已保存/)).toBeVisible();
+  expect(saved).not.toHaveProperty("subAgent");
+  expect(saved).not.toHaveProperty("maxTokens");
+  expect(saved.customExtension).toEqual({ keep: true });
+  expect(saved.modelProvider).toBe("anthropic-messages");
+});
+
 test("shows a retry action when local model status cannot be loaded", async ({ page }) => {
   await page.route("**/history/sessions", async (route) => route.fulfill({ json: { sessions: [] } }));
   await page.route("**/local-models", async (route) => route.fulfill({ status: 502, json: { error: "模型服务暂时不可用" } }));

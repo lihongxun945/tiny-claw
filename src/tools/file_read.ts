@@ -1,10 +1,10 @@
 import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import type { Config, Tool } from "../types.js";
 import { resolveRootFile } from "./workspace-path.js";
 import { checkDangerousToolPermission } from "./permission.js";
 
-const MAX_READ = 50000;
+const DEFAULT_MAX_READ = 20000;
 
 export function createFileReadTool(workspacePath: string, getConfig: () => Config): Tool {
   return {
@@ -33,7 +33,11 @@ export function createFileReadTool(workspacePath: string, getConfig: () => Confi
       const root = context?.rootPath ?? workspacePath;
       let filePath: string;
       try {
-        filePath = context?.restrictToRoot
+        const requested = resolve(root, args.path as string);
+        const outputDir = resolve(workspacePath, "tool-output");
+        filePath = dirname(requested) === outputDir && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.log$/.test(basename(requested))
+          ? resolveRootFile(outputDir, requested)
+          : context?.restrictToRoot
           ? resolveRootFile(root, args.path as string)
           : resolve(root, args.path as string);
       } catch (error) {
@@ -58,6 +62,7 @@ export function createFileReadTool(workspacePath: string, getConfig: () => Confi
       }
 
       try {
+        context?.reportActivity?.(`正在读取文件：${args.path}`);
         const content = readFileSync(filePath, "utf-8");
         const lines = content.split("\n");
 
@@ -69,8 +74,9 @@ export function createFileReadTool(workspacePath: string, getConfig: () => Confi
           .map((line, i) => `${start + i + 1}\t${line}`)
           .join("\n");
 
-        const result = numbered.length > MAX_READ
-          ? numbered.slice(0, MAX_READ) + "\n...[内容截断]"
+        const maxRead = (context?.config ?? getConfig()).fileReadMaxChars ?? DEFAULT_MAX_READ;
+        const result = numbered.length > maxRead
+          ? numbered.slice(0, maxRead) + `\n...[内容截断，共 ${numbered.length} 字符；请使用 offset/limit 缩小读取范围。原文件：${filePath}]`
           : numbered;
 
         return result;

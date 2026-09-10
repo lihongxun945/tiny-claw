@@ -128,9 +128,13 @@ export async function fetchModelCall(requestId: string): Promise<ModelCallTrace>
 }
 
 export async function fetchConfig(): Promise<Record<string, unknown>> {
+  return (await fetchConfigSettings()).config;
+}
+
+export async function fetchConfigSettings(): Promise<{ config: Record<string, unknown>; defaults: Record<string, unknown> }> {
   const res = await fetch("/config");
-  const data = await parseJSON<{ config: Record<string, unknown> }>(res);
-  return data.config ?? {};
+  const data = await parseJSON<{ config: Record<string, unknown>; defaults?: Record<string, unknown> }>(res);
+  return { config: data.config ?? {}, defaults: data.defaults ?? {} };
 }
 
 export async function updateConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {

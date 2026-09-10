@@ -57,6 +57,7 @@ export function createProjectSearchTool(workspacePath: string, getConfig: () => 
         cwd: start,
       });
       if (!permission.allowed) return permission.result;
+      context?.reportActivity?.(`正在搜索项目：${query}`);
 
       try {
         return JSON.stringify(await runSearch({

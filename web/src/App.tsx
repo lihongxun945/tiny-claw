@@ -18,6 +18,7 @@ type View = "chat" | "project" | "memory" | "logs" | "plugins" | "config";
 
 interface SessionUiState {
   isStopping?: boolean;
+  connectionLost?: boolean;
   messages: Message[];
   summaryNotice?: { state: "completed" | "failed"; message: string };
   streamingText: string;
@@ -136,16 +137,17 @@ export default function App() {
     try {
       const snapshot = await fetchSessionPlanState(sessionId);
       if (planRequestsRef.current.get(sessionId) !== request) return;
-      updateSessionState(sessionId, (state) => ({
+      updateSessionState(sessionId, (state) => state.run && snapshot.run && state.run.turnId === snapshot.run.turnId && state.run.revision > snapshot.run.revision ? state : ({
         ...state,
         plan: snapshot.activePlan,
         planExecutionTurnId: snapshot.currentTurnId,
         planLoaded: true,
-        run: snapshot.run,
+        run: state.run?.turnId === snapshot.run?.turnId && state.run && snapshot.run && state.run.revision > snapshot.run.revision ? state.run : snapshot.run,
         latestPlans: snapshot.plans,
         ...(snapshot.run ? {
           backendBusy: snapshot.run.state === "running",
-          streamingStatus: snapshot.run.state === "running" && snapshot.run.status ? snapshot.run.status.message : state.streamingStatus,
+          awaitingApproval: snapshot.run.state === "waiting_approval",
+          streamingStatus: state.isStreaming ? state.streamingStatus : snapshot.run.state === "running" && snapshot.run.status ? snapshot.run.status.message : state.streamingStatus,
           summaryNotice: snapshot.run.state === "interrupted" || snapshot.run.state === "cancelled" ? { state: "failed" as const, message: snapshot.run.reason ?? "运行已中断" } : state.summaryNotice,
         } : {}),
         messages: state.messages.map((message) => message.plan && message.turnId === snapshot.currentTurnId
@@ -200,6 +202,7 @@ export default function App() {
 
     for await (const event of events) {
       const d = event.data as Record<string, unknown>;
+      updateSessionState(sourceSessionId, (state) => state.connectionLost ? { ...state, connectionLost: false } : state);
       if (typeof d.sequence === "number") {
         if (d.sequence <= sequence) continue;
         sequence = d.sequence;
@@ -209,7 +212,7 @@ export default function App() {
           const run = d.run as unknown as import("./types.js").RunView;
           currentRun = run;
           turnId = run.turnId;
-          updateSessionState(sourceSessionId, (state) => ({ ...state,
+          updateSessionState(sourceSessionId, (state) => state.run?.turnId === run.turnId && state.run.revision > run.revision ? state : ({ ...state,
             run, streamingTurnId: run.turnId, backendBusy: run.state === "running",
             summaryNotice: run.state === "interrupted" || run.state === "cancelled" ? { state: "failed", message: run.reason ?? "运行已中断" } : state.summaryNotice,
             awaitingApproval: run.state === "waiting_approval",
@@ -224,7 +227,7 @@ export default function App() {
           fullText = typeof d.text === "string" ? d.text : "";
           toolCalls.splice(0, toolCalls.length, ...((d.toolCalls as ToolCallInfo[]) ?? []));
           updateSessionState(sourceSessionId, (state) => ({
-            ...state, streamingTurnId: turnId, streamingText: fullText,
+            ...state, run: currentRun, streamingTurnId: turnId, streamingText: fullText,
             streamingToolCalls: [...toolCalls], streamingStatus: String(d.status ?? ""), streamingApprovalId: approvalId,
             ...(d.run ? { backendBusy: (d.run as { state: string }).state === "running", awaitingApproval: (d.run as { state: string }).state === "waiting_approval" } : {}),
           }));
@@ -382,6 +385,7 @@ export default function App() {
         }
       } catch {
         // The session poll retries a disconnected subscription without starting a new task.
+        updateSessionState(sessionId, (state) => ({ ...state, connectionLost: true }));
       } finally {
         if (abortControllersRef.current.get(sessionId) === controller) {
           abortControllersRef.current.delete(sessionId);
@@ -468,6 +472,8 @@ export default function App() {
       ...state,
       isStreaming: true,
       backendBusy: false,
+      connectionLost: false,
+      run: undefined,
       streamingText: "",
       streamingStatus: "",
       streamingToolCalls: [],
@@ -503,6 +509,11 @@ export default function App() {
       ), undefined, turnId);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
+      const snapshot = await fetchSessionPlanState(sessionId).catch(() => undefined);
+      if (snapshot?.run?.state === "running") {
+        updateSessionState(sessionId, (state) => ({ ...state, run: snapshot.run, backendBusy: true, connectionLost: true }));
+        return;
+      }
       try {
         const persisted = await fetchHistoryMessages(sessionId);
         const userIndex = findLastMatchingUserMessage(persisted, text);
@@ -840,6 +851,10 @@ export default function App() {
         {view === "chat" && (
           <>
             <ChatView
+              run={activeState.run}
+              isStopping={activeState.isStopping}
+              connectionLost={activeState.connectionLost}
+              awaitingApproval={activeState.awaitingApproval}
               messages={activeState.messages}
               activePlanId={activeState.plan?.id}
               activePlanTurnId={activeState.planExecutionTurnId}

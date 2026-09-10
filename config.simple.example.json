@@ -8,19 +8,17 @@
   "modelProvider": "openai-chat",
   "maxTokens": 16384,
   "emptyResponseRetries": 1,
-  "historyWindowSize": 10,
   "maxContextTokens": 128000,
+  "bashMaxOutputChars": 10000,
+  "fileReadMaxChars": 20000,
   "debug": {
-    "enabled": true,
-    "modelIO": true,
-    "rawStreamEvents": true
+    "enabled": false,
+    "modelIO": false,
+    "rawStreamEvents": false
   },
   "sessionSummary": {
     "enabled": true,
-    "turnThreshold": 5,
-    "recentTurns": 3,
     "maxInputChars": 40000,
-    "maxChars": 10000,
     "maxOutputTokens": 10000,
     "maxOperations": 32,
     "maxItemChars": 1000,
@@ -71,7 +69,7 @@
       "verificationToken": "YOUR_FEISHU_VERIFICATION_TOKEN"
     }
   },
-  "searchProvider": "ollama",
+  "searchProvider": "duckduckgo",
   "ollamaApiKey": "YOUR_OLLAMA_API_KEY",
   "security": {
     "trustedProjects": [],

@@ -784,6 +784,23 @@ summary:focus-visible {
   font-weight: 650;
 }
 
+.execution-status.processing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 24px;
+  margin: 8px 0 20px;
+  padding-left: 52px;
+  max-width: 100%;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.execution-status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.execution-status-time { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) {
+  .execution-status { padding-left: 0; gap: 8px; }
+}
+
 .streaming-cursor::after {
   content: "▊";
   color: var(--accent);

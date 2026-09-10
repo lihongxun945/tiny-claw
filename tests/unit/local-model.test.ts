@@ -3,7 +3,7 @@ import { createModelClient } from "../../src/model/index.js";
 import { LocalLlamaClient } from "../../src/model/local.js";
 import { OpenAIChatClient } from "../../src/model/openai.js";
 import { getLocalContextSize, getLocalModelDefinition, LOCAL_MODELS } from "../../src/model/local-catalog.js";
-import { getEffectiveMaxContextTokens } from "../../src/plugins/core/compress.js";
+import { getEffectiveMaxContextTokens } from "../../src/context-budget.js";
 import type { Config } from "../../src/types.js";
 
 const baseConfig = {

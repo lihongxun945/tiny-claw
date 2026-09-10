@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculateMessageTokenBudget } from "../../src/context-budget.js";
+import { estimateTextTokens } from "../../src/estimate-tokens.js";
 import type { Config, ToolDefinition } from "../../src/types.js";
 
 function config(overrides: Partial<Config> = {}): Config {
@@ -23,6 +24,12 @@ function config(overrides: Partial<Config> = {}): Config {
 }
 
 describe("calculateMessageTokenBudget", () => {
+  it("applies the trigger to the full input, not just message tokens", () => {
+    const prompt = "system".repeat(100);
+    expect(calculateMessageTokenBudget(config(), prompt, [])).toBe(
+      7000 - estimateTextTokens(prompt) - estimateTextTokens("[]"),
+    );
+  });
   it("reserves system prompt, tools, and output space", () => {
     const tools: ToolDefinition[] = [{
       name: "read",

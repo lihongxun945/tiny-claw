@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureConfigFile, loadConfig, validateConfig } from "./config.js";
+import { createDefaultConfig, ensureConfigFile, loadConfig, stripDeprecatedConfigFields, validateConfig } from "./config.js";
 import { AgentSession, type AgentEvent } from "./agent.js";
 import { PluginManager } from "./plugin-manager.js";
 import { appendLog } from "./workspace/logger.js";
@@ -392,13 +392,6 @@ function restoreMaskedSecrets(value: unknown, existing: unknown, key = ""): unkn
     return restored;
   }
   return value;
-}
-
-function stripDeprecatedConfigFields(config: Record<string, unknown>): Record<string, unknown> {
-  const autoMemory = config.autoMemory;
-  if (!autoMemory || typeof autoMemory !== "object" || Array.isArray(autoMemory)) return config;
-  const { minConfidence: _minConfidence, ...restAutoMemory } = autoMemory as Record<string, unknown>;
-  return { ...config, autoMemory: restAutoMemory };
 }
 
 function writeJSONAtomic(path: string, value: unknown): void {
@@ -1074,8 +1067,8 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         return;
       }
       const raw = stripDeprecatedConfigFields(JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>);
-      raw.searchProvider ??= "ollama";
-      sendJSON(res, 200, { config: maskConfigSecrets(raw) });
+      raw.modelProvider ??= "anthropic-messages";
+      sendJSON(res, 200, { config: maskConfigSecrets(raw), defaults: createDefaultConfig() });
       return;
     }
 

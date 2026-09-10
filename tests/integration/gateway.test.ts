@@ -49,6 +49,25 @@ describe("Gateway HTTP API", () => {
     removeTempWorkspace(workspacePath);
   });
 
+  it("serves canonical defaults and removes obsolete settings on save without changing legacy protocol", async () => {
+    const initial = await json(`${gateway.apiUrl}/config`);
+    expect(initial.body.defaults).toMatchObject({ maxTokens: 16384, searchProvider: "duckduckgo", modelProvider: "openai-chat" });
+    expect(initial.body.config.modelProvider).toBe("anthropic-messages");
+    const saved = await json(`${gateway.apiUrl}/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      ...initial.body.config, contextCompressionMaxChars: -1, historyWindowSize: 0,
+      sessionSummary: { maxChars: 1, turnThreshold: 1, recentTurns: 5 }, plan: { maxGateCorrections: -1, maxSteps: 12 },
+      profile: { enabled: false, maxItemChars: 4000, maxTotalChars: 10000 },
+    }) });
+    expect(saved.status).toBe(200);
+    expect(saved.body.config.sessionSummary).toEqual({});
+    expect(saved.body.config.plan).toEqual({ maxSteps: 12 });
+    expect(saved.body.config.modelProvider).toBe("anthropic-messages");
+    expect(saved.body.config).not.toHaveProperty("historyWindowSize");
+    const disk = JSON.parse(readFileSync(resolve(workspacePath, "config.json"), "utf8"));
+    expect(disk).not.toHaveProperty("contextCompressionMaxChars");
+    expect(disk.profile.enabled).toBe(false);
+  });
+
   it("keeps a disconnected task running and reconnects through the web proxy", async () => {
     let finishModel!: () => void;
     let started!: () => void;

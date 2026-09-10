@@ -9,6 +9,7 @@ export interface SessionSummaryEngineOptions {
   limits: SummaryValidationLimits;
   maxOutputTokens: number;
   maxInputChars: number;
+  maxContextTokens?: number;
 }
 
 export interface SessionSummaryEngine {
@@ -33,6 +34,7 @@ export function createSessionSummaryEngine(options: SessionSummaryEngineOptions)
       limits: options.limits,
       maxInputChars: options.maxInputChars,
       maxOutputTokens: options.maxOutputTokens,
+      maxContextTokens: options.maxContextTokens,
     }),
     applyDelta: applySummaryDelta,
     compact: compactSummary,

@@ -257,7 +257,7 @@ export interface SessionPlan {
 export interface RunView {
   startedAt?: number;
   completedAt?: number;
-  status?: { stage: string; state: "started" | "completed" | "failed"; message: string };
+  status?: { stage: string; state: "started" | "completed" | "failed"; message: string; startedAt?: number };
   id: string;
   turnId: string;
   state: "running" | "waiting_approval" | "waiting_user" | "completed" | "interrupted" | "cancelled";

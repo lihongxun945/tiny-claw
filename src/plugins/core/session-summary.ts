@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import type { Plugin, HookContext, ModelCallContext } from "../types.js";
 import type { Config, Message } from "../../types.js";
-import { stripToolMessagesForNewTurn } from "../../message-sanitizer.js";
+import { sanitizeToolMessageChains } from "../../message-sanitizer.js";
 import { loadSessionState, updateSessionState } from "../../session-state.js";
 import { readSessionMessages } from "../../session-store.js";
+import { estimateTokens } from "../../estimate-tokens.js";
+import { getEffectiveMaxContextTokens } from "../../context-budget.js";
 import { createSessionSummaryEngine } from "../../session-memory/engine.js";
 import { compactSummary, shouldCompactSummary } from "../../session-memory/reducer.js";
 import {
@@ -22,8 +24,6 @@ import type {
 } from "../../session-memory/types.js";
 
 const LEGACY_SUMMARY_MARKERS = ["[当前会话摘要]", "[以下是对话历史的摘要]"];
-const DEFAULT_RECENT_TURNS = 3;
-const DEFAULT_TURN_THRESHOLD = 5;
 const DEFAULT_MAX_INPUT_CHARS = 40000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 10000;
 const DEFAULT_MAX_OPERATIONS = 32;
@@ -52,16 +52,13 @@ function isPersistent(ctx: HookContext): boolean {
   return ctx.config.sessionSummary?.persistent !== false;
 }
 
-function isSubAgentSession(sessionId: string): boolean {
-  return sessionId.startsWith("sub:");
-}
-
 function positiveInt(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) && Number(value) > 0 ? Math.floor(Number(value)) : fallback;
 }
 
 function summaryOptions(config: Config) {
   return {
+    maxContextTokens: getEffectiveMaxContextTokens(config),
     limits: {
       maxOperations: positiveInt(config.sessionSummary?.maxOperations, DEFAULT_MAX_OPERATIONS),
       maxItemChars: positiveInt(config.sessionSummary?.maxItemChars, DEFAULT_MAX_ITEM_CHARS),
@@ -73,14 +70,6 @@ function summaryOptions(config: Config) {
     maxInputChars: positiveInt(config.sessionSummary?.maxInputChars, DEFAULT_MAX_INPUT_CHARS),
     maxOutputTokens: positiveInt(config.sessionSummary?.maxOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS),
   };
-}
-
-function getRecentTurns(config: Config): number {
-  return Math.min(positiveInt(config.sessionSummary?.recentTurns, DEFAULT_RECENT_TURNS), 20);
-}
-
-function getTurnThreshold(config: Config): number {
-  return Math.min(positiveInt(config.sessionSummary?.turnThreshold, DEFAULT_TURN_THRESHOLD), 100);
 }
 
 function compactionLimits(config: Config) {
@@ -153,36 +142,6 @@ function stripLegacySummaryMessages(
   };
 }
 
-function takeRecentUserTurns(messages: Message[], count: number): Message[] {
-  if (count <= 0) return [];
-  let turns = 0;
-  let startIndex = messages.length;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    if (!isConversationUserMessage(messages[index])) continue;
-    turns++;
-    startIndex = index;
-    if (turns >= count) break;
-  }
-  return messages.slice(startIndex);
-}
-
-function isConversationUserMessage(message: Message): boolean {
-  if (message.role !== "user") return false;
-  if (typeof message.content === "string") return true;
-  return message.content.some((block) => block.type === "text" || block.type === "image");
-}
-
-function countUserTurns(messages: Message[]): number {
-  const turnIds = new Set<string>();
-  let withoutTurnId = 0;
-  for (const message of messages) {
-    if (!isConversationUserMessage(message)) continue;
-    if (message._turnId) turnIds.add(message._turnId);
-    else withoutTurnId++;
-  }
-  return turnIds.size + withoutTurnId;
-}
-
 function legacyItem(
   text: string,
   stateUpdatedAt: string,
@@ -234,8 +193,8 @@ export const coreSessionSummaryPlugin: Plugin = {
 
       const allMessages = readSessionMessages(pluginCtx.workspacePath, hookCtx.sessionId);
       const sourceMessages = allMessages.filter((message) => (
-        legacy.summaryThroughTimestamp === undefined
-        || (message._timestamp ?? Number.POSITIVE_INFINITY) <= legacy.summaryThroughTimestamp
+        legacy.summaryThroughTimestamp !== undefined
+        && (message._timestamp ?? Number.POSITIVE_INFINITY) <= legacy.summaryThroughTimestamp
       ));
       const throughSequence = Math.max(0, ...sourceMessages.map((message) => message._sequence ?? 0));
       const item = legacyItem(
@@ -323,71 +282,64 @@ export const coreSessionSummaryPlugin: Plugin = {
       return updated;
     }
 
-    async function summarizeCompletedTurns(hookCtx: HookContext): Promise<boolean> {
-      const current = await getSummary(hookCtx);
-      const messages = readSessionMessages(pluginCtx.workspacePath, hookCtx.sessionId)
-        .filter((message) => (message._sequence ?? 0) > current.summarizedThroughSequence);
-      if (countUserTurns(messages) < getTurnThreshold(hookCtx.config)) return false;
-      hookCtx.reportStatus?.({
-        stage: "session_summary",
-        state: "started",
-        message: "正在进行上下文压缩...",
-      });
-
-      const engine = createSessionSummaryEngine(summaryOptions(hookCtx.config));
-      const delta = await engine.createDelta(hookCtx.client, hookCtx.sessionId, current, messages, hookCtx.signal);
-      hookCtx.signal?.throwIfAborted();
-      await persistDelta(hookCtx, current, delta);
-      return true;
-    }
-
     pluginCtx.registerHooks({
       onBeforeModelCall: async (hookCtx: HookContext, modelContext: ModelCallContext) => {
-        if (!isEnabled(hookCtx) || isSubAgentSession(hookCtx.sessionId)) return modelContext;
+        if (!isEnabled(hookCtx)) return modelContext;
         const stripped = stripLegacySummaryMessages(modelContext.messages, modelContext.turnStartIndex);
-        const summary = await getSummary(hookCtx);
-        if (!hasSummaryItems(summary)) {
-          return { ...modelContext, messages: stripped.messages, turnStartIndex: stripped.turnStartIndex };
-        }
-        const previous = stripToolMessagesForNewTurn(
-          stripped.messages.slice(0, stripped.turnStartIndex),
-        );
+        let summary = await getSummary(hookCtx);
         const current = stripped.messages.slice(stripped.turnStartIndex);
-        const recent = takeRecentUserTurns(previous, getRecentTurns(hookCtx.config));
-        const summaryText = renderSummary(summary);
-        return {
-          ...modelContext,
-          messages: [...recent, ...current],
-          derivedContext: summaryText,
-          contextSummaries: [...(modelContext.contextSummaries ?? []), { title: "会话摘要", content: summaryText }],
-          turnStartIndex: recent.length,
+        // Rehydrate unsummarized history rather than silently losing it to the UI history window.
+        const firstCurrentSequence = current.find((message) => message._sequence !== undefined)?._sequence;
+        const persisted = readSessionMessages(pluginCtx.workspacePath, hookCtx.sessionId);
+        const previous = firstCurrentSequence !== undefined
+          ? persisted.filter((message) => (message._sequence ?? 0) < firstCurrentSequence)
+          : stripped.messages.slice(0, stripped.turnStartIndex);
+        const buildContext = (): ModelCallContext => {
+          const summaryText = hasSummaryItems(summary) ? renderSummary(summary) : undefined;
+          const readable = sanitizeToolMessageChains(previous.filter((message) => (
+            (message._sequence ?? Number.POSITIVE_INFINITY) > summary.summarizedThroughSequence
+          )));
+          return {
+            ...modelContext,
+            messages: [...readable, ...current],
+            derivedContext: summaryText,
+            contextSummaries: [...(modelContext.contextSummaries ?? []), ...(summaryText ? [{ title: "会话摘要", content: summaryText }] : [])],
+            turnStartIndex: readable.length,
+          };
         };
-      },
-
-      onTurnEnd: async (hookCtx, reason) => {
-        if (!isEnabled(hookCtx) || isSubAgentSession(hookCtx.sessionId)) return;
-        if (reason !== "completed" && reason !== "iteration_limit") return;
+        const tokens = (context: ModelCallContext) => estimateTokens([
+          ...context.messages,
+          ...(context.derivedContext ? [{ role: "assistant" as const, content: context.derivedContext }] : []),
+        ]);
+        let result = buildContext();
+        if (tokens(result) <= modelContext.messageTokenBudget) return result;
+        const uncovered = previous.filter((message) => (message._sequence ?? 0) > summary.summarizedThroughSequence);
+        let candidates = uncovered;
+        if (candidates.length === 0) return result;
+        const fixed = modelContext.fixedInputTokens ?? 0;
+        const beforeTokens = tokens(result) + fixed;
+        modelContext.reportStatus?.({ stage: "session_summary", state: "started", message: "正在进行上下文压缩...", beforeTokens });
         try {
-          if (await summarizeCompletedTurns(hookCtx)) {
-            hookCtx.reportStatus?.({
-              stage: "session_summary",
-              state: "completed",
-              message: "会话记忆整理完成",
-            });
+          const engine = createSessionSummaryEngine(summaryOptions(hookCtx.config));
+          while (candidates.length > 0) {
+            const delta = await engine.createDelta(hookCtx.client, hookCtx.sessionId, summary, candidates, hookCtx.signal);
+            hookCtx.signal?.throwIfAborted();
+            summary = await persistDelta(hookCtx, summary, delta);
+            result = buildContext();
+            if (tokens(result) <= modelContext.messageTokenBudget) break;
+            candidates = uncovered.filter((message) => (message._sequence ?? 0) > summary.summarizedThroughSequence);
           }
+          modelContext.reportStatus?.({ stage: "session_summary", state: "completed", message: "上下文压缩完成", beforeTokens, afterTokens: tokens(result) + fixed });
         } catch (error) {
           hookCtx.signal?.throwIfAborted();
-          hookCtx.reportStatus?.({
-            stage: "session_summary",
-            state: "failed",
-            message: "会话记忆整理失败，本轮对话不受影响",
-          });
+          modelContext.reportStatus?.({ stage: "session_summary", state: "failed", message: "上下文压缩失败，保留原文并检查请求预算", beforeTokens });
           pluginCtx.log(
             "WARN",
             `结构化会话摘要更新失败，保留当前 Checkpoint：${error instanceof Error ? error.message : String(error)}`,
             hookCtx.sessionId,
           );
         }
+        return result;
       },
     });
   },

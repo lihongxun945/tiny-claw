@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { mkdirSync, appendFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { Tool } from "../types.js";
 import type { Config } from "../types.js";
@@ -58,12 +60,30 @@ export function createBashTool(workspacePath: string, getConfig: () => Config): 
 
       const config = context?.config ?? getConfig();
       const tempPath = context?.sessionContext?.mode === "project" && isTrustedProject(config, root, workspacePath) ? projectTempDirectory(workspacePath, root) : undefined;
-      return executeShell(command, timeout, cwd, config.bashTerminationGraceMs ?? 1000, context?.signal, tempPath);
+      const outputDir = resolve(workspacePath, "tool-output");
+      mkdirSync(outputDir, { recursive: true });
+      const outputPath = resolve(outputDir, `${randomUUID()}.log`);
+      let outputSaveError: string | undefined;
+      const result = JSON.parse(await executeShell(command, timeout, cwd, config.bashTerminationGraceMs ?? 1000, context?.signal, tempPath,
+        (text) => {
+          if (outputSaveError) return;
+          try { appendFileSync(outputPath, text, { mode: 0o600 }); }
+          catch (error) { outputSaveError = String(error); }
+        },
+        () => context?.reportActivity?.(`正在执行命令：${command}`), config.bashMaxOutputChars ?? MAX_OUTPUT));
+      if (result.truncated) {
+        if (outputSaveError) result.outputSaveError = outputSaveError;
+        else result.outputPath = outputPath;
+        result.notice = outputSaveError
+          ? "输出已截断，仅保留尾部；完整日志保存失败，详见 outputSaveError。"
+          : "输出已截断，仅保留尾部；完整输出见 outputPath，可使用 file_read 按行读取。";
+      }
+      return JSON.stringify(result);
     },
   };
 }
 
-export function executeShell(command: string, timeout: number, cwd: string, graceMs: number, signal?: AbortSignal, tempPath?: string, onOutput?: (text: string) => void): Promise<string> {
+export function executeShell(command: string, timeout: number, cwd: string, graceMs: number, signal?: AbortSignal, tempPath?: string, onOutput?: (text: string) => void, onStarted?: () => void, maxOutput = MAX_OUTPUT): Promise<string> {
   return new Promise((resolve) => {
     if (signal?.aborted) {
       resolve(JSON.stringify({ stdout: "", stderr: "命令执行已取消", exitCode: -1 }));
@@ -76,7 +96,9 @@ export function executeShell(command: string, timeout: number, cwd: string, grac
     });
 
     let stdout = "";
+    proc.once("spawn", () => onStarted?.());
     let stderr = "";
+    let truncated = false;
     let terminating = false;
     let settled = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -97,7 +119,7 @@ export function executeShell(command: string, timeout: number, cwd: string, grac
       proc.stdin.destroy();
       proc.stdout.destroy();
       proc.stderr.destroy();
-      resolve(JSON.stringify({ stdout: truncate(stdout, MAX_OUTPUT), stderr: truncate(stderr, MAX_OUTPUT), exitCode: code ?? -1 }));
+      resolve(JSON.stringify({ stdout: truncate(stdout, maxOutput), stderr: truncate(stderr, maxOutput), exitCode: code ?? -1, ...(truncated ? { truncated: true } : {}) }));
     };
     const terminate = (message: string) => {
       if (terminating || settled) return;
@@ -109,12 +131,14 @@ export function executeShell(command: string, timeout: number, cwd: string, grac
     };
 
     proc.stdout.on("data", (data: Buffer) => {
-      stdout = (stdout + data.toString()).slice(-MAX_OUTPUT);
+      truncated ||= stdout.length + data.toString().length > maxOutput;
+      stdout = (stdout + data.toString()).slice(-maxOutput);
       onOutput?.(data.toString());
     });
 
     proc.stderr.on("data", (data: Buffer) => {
-      stderr = (stderr + data.toString()).slice(-MAX_OUTPUT);
+      truncated ||= stderr.length + data.toString().length > maxOutput;
+      stderr = (stderr + data.toString()).slice(-maxOutput);
       onOutput?.(data.toString());
     });
 
