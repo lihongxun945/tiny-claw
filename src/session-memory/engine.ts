@@ -1,5 +1,5 @@
 import type { ModelClient } from "../model/types.js";
-import type { Message } from "../types.js";
+import type { Config, Message } from "../types.js";
 import { extractSummaryDelta } from "./extractor.js";
 import { applySummaryDelta, compactSummary } from "./reducer.js";
 import type { PersistedSessionSummary, SummaryDelta } from "./types.js";
@@ -10,6 +10,8 @@ export interface SessionSummaryEngineOptions {
   maxOutputTokens: number;
   maxInputChars: number;
   maxContextTokens?: number;
+  retries?: number;
+  config?: Config;
 }
 
 export interface SessionSummaryEngine {
@@ -35,6 +37,8 @@ export function createSessionSummaryEngine(options: SessionSummaryEngineOptions)
       maxInputChars: options.maxInputChars,
       maxOutputTokens: options.maxOutputTokens,
       maxContextTokens: options.maxContextTokens,
+      retries: options.retries,
+      config: options.config,
     }),
     applyDelta: applySummaryDelta,
     compact: compactSummary,

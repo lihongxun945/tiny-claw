@@ -6,6 +6,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createDefaultConfig, ensureConfigFile, loadConfig, stripDeprecatedConfigFields, validateConfig } from "./config.js";
 import { AgentSession, type AgentEvent } from "./agent.js";
+import { displayToolResult } from "./tool-context.js";
 import { PluginManager } from "./plugin-manager.js";
 import { appendLog } from "./workspace/logger.js";
 import {
@@ -214,6 +215,7 @@ function isSubAgentSessionId(id: string): boolean {
 }
 
 function buildMessageListFromMessages(msgs: Message[], sessionId: string, workspacePath: string): FormattedMessage[] {
+  const displayConfig = loadConfig(workspacePath);
   const plans = listSessionPlans(workspacePath, sessionId);
   const plansByTurn = new Map(plans.flatMap((plan) => (
     [plan.turnId, ...(plan.relatedTurnIds ?? [])].map((turnId) => [turnId, plan] as const)
@@ -235,7 +237,7 @@ function buildMessageListFromMessages(msgs: Message[], sessionId: string, worksp
       if (b.type === "text" && b.text) text += b.text;
       else if (b.type === "tool_use") toolCalls.push({ id: b.id, name: b.name ?? "", input: b.input ?? {} });
       else if (b.type === "tool_result") {
-        toolCalls.push({ id: b.tool_use_id, name: "", input: {}, result: b.content ?? "" });
+        toolCalls.push({ id: b.tool_use_id, name: "", input: {}, result: displayToolResult(b.content ?? "", b.tool_use_id, sessionId, displayConfig) });
       } else if (b.type === "image") {
         attachments.push({
           id: b.id,
@@ -335,6 +337,10 @@ function buildMessageListFromMessages(msgs: Message[], sessionId: string, worksp
     const run = message.turnId ? readRun(workspacePath, sessionId, message.turnId) : undefined;
     for (const toolCall of message.toolCalls) {
       if (toolCall.result !== undefined) continue;
+      if (run?.state === "waiting_user" && run.suspension?.status === "pending" && run.suspension.toolCall.id === toolCall.id) {
+        toolCall.result = JSON.stringify({ status: "waiting_user", requestId: run.suspension.id, question: run.suspension.payload.question });
+        continue;
+      }
       if (run?.state === "running" && run.pendingToolCallId === toolCall.id) {
         toolCall.status = "running";
       } else {
@@ -537,7 +543,11 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     const stream = new GatewayStream(turnId, approvalId);
     streams.set(sessionId, stream);
     attachStream(res, sessionId, stream);
-    await stream.consume(events);
+    async function* displayEvents(): AsyncGenerator<AgentEvent> {
+      for await (const event of events) yield event.type === "tool_result"
+        ? { ...event, result: displayToolResult(event.result, event.toolCallId, sessionId, config) } : event;
+    }
+    await stream.consume(displayEvents());
     if (streams.get(sessionId) === stream) streams.delete(sessionId);
   };
   globalPluginManager = pm;
@@ -590,6 +600,14 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       url,
       readBody: () => readBody(req),
       sendJSON: (status, data) => sendJSON(res, status, data),
+      resumeTool: async (sessionId, requestId, result) => {
+        const session = getOrCreateSession(sessionId, workspacePath, pm);
+        const run = session.getPendingSuspension();
+        if (streams.has(sessionId) || session.isBusy() || run?.suspension?.id !== requestId) return sendJSON(res, 409, { error: "问题已处理或会话正在执行，请刷新后重试" });
+        sendSSEHeader(res);
+        startSSEHeartbeat(res, config.security?.gateway?.sseHeartbeatIntervalMs ?? DEFAULT_SSE_HEARTBEAT_INTERVAL_MS);
+        await runStream(res, sessionId, run.turnId, session.resumeTool(requestId, result), requestId);
+      },
     };
 
     // 插件路由（优先匹配）
@@ -980,13 +998,13 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     // POST /sessions/:id/cancel
     if (req.method === "POST" && url.pathname.startsWith("/sessions/") && url.pathname.endsWith("/cancel")) {
       const id = decodeURIComponent(url.pathname.slice("/sessions/".length, -"/cancel".length));
-      const session = sessions.get(id) ?? (listSessionApprovalContinuations(workspacePath, id).length
+      const session = sessions.get(id) ?? (listSessionApprovalContinuations(workspacePath, id).length || listRuns(workspacePath, id).some((run) => run.state === "waiting_user" && run.suspension?.status === "pending")
         ? getOrCreateSession(id, workspacePath, pm) : undefined);
       if (!session) {
         sendJSON(res, 404, { error: "会话不存在" });
         return;
       }
-      const cancelled = session.cancel() || await session.cancelPendingApprovals();
+      const cancelled = session.cancel() || await session.cancelPendingApprovals() || await session.cancelPendingSuspension();
       sendJSON(res, cancelled ? 200 : 409, cancelled ? { cancelled: true } : { error: "会话当前没有正在执行的任务" });
       return;
     }
@@ -1199,14 +1217,14 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 
     // GET /history/sessions — 从 session 元数据 + 活跃会话合并
     if (req.method === "GET" && url.pathname === "/history/sessions") {
-      const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string; context: SessionContext; executionMode: ExecutionMode; busy?: boolean; attention?: "approval" }>();
+      const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string; context: SessionContext; executionMode: ExecutionMode; busy?: boolean; attention?: "approval" | "input" }>();
 
       for (const meta of listSessionMetas(workspacePath)) {
         if (isSubAgentSessionId(meta.id) || meta.archived) continue;
         const active = sessions.get(meta.id);
         const awaitingApproval = active?.hasPendingApproval() ?? listSessionApprovalContinuations(workspacePath, meta.id).length > 0;
         const run = listRuns(workspacePath, meta.id).at(-1);
-        sessionMap.set(meta.id, { id: meta.id, lastActivity: meta.lastActivity, preview: meta.preview, context: meta.context, executionMode: meta.preferences.executionMode, busy: run ? run.state === "running" : active?.isBusy() ?? false, attention: awaitingApproval ? "approval" : undefined });
+        sessionMap.set(meta.id, { id: meta.id, lastActivity: meta.lastActivity, preview: meta.preview, context: meta.context, executionMode: meta.preferences.executionMode, busy: run ? run.state === "running" : active?.isBusy() ?? false, attention: awaitingApproval ? "approval" : run?.state === "waiting_user" && run.suspension?.status === "pending" ? "input" : undefined });
       }
 
       // 合并活跃会话（新创建的但还未写入历史文件的）
@@ -1248,7 +1266,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const url = new URL(req.url ?? "/", `http://localhost:${webPort}`);
 
       // 代理 API 请求到 gateway
-      if (url.pathname === "/chat" || url.pathname === "/plan" || url.pathname === "/context" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname.startsWith("/projects/") || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/plugins" || url.pathname.startsWith("/plugins/") || url.pathname === "/memory" || url.pathname === "/profile" || url.pathname === "/profile/get" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname === "/local-models" || url.pathname === "/local-models/download" || url.pathname === "/models/test" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
+      if (pm.getRoutes().some((route) => route.path === url.pathname && route.method === req.method) || url.pathname === "/chat" || url.pathname === "/plan" || url.pathname === "/context" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname.startsWith("/projects/") || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/plugins" || url.pathname.startsWith("/plugins/") || url.pathname === "/memory" || url.pathname === "/profile" || url.pathname === "/profile/get" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname === "/local-models" || url.pathname === "/local-models/download" || url.pathname === "/models/test" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
         let proxyIsSSE = false;
         try {
           const hasRequestBody = req.method !== "GET" && req.method !== "HEAD"
@@ -1269,6 +1287,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
             "access-control-allow-origin": "*",
             ...(proxyRes.headers.get("cache-control") ? { "cache-control": proxyRes.headers.get("cache-control")! } : {}),
             ...(proxyRes.headers.get("x-content-type-options") ? { "x-content-type-options": proxyRes.headers.get("x-content-type-options")! } : {}),
+            ...(proxyRes.headers.get("content-disposition") ? { "content-disposition": proxyRes.headers.get("content-disposition")! } : {}),
           });
           if (proxyIsSSE) {
             const reader = proxyRes.body!.getReader();

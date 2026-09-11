@@ -15,6 +15,8 @@ export default defineConfig({
       "/chat": proxy,
       "/sessions": proxy,
       "/approvals": proxy,
+      "/user-input": proxy,
+      "/tool-result": proxy,
       "/logs": proxy,
       "/config": proxy,
       "/memory": proxy,

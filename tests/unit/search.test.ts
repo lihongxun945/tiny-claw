@@ -23,6 +23,12 @@ function config(overrides: Partial<Config> = {}): Config {
 }
 
 describe("web_search tool", () => {
+  it("stops collecting an oversized response and reports that it is incomplete", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ results: [{ content: "x".repeat(1000) }] }))));
+    const result = JSON.parse(await createWebSearchTool(config({ ollamaApiKey: "key", plugins: { "core-tool-context": { searchMaxResponseBytes: 100 } } })).execute({ query: "large" }));
+    expect(result.error).toContain("内容未完整接收");
+    expect(result).not.toHaveProperty("results");
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
   });

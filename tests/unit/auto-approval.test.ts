@@ -7,6 +7,40 @@ import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-worksp
 const decide = (command: string, trustedProject = false) => evaluateAutoApproval({ toolName: "bash", args: {}, command, rootPath: "/project", cwd: "/project", projectMode: true, trustedProject, tempPath: "/managed-temp" });
 describe("structured shell approval", () => {
   it.each([
+    "git status --porcelain; git branch --show-current; git log --oneline -5",
+    "git log -n 10 --graph", "git log --max-count=5",
+    "git diff --no-ext-diff --no-textconv --stat -- src/ai/eval.js",
+    "ps aux | awk '{print $2, $3\"%\", $NF}'",
+    "awk '{printf \"%.1fGB %s\\n\", $6/1024/1024, $11}' data",
+    "node --check scripts/eval.js", "node -c -- scripts/eval.js",
+    "timeout 120 node scripts/eval.js 2>&1 | tail -40",
+    "nohup timeout 2m npm test", "timeout 10 timeout 2 node scripts/eval.js",
+    "(cat package.json)", "(cd /tmp; cat file); touch local",
+    "(cd /project/scripts && node eval.js) >/dev/null",
+  ])("allows supported query and wrapper syntax: %s", command => expect(decide(command).action).toBe("allow"));
+  it.each([
+    "git log --output=/tmp/out", "git log --ext-diff -p", "git log --textconv -p",
+    "git log --max-count nope", "git branch -D main", "git branch new-name",
+    "git diff --stat", "git diff --no-ext-diff --no-textconv --output=/tmp/out",
+    "git diff --no-ext-diff --no-textconv --ext-diff", "git diff --no-ext-diff --no-textconv --textconv",
+    "awk '{system(\"id\")}'", "awk '{print $1 > \"/tmp/out\"}'", "awk '{print $1 | \"sh\"}'",
+    "awk '{print getline}'", "awk -f program.awk", "awk '{print $1}' -f program.awk",
+    "awk '{print $1}' OFS=x", "awk '{print $1; system(\"id\")}'",
+    'awk \'{print /" / system($0) / "/}\'',
+    "awk '{print ($1}'", "awk '{print $1,}'", "awk '{print $1 /}'",
+    "awk '{print $1}' data >/tmp/out", "awk '{print $1}' | sh",
+    "node --check ../outside.js", "node --check --require evil.js scripts/eval.js",
+    "node --check", "node --check scripts/eval.js --import evil.js",
+    "timeout 10 sudo reboot", "timeout 10 node /outside/script.js", "timeout 10 sh -c id",
+    "timeout --signal=KILL 10 node scripts/eval.js", "timeout 10", "timeout $DURATION node scripts/eval.js",
+    "timeout 10 node scripts/eval.js >/tmp/out",
+    "(cd /tmp; touch output)", "(cat package.json) >/tmp/out", "(sudo reboot)",
+    "(cd /tmp); cd /outside && node script.js", "(echo $(sudo reboot))",
+  ])("does not hide effects behind query syntax or wrappers: %s", command => {
+    expect(decide(command).action).not.toBe("allow");
+    expect(decide(command, true).action).not.toBe("allow");
+  });
+  it.each([
     `echo "===checkpoint files==="; ls -la reports/*.ckpt* reports/*checkpoint* /tmp/*ckpt* 2>/dev/null; find . -maxdepth 2 -name '*.ckpt*' -o -maxdepth 2 -name '*checkpoint*' 2>/dev/null | grep -v node_modules; echo "===git status==="; git status --short`,
     "find .", "find /tmp -name '*.ckpt*' -print", "find -L . -type f -print0",
     "find . -name node_modules -prune -o -name '*.js' -print",

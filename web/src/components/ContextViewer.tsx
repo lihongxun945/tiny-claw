@@ -21,7 +21,7 @@ export default function ContextViewer({ snapshot, onClose }: Props) {
         <header>
           <div>
             <strong>当前模型上下文</strong>
-            <span>第 {snapshot.iteration} 次模型调用{snapshot.attempt > 1 ? ` · 第 ${snapshot.attempt} 次尝试` : ""}</span>
+            <span>{snapshot.kind === "estimate" ? "最新预算估算（未发送）" : `第 ${snapshot.iteration} 次模型调用`}{snapshot.attempt > 1 ? ` · 第 ${snapshot.attempt} 次尝试` : ""}</span>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>
@@ -40,6 +40,7 @@ export default function ContextViewer({ snapshot, onClose }: Props) {
               <div><span>输出预留</span><strong>{number(usage.outputReserved)}</strong></div>
               <div><span>上下文上限</span><strong>{number(usage.maxContext)}</strong></div>
               <div><span>上下文占用</span><strong>{usage.percent}%</strong></div>
+              {snapshot.kind === "estimate" && snapshot.lastRequest && <div><span>上次请求占用</span><strong>{snapshot.lastRequest.usage.percent}%</strong></div>}
             </div>
           )}
           {tab === "prompt" && <pre>{snapshot.systemPrompt}</pre>}

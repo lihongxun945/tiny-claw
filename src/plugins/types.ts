@@ -132,6 +132,8 @@ export interface ContextSummarySection {
 }
 
 export interface PreparedModelRequest {
+  kind?: "estimate" | "request";
+  lastRequest?: { createdAt: string; usage: ContextTokenUsage };
   contextSummaries?: ContextSummarySection[];
   sessionId: string;
   turnId?: string;
@@ -212,6 +214,7 @@ export type RouteHandler = (
 ) => Promise<void>;
 
 export interface RouteContext {
+  resumeTool?: (sessionId: string, requestId: string, result: string) => Promise<void>;
   url: URL;
   readBody(): Promise<string>;
   sendJSON(status: number, data: unknown): void;

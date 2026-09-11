@@ -8,6 +8,8 @@ import PlanProgress from "./PlanProgress.js";
 import DiffView from "./DiffView.js";
 
 interface Props {
+  questionPanel?: import("react").ReactNode;
+  awaitingInput?: boolean;
   isStopping?: boolean;
   summaryNotice?: { state: "completed" | "failed"; message: string };
   messages: Message[];
@@ -46,6 +48,8 @@ interface Props {
 }
 
 export default function ProjectView({
+  questionPanel,
+  awaitingInput = false,
   summaryNotice,
   messages,
   streamingText,
@@ -419,11 +423,12 @@ export default function ProjectView({
             onRejectAndResume={onRejectAndResume}
           />
           <PlanProgress plan={plan} runState={runState} run={run} />
+          {questionPanel}
           <ChatInput
             onSend={onSend}
             onStop={onStop}
             isStopping={isStopping}
-            disabled={isStreaming || backendBusy || awaitingApproval}
+            disabled={isStreaming || backendBusy || awaitingApproval || awaitingInput}
             executionMode={executionMode}
             onExecutionModeChange={onExecutionModeChange}
             permissionMode={permissionMode}

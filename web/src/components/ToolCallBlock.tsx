@@ -89,7 +89,17 @@ export function isToolCallRunning(toolCall: ToolCallInfo): boolean {
     || (!toolCall.status && toolCall.startedAt !== undefined && toolCall.completedAt === undefined));
 }
 
+export function isToolCallWaiting(result: string | undefined): boolean {
+  try { return !!result && JSON.parse(result).status === "waiting_user"; }
+  catch { return false; }
+}
+
 export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveTurnAndResume, onRejectAndResume }: Props) {
+  let originalUrl: string | undefined;
+  try {
+    const value = JSON.parse(toolCall.result ?? "");
+    if (value.truncated === true && typeof value.originalUrl === "string" && value.originalUrl.startsWith("/tool-result?")) originalUrl = value.originalUrl;
+  } catch { /* Plain text results do not carry an original-content link. */ }
   const approval = parseApprovalResult(toolCall.result);
   const [approvalStatus, setApprovalStatus] = useState<"pending" | "approved" | "rejected">("pending");
   const [approvalMessage, setApprovalMessage] = useState("");
@@ -106,7 +116,7 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveT
   const inputSummary = summarizeInput(toolCall.name, toolCall.input);
   const resultSummary = summarizeResult(toolCall.result);
   const elapsedMs = useElapsedTime(toolCall.startedAt, toolCall.completedAt, isRunning);
-  const statusLabel = approval
+  const statusLabel = isToolCallWaiting(toolCall.result) ? "等待回答" : approval
     ? expired ? "审批已过期" : "待审批"
     : isRunning
       ? "执行中"
@@ -260,6 +270,7 @@ export default function ToolCallBlock({ toolCall, onApproveAndResume, onApproveT
             {toolCall.result !== undefined && (
               <>
                 <div style={{ marginTop: 8 }}><strong>Result:</strong></div>
+                {originalUrl && <div>内容已精简 · <a href={originalUrl} download>下载完整结果</a></div>}
               <Markdown>{toolCall.result}</Markdown>
               </>
             )}

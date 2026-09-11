@@ -3,8 +3,8 @@ import type { Message, ToolCallInfo } from "../types.js";
 function hasApprovalId(toolCall: ToolCallInfo, approvalId: string): boolean {
   if (!toolCall.result) return false;
   try {
-    const value = JSON.parse(toolCall.result) as { approvalId?: unknown };
-    return value.approvalId === approvalId;
+    const value = JSON.parse(toolCall.result) as { approvalId?: unknown; requestId?: unknown };
+    return value.approvalId === approvalId || value.requestId === approvalId;
   } catch {
     return false;
   }
@@ -19,7 +19,7 @@ export function mergeApprovalResume(
 ): Message[] {
   const messageIndex = messages.findIndex((message) => (
     message.role === "assistant"
-    && message.toolCalls.some((toolCall) => hasApprovalId(toolCall, approvalId))
+    && (message.toolCalls.some((toolCall) => hasApprovalId(toolCall, approvalId)) || (metadata?.turnId && message.turnId === metadata.turnId))
   ));
   if (messageIndex < 0) {
     return [...messages, {

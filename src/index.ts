@@ -71,7 +71,7 @@ async function main() {
 
     process.stdout.write("Assistant: ");
 
-    for await (const event of session.chat(userInput)) {
+    for await (const event of session.chat(userInput, { channel: "cli" })) {
       switch (event.type) {
         case "status":
           process.stdout.write(`\n[状态] ${event.message}\n`);

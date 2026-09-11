@@ -49,6 +49,21 @@ describe("Gateway HTTP API", () => {
     removeTempWorkspace(workspacePath);
   });
 
+  it("projects large results in history and serves the exact original through the web proxy", async () => {
+    const original = JSON.stringify({ results: [{ title: "paper", url: "https://example.com", snippet: "资料".repeat(30000) }] });
+    await appendSessionMessage(workspacePath, "tool-original", { role: "assistant", content: [{ type: "tool_use", id: "large-call", name: "web_search", input: {} }] });
+    await appendSessionMessage(workspacePath, "tool-original", { role: "user", content: [{ type: "tool_result", tool_use_id: "large-call", content: original }] });
+    const history = await json(`${gateway.apiUrl}/history/sessions/tool-original/messages`);
+    const result = JSON.parse(history.body.messages[0].toolCalls[0].result);
+    expect(result.truncated).toBe(true);
+    expect(result.results[0].snippet.length).toBeLessThanOrEqual(1500);
+    const download = await fetch(`${gateway.webUrl}${result.originalUrl}`);
+    expect(download.status).toBe(200);
+    expect(download.headers.get("content-disposition")).toContain("attachment");
+    expect(await download.text()).toBe(original);
+    expect((await fetch(`${gateway.webUrl}/tool-result?session_id=other&tool_call_id=large-call`)).status).toBe(404);
+  });
+
   it("serves canonical defaults and removes obsolete settings on save without changing legacy protocol", async () => {
     const initial = await json(`${gateway.apiUrl}/config`);
     expect(initial.body.defaults).toMatchObject({ maxTokens: 16384, searchProvider: "duckduckgo", modelProvider: "openai-chat" });
@@ -66,6 +81,37 @@ describe("Gateway HTTP API", () => {
     const disk = JSON.parse(readFileSync(resolve(workspacePath, "config.json"), "utf8"));
     expect(disk).not.toHaveProperty("contextCompressionMaxChars");
     expect(disk.profile.enabled).toBe(false);
+  });
+
+  it("restores pending questions through the web proxy and rejects duplicate or late answers", async () => {
+    const model = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end('data: {"choices":[{"delta":{"content":"answer received"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+    });
+    await new Promise<void>((resolve) => model.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (model.address() as { port: number }).port;
+      await json(`${gateway.apiUrl}/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ apiUrl: `http://127.0.0.1:${port}/v1`, modelProvider: "openai-chat", autoMemory: { enabled: false }, sessionSummary: { enabled: false } }) });
+      const call = { type: "tool_use" as const, id: "ask-http", name: "ask_user", input: { question: "Which?", type: "single_choice", options: [{ id: "a", label: "A" }] } };
+      await appendSessionMessage(workspacePath, "question-http", { role: "user", content: "start", _turnId: "question-turn" });
+      await appendSessionMessage(workspacePath, "question-http", { role: "assistant", content: [call], _turnId: "question-turn" });
+      startRun(workspacePath, "question-http", "question-turn", "normal");
+      updateRun(workspacePath, "question-http", "question-turn", { state: "waiting_user", suspension: { id: "question-http-id", kind: "user_input", payload: { ...call.input, maxAnswerChars: 12000 }, status: "pending", toolCall: call, skippedToolCalls: [], iteration: 1 } });
+      const history = await json(`${gateway.webUrl}/history/sessions/question-http/messages`);
+      expect(JSON.stringify(history.body)).toContain("waiting_user");
+      const sessions = await json(`${gateway.webUrl}/history/sessions`);
+      expect(sessions.body.sessions.find((session: { id: string }) => session.id === "question-http")).toMatchObject({ busy: false, attention: "input" });
+      const post = (selectedIds: string[]) => fetch(`${gateway.webUrl}/user-input/answer`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: "question-http", request_id: "question-http-id", selectedIds }) });
+      const invalid = await post(["unknown"]);
+      expect(invalid.status).toBe(400);
+      await invalid.text();
+      const responses = await Promise.all([post(["a"]), post(["a"])]);
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+      const texts = await Promise.all(responses.map((response) => response.text()));
+      expect(texts.find((text) => text.includes("event: done"))).toContain("answer received");
+      const final = await json(`${gateway.webUrl}/history/sessions/question-http/messages`);
+      expect(JSON.stringify(final.body)).toContain("selectedOptions");
+    } finally { await new Promise<void>((resolve) => model.close(() => resolve())); }
   });
 
   it("keeps a disconnected task running and reconnects through the web proxy", async () => {

@@ -178,6 +178,7 @@ export default function SessionSidebar({ activeSessionId, currentView, sidebarMo
                       {session.preview || "新对话"}
                       {session.busy && <span className="session-busy-badge" role="status">执行中</span>}
                       {session.attention === "approval" && <span className="session-attention-badge" role="status">等待审批</span>}
+                      {session.attention === "input" && <span className="session-attention-badge" role="status">等待回答</span>}
                     </div>
                     <div className="session-time">{formatTime(session.lastActivity)}</div>
                   </div>
@@ -197,6 +198,7 @@ export default function SessionSidebar({ activeSessionId, currentView, sidebarMo
                 {formatId(s.id)}
                 {s.busy && <span className="session-busy-badge" role="status">执行中</span>}
                 {s.attention === "approval" && <span className="session-attention-badge" role="status">等待审批</span>}
+                {s.attention === "input" && <span className="session-attention-badge" role="status">等待回答</span>}
               </div>
               {s.preview && <div className="session-preview">{s.preview}</div>}
               <div className="session-time">{formatTime(s.lastActivity)}</div>

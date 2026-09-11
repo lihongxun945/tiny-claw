@@ -34,7 +34,7 @@ export interface Session {
   lastActivity: number;
   preview?: string;
   busy?: boolean;
-  attention?: "approval";
+  attention?: "approval" | "input";
   context: SessionContext;
   executionMode: ExecutionMode;
 }
@@ -89,6 +89,8 @@ export interface ContextTokenUsage {
 }
 
 export interface ContextSnapshot {
+  kind?: "estimate" | "request";
+  lastRequest?: { createdAt: string; usage: ContextTokenUsage };
   contextSummaries?: Array<{ title: string; content: string }>;
   sessionId: string;
   turnId?: string;
@@ -255,6 +257,18 @@ export interface SessionPlan {
   steps: Array<{ id: string; title: string; status: PlanStepStatus; summary?: string }>;
 }
 export interface RunView {
+  suspension?: {
+    id: string;
+    kind: string;
+    status: "pending" | "answered" | "cancelled";
+    payload: {
+      question: string;
+      context?: string;
+      type: "text" | "single_choice" | "multiple_choice";
+      options: Array<{ id: string; label: string }>;
+      maxAnswerChars: number;
+    };
+  };
   startedAt?: number;
   completedAt?: number;
   status?: { stage: string; state: "started" | "completed" | "failed"; message: string; startedAt?: number };

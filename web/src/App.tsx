@@ -2,7 +2,8 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import type { Attachment, ContextTokenUsage, ExecutionMode, Message, PermissionMode, SessionPlan, ToolCallInfo, Session } from "./types.js";
 import { streamChat, streamApprovalResume, fetchConfig, fetchHistoryMessages, fetchHistorySessions, fetchSessionPlans, fetchSessionPlanState, cancelSession, uploadImage, createSession, updateConfig, updateSessionExecutionMode } from "./lib/api.js";
 import { mergeApprovalResume } from "./lib/message-merge.js";
-import { streamSessionEvents } from "./lib/sse-client.js";
+import { streamSessionEvents, streamPost } from "./lib/sse-client.js";
+import UserQuestion from "./components/UserQuestion.js";
 import ChatView from "./components/ChatView.js";
 import ChatInput from "./components/ChatInput.js";
 import SessionSidebar from "./components/SessionSidebar.js";
@@ -34,6 +35,7 @@ interface SessionUiState {
   contextUsage?: ContextTokenUsage;
   backendBusy: boolean;
   awaitingApproval: boolean;
+  awaitingInput?: boolean;
   run?: import("./types.js").RunView;
   latestPlans?: SessionPlan[];
 }
@@ -104,7 +106,7 @@ export default function App() {
   const planRequestsRef = useRef(new Map<string, number>());
 
   const activeState = activeSessionId ? sessionStates[activeSessionId] ?? emptySessionState() : emptySessionState();
-  const activeBusy = activeState.isStreaming || activeState.backendBusy || activeState.awaitingApproval;
+  const activeBusy = activeState.isStreaming || activeState.backendBusy || activeState.awaitingApproval || activeState.awaitingInput === true;
   useEffect(() => {
     if (activeSessionId && !activeBusy && activeState.isStopping) {
       updateSessionState(activeSessionId, (state) => ({ ...state, isStopping: false }));
@@ -147,6 +149,7 @@ export default function App() {
         ...(snapshot.run ? {
           backendBusy: snapshot.run.state === "running",
           awaitingApproval: snapshot.run.state === "waiting_approval",
+          awaitingInput: snapshot.run.state === "waiting_user" && snapshot.run.suspension?.status === "pending",
           streamingStatus: state.isStreaming ? state.streamingStatus : snapshot.run.state === "running" && snapshot.run.status ? snapshot.run.status.message : state.streamingStatus,
           summaryNotice: snapshot.run.state === "interrupted" || snapshot.run.state === "cancelled" ? { state: "failed" as const, message: snapshot.run.reason ?? "运行已中断" } : state.summaryNotice,
         } : {}),
@@ -177,9 +180,10 @@ export default function App() {
         ...state,
         backendBusy: session.busy === true,
         awaitingApproval: session.attention === "approval",
+        awaitingInput: session.attention === "input",
       }));
     }
-    if (activeId && activeIsBusy && !abortControllersRef.current.has(activeId)) void refreshSessionPlan(activeId);
+    if (activeId && !abortControllersRef.current.has(activeId)) void refreshSessionPlan(activeId);
 
     if (activeId && ((activeWasBusy && !activeIsBusy) || approvalEnded) && !abortControllersRef.current.has(activeId)) {
       fetchHistoryMessages(activeId)
@@ -216,6 +220,7 @@ export default function App() {
             run, streamingTurnId: run.turnId, backendBusy: run.state === "running",
             summaryNotice: run.state === "interrupted" || run.state === "cancelled" ? { state: "failed", message: run.reason ?? "运行已中断" } : state.summaryNotice,
             awaitingApproval: run.state === "waiting_approval",
+            awaitingInput: run.state === "waiting_user" && run.suspension?.status === "pending",
             streamingStatus: run.state === "interrupted" ? run.reason ?? "运行已中断" : run.status?.message ?? state.streamingStatus,
           }));
           break;
@@ -228,6 +233,7 @@ export default function App() {
           toolCalls.splice(0, toolCalls.length, ...((d.toolCalls as ToolCallInfo[]) ?? []));
           updateSessionState(sourceSessionId, (state) => ({
             ...state, run: currentRun, streamingTurnId: turnId, streamingText: fullText,
+            awaitingInput: currentRun?.state === "waiting_user" && currentRun.suspension?.status === "pending",
             streamingToolCalls: [...toolCalls], streamingStatus: String(d.status ?? ""), streamingApprovalId: approvalId,
             ...(d.run ? { backendBusy: (d.run as { state: string }).state === "running", awaitingApproval: (d.run as { state: string }).state === "waiting_approval" } : {}),
           }));
@@ -313,6 +319,7 @@ export default function App() {
                 streamingApprovalId: undefined,
                 backendBusy: false,
                 awaitingApproval: d.reason === "approval_required",
+                awaitingInput: d.reason === "waiting_user" && currentRun?.suspension?.status === "pending",
                 loaded: true,
               },
             };
@@ -691,15 +698,15 @@ export default function App() {
     updateSessionState(id, (state) => ({ ...state, isStopping: true }));
     try {
       await cancelSession(id);
-      if (activeState.awaitingApproval) {
+      if (activeState.awaitingApproval || activeState.awaitingInput) {
         const messages = await fetchHistoryMessages(id);
-        updateSessionState(id, (state) => ({ ...state, messages, awaitingApproval: false, isStreaming: false, backendBusy: false, plan: null }));
+        updateSessionState(id, (state) => ({ ...state, messages, awaitingApproval: false, awaitingInput: false, isStreaming: false, backendBusy: false, plan: null }));
       }
       await refreshSessionPlan(id);
     } catch (error) {
       updateSessionState(id, (state) => ({ ...state, isStopping: false, summaryNotice: { state: "failed", message: `停止失败：${error instanceof Error ? error.message : String(error)}` } }));
     }
-  }, [activeSessionId, activeState.awaitingApproval, refreshSessionPlan, updateSessionState]);
+  }, [activeSessionId, activeState.awaitingApproval, activeState.awaitingInput, refreshSessionPlan, updateSessionState]);
 
   const handleSelectSession = useCallback(async (session: Session) => {
     const id = session.id;
@@ -828,6 +835,26 @@ export default function App() {
     }
   }, [activeSessionId, activeState.isStreaming, isRefreshingMessages, updateSessionState]);
 
+  const answerQuestion = async (requestId: string, answer: { selectedIds: string[]; text: string }) => {
+    if (!activeSessionId) return;
+    const id = activeSessionId;
+    if (abortControllersRef.current.has(id)) throw new Error("会话正在处理，请稍后重试");
+    const controller = new AbortController();
+    abortControllersRef.current.set(id, controller);
+    updateSessionState(id, (state) => ({ ...state, isStreaming: true, streamingText: "", streamingToolCalls: [], streamingStatus: "", streamingApprovalId: requestId }));
+    try {
+      await consumeAgentStream(id, streamPost("/user-input/answer", { session_id: id, request_id: requestId, ...answer }, controller.signal), requestId, activeState.run?.turnId);
+    } finally {
+      if (abortControllersRef.current.get(id) === controller) abortControllersRef.current.delete(id);
+      updateSessionState(id, (state) => ({ ...state, isStreaming: false, streamingApprovalId: undefined }));
+      await refreshSessionPlan(id);
+      const messages = await fetchHistoryMessages(id).catch(() => undefined);
+      if (messages) updateSessionState(id, (state) => ({ ...state, messages }));
+    }
+  };
+  const request = activeState.run?.state === "waiting_user" && activeState.run.suspension?.kind === "user_input" && activeState.run.suspension.status === "pending" ? activeState.run.suspension : undefined;
+  const questionPanel = request && activeSessionId ? <UserQuestion key={`${activeSessionId}:${request.id}`} request={request} sessionId={activeSessionId} onAnswer={answerQuestion} onCancel={handleStop} /> : null;
+
   return (
     <div className="app">
       <SessionSidebar
@@ -876,6 +903,7 @@ export default function App() {
               onRejectAndResume={handleRejectAndResume}
             />
             <PlanProgress plan={activeState.plan} runState={activeState.run?.state} run={activeState.run} />
+            {questionPanel}
             <ChatInput
               onSend={handleSend}
               onStop={handleStop}
@@ -894,6 +922,8 @@ export default function App() {
         )}
         {view === "project" && (
           <ProjectView
+            questionPanel={questionPanel}
+            awaitingInput={activeState.awaitingInput}
             summaryNotice={activeState.summaryNotice}
             latestPlans={activeState.latestPlans}
             runState={activeState.run?.state}

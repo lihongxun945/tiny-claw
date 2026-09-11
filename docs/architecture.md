@@ -169,7 +169,9 @@ WebUI 先调用 `/projects/inspect` 检查目录，再读取项目设置并展�
 
 `security/shell-analysis.ts` 使用 bash-parser 生成 AST，`security/auto-approval.ts` 遍历命令、管道、逻辑连接和重定向，跟踪可确定的工作目录。丢弃输出到准确的 `/dev/null`、描述符复制以及引号内普通文本不作为外部写入；命令替换中的命令仍分析。未知语法或动态目标请求确认。支持范围内的写入目标经真实路径与符号链接检查；这是审批静态分析，不是完整 Bash 解释器或 OS 沙箱。
 
-`security/read-command-analysis.ts` 按参数识别 find 与 Git 的只读子集。find 查询谓词按参数个数消费，支持路径、名称/类型筛选、深度、逻辑组合和标准输出；执行、删除、文件输出与未知参数请求确认。find 的 -o 不作为输出路径。Git 仅对 status、ls-files、rev-parse 的已识别查询选项免除项目信任检查；全局配置覆盖及未知查询选项保守确认，不放宽其他 Git 子命令的原有授权。shell 管道、动态展开和重定向仍独立检查；显式 ask/allow 不变。
+`security/read-command-analysis.ts` 按参数识别 find、Git 与 awk 的只读子集。find 查询谓词按参数个数消费，支持路径、名称/类型筛选、深度、逻辑组合和标准输出；执行、删除、文件输出与未知参数请求确认。find 的 -o 不作为输出路径。Git 支持 status、ls-files、rev-parse 的已识别查询选项，以及 branch --show-current、log 的日志展示与数量选项；diff 必须显式禁用 ext-diff 和 textconv，并只接受已识别选项。全局配置覆盖及未知查询选项保守确认。awk 只接受单条 print/printf 中的字段、字符串、数值和算术 token，不接受函数、赋值、文件脚本、内部重定向或命令管道。shell 管道、动态展开和重定向仍独立检查；显式 ask/allow 不变。
+
+Shell 分析对 Subshell 内部递归检查，子环境的 cd 不传播到外层，子 Shell 自身的重定向按父目录检查。timeout 仅识别字面量时限和直接命令，再递归分析目标；未知包装选项不放行。Node 的 --check/-c 只允许单个项目内文件，包含符号链接边界校验，不放行额外预加载选项。这些能力沿用现有安全分析入口，bash 与 background_start 共用，不新增主循环特例或配置阈值。
 
 项目模式下，自动审批默认允许工作目录和入口文件均在当前项目内的 Node/Python 脚本；路径检查包含符号链接。允许 npm run/test/build 和不含选项或变量覆盖的 make 任务，不以 trustedProjects 为前提。解释器内联代码、未知选项、外部脚本、npm 执行目录/配置覆盖与未识别命令保守请求确认。外层 AST 仍独立检查管道、重定向、目录切换、系统和远程操作；普通模式及显式 ask/allow 不变。此策略是代码执行授权，不是沙箱，不检测脚本内部所有副作用。
 
@@ -195,7 +197,17 @@ Run 持久化 startedAt/completedAt 及按 toolCallId 索引的 toolTimings。�
 
 WebUI 的 useElapsedTime 只用时间差计算显示值，每秒刷新并监听 focus/pageshow/visibilitychange 立即校准；切换会话或折叠不会重置时间。工具结束后显示固定耗时，计划信息条及历史计划显示本轮总耗时；未记录开始时间时不显示数值。
 
-### 审批与恢复
+### 用户询问与恢复
+
+core-user-input 注册 ask_user 和 POST /user-input/answer。插件负责题型、选项和答案校验及提示词；ToolExecutionContext.suspend(kind, payload) 是通用暂停接口，Agent 不按工具名判断。Run.suspension 原子保存问题、稳定请求 ID、原工具调用、同批未执行调用、迭代和 actor。waiting_user 且 suspension.pending 是可恢复等待态，不写 completedAt，不保持模型请求或后台 Promise；普通旧 waiting_user 仍兼容为结束状态。
+
+答案提交校验当前会话、请求 ID 和状态，经 RouteContext.resumeTool 进入统一 GatewayStream。状态转 running 和答案记录同次落盘，随后写入原工具结果，未执行同批调用配对记录 blocked 并交由模型重新判断。相同请求只消费一次；取消后不接受迟到答案。进程在答复续跑过程中异常退出时按已有 running 恢复规则标记 interrupted，不自动重放副作用。等待状态重启后可直接回答。
+
+前端根据 Run 快照和会话 attention=input 恢复等待状态。仅当前会话自动弹窗；sessionStorage 记录已展示的请求 ID，收起和刷新不反复弹窗，常驻回答入口不依赖计划展开。等待不显示生成光标或运行动画；提交、取消、跨窗口状态刷新共享原 Run revision。历史以 ask_user 的问题和对应答案显示独立只读记录。插件配置 plugins.core-user-input 控制 enabled、maxOptions、maxQuestionChars、maxAnswerChars，默认 true/8/4000/12000。非 Web 渠道不暂停，子 Agent 不暴露 ask_user。
+
+Web 静态服务器按插件注册路由转发新增 API，RouteContext 提供通用 SSE 工具恢复桥接，不让插件直接管理 Session 或 SSE 订阅。问题等待与权限审批完全独立，回答不产生权限授权。
+
+### 工具审批
 
 Approval 仍关联具体工具、参数和 continuation。批准或拒绝在原 Run 中恢复，恢复计划不代表批准操作；授权只消费一次。等待审批时不能发送新任务，允许批准、拒绝或取消整个等待任务。取消将未执行调用记录为 blocked，清理审批和运行轮次；不调用模型自动继续。到期将审批标记为 expired 并持久化，不删除 continuation，Run 保持 waiting_approval。plan-recovery.ts 仅在 continuation 丢失时将 Run 转 interrupted，旧孤立 waiting_approval 步骤转 waiting_user。
 
@@ -226,6 +238,19 @@ OpenAI-compatible 流响应的 reasoning_content 作为协议元数据合并到 
 `core-context-inspector` 通过 `onModelRequestPrepared` 观察每一次真正发送给模型的最终请求。该钩子位于提示词注入、工具过滤和上下文压缩之后，因此快照包含实际的 System Prompt、Messages 与 Tools。插件将最新快照写入 `sessions/<session>/context-snapshot.json`，采用异步临时文件加原子重命名，仅保留最新一份；写入失败记录警告，不中断模型请求。`GET /context?session_id=...` 从磁盘读取，缺失或损坏时返回 404，Gateway 重启后可恢复，删除会话目录时一并清理。旧会话没有快照时需等待下一次模型调用生成。Agent 同时通过 SSE 推送 `context_usage`，WebUI 在输入框内审批模式左侧以“上下文 24%”展示占用比例，无数据时隐藏入口；点击后在弹窗中查看完整 Token 统计、占用比例及请求内容。Token 统计复用上下文压缩模块的估算函数；附件只保留类型和名称，不暴露本地文件路径或 Base64 数据。
 
 上下文弹窗提供独立的“上下文摘要”标签页。会话摘要与临时压缩插件通过 `ModelCallContext.contextSummaries` 提供本次请求实际注入的摘要文本，Agent 仅将其转交给最终请求快照并持久化，不读取调用结束后更新的摘要。该元数据不参与 Token 计数，也不改变原始 System Prompt 和 Messages 展示。新快照无摘要时记录空数组；旧快照缺失该字段时明确提示未单独记录。
+
+### 工具结果与上下文预算
+
+core-tool-context 通过 onBeforeModelCall 提供模型侧工具结果投影，纯函数位于 tool-context.ts。完整结果仍由 Agent 原有路径写入 messages.jsonl，工具执行、审批和暂停不受投影影响；不再建立第二份工具原文存储。小结果原样保留，大结果转换为合法 JSON，包含截取标记及 contentRef.toolCallId。搜索结果保留标题、URL、resultIndex 和有界 snippet；普通结果保留退出码、错误和预览。审批与待回答控制结果不裁剪。最终投影按实际成本从最新结果向旧结果分配预算，不平均切分；旧结果至少保留原文引用。最新交互为每个结果保留 readMaxTokens 的阅读预算（不超过 maxResultTokens），避免历史增多导致分页退化到几个字符。摘要插件先按正常单条预算检查压缩阈值并压缩已完成交互；仍无法容纳最新阅读结果时，由最终硬预算检查报告失败，不静默缩成无效片段。分页结果再次缩小时同步更新 nextOffset，避免跳过原文。模型请求投影不回写 MessageHistory，内存和持久化历史均保留原文；摘要插件通过持久化覆盖序号重建后续请求。
+
+session_history_recall 在当前会话内按 tool_call_id 定位原文，可指定 result_index、字符 offset 或 query，返回有界片段及 nextOffset。原文不可跨会话读取。GET /tool-result 为用户提供附件形式的原文下载；Gateway 历史与实时流使用同一展示投影，不把全文直接渲染到页面。这是展示副本，不替代 Agent 内部原始结果或落盘内容。
+
+session-summary 使用同一投影构造抽取请求；输入大小按最终序列化字符数与模型 Token 上限双重检查。历史轮次和当前轮较早的完整工具交互均可压缩，最新用户请求与最新交互保留，未配对调用不进入抽取批次。Checkpoint 覆盖序号与 revision 持久化，原文不改写，重启按覆盖范围重建上下文。模型仅输出 operations，程序填写实际批次的版本与范围，仍校验引用、类型和版本冲突。结构化校验失败有限重试，失败或取消不推进覆盖位置；容量允许时继续，否则沿用 Run 错误终态解锁输入，不重放工具副作用。
+
+预算包含推理协议字段、系统提示、工具定义、消息与输出预留，并扣除可配置安全余量；最终检查及空响应重试前再次检查，不能发送本地已判定超限的请求。core-context-inspector 持久化 kind=estimate 的准备/失败估算与上次请求统计；正常请求快照保持兼容。WebUI 区分未发送的预算估算和上次请求占用。
+
+配置位于 plugins.core-tool-context：maxResultTokens=8000、readMaxTokens=4000、searchSnippetChars=1500、safetyMargin=0.05、summaryRetries=1、searchMaxResponseBytes=8388608。搜索 HTTP 正文有独立采集字节限制和取消处理；超限明确报未完整接收，不宣称保存了未收到的原文。bash 等工具已有采集上限继续生效。
+
 
 ### config.json
 
@@ -525,9 +550,9 @@ Gateway 在聊天和审批续跑的 SSE 响应空闲期间发送注释心跳，�
 
 Agent 向插件提供全部未压缩历史和当前轮消息，不按 historyWindowSize 或工具消息类型裁剪；跨轮保留完整工具调用及结果，只修复孤立的协议记录。唯一摘要路径是 core-session-summary，在 onBeforeModelCall 按完整输入 Token 阈值触发，主会话和子 Agent 共用。
 
-摘要只覆盖已验证的历史完整轮次前缀，成功落盘后推进覆盖序号；尚未覆盖的原文全部保留，不另设 recentTurns。关闭摘要时不生成临时摘要、不按轮数丢弃历史，硬预算不足时明确报错。取消和失败保留原文及已提交的摘要批次。原始 messages.jsonl 不被摘要改写。
+摘要覆盖已验证的完整交互前缀，包括历史轮次及当前轮较早的已完成工具交互，成功落盘后推进覆盖序号；最新用户需求和最新交互保留，不另设 recentTurns。关闭摘要时不生成临时摘要、不按轮数丢弃历史，工具结果预算保护仍生效，硬预算不足时明确报错。取消和失败保留原文及已提交的摘要批次。原始 messages.jsonl 不被摘要改写。
 
-摘要请求将提示词、已有条目、元数据和完整消息一起计入 maxInputChars，同时预留 maxOutputTokens 并检查模型上下文上限；用二分选择能容纳的完整轮次前缀。单轮无法容纳时失败而不切断工具链、截断正文或推进覆盖序号。所有模型调用继续执行最终硬预算和工具链合法性检查。
+摘要请求将提示词、已有条目、元数据和消息投影一起计入 maxInputChars，同时预留 maxOutputTokens 并检查模型上下文上限；二分选择能容纳的完整交互前缀，工具调用和结果不能拆开。大工具结果采用带原文引用的预算内片段，用户文本不固定截取；仍无法容纳时失败，不推进覆盖序号。所有主模型调用继续执行最终硬预算和工具链合法性检查。
 
 工具边界控制单次输出：fileReadMaxChars 默认 20000，超限明确提示按行读取；bashMaxOutputChars 默认 10000，分别限制 stdout/stderr 尾部，超限标记 truncated 并提供 workspace/tool-output/<uuid>.log 完整日志。file_read 仅对该内部日志目录中的 UUID 日志提供受根目录校验的跨项目只读访问。项目搜索保留原有字符及结果数限制。历史层不对工具实际返回内容二次截断。
 

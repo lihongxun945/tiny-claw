@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ToolCallInfo } from "../types.js";
-import ToolCallBlock, { isToolCallRunning, isToolCallBlocked, isToolCallFailure, parseApprovalResult } from "./ToolCallBlock.js";
+import ToolCallBlock, { isToolCallWaiting, isToolCallRunning, isToolCallBlocked, isToolCallFailure, parseApprovalResult } from "./ToolCallBlock.js";
 
 interface Props {
   toolCalls: ToolCallInfo[];
@@ -14,12 +14,13 @@ interface Props {
 export default function ToolCallGroup({ toolCalls, expanded: controlledExpanded, onExpandedChange, onApproveAndResume, onApproveTurnAndResume, onRejectAndResume }: Props) {
   const stats = useMemo(() => {
     const pending = toolCalls.filter((toolCall) => parseApprovalResult(toolCall.result)).length;
+    const waiting = toolCalls.filter((toolCall) => isToolCallWaiting(toolCall.result)).length;
     const running = toolCalls.filter(isToolCallRunning).length;
     const interrupted = toolCalls.filter((toolCall) => toolCall.result === undefined && !isToolCallRunning(toolCall) && toolCall.status === "interrupted").length;
     const unknown = toolCalls.filter((toolCall) => toolCall.result === undefined && !isToolCallRunning(toolCall) && toolCall.status !== "interrupted").length;
     const failed = toolCalls.filter((toolCall) => isToolCallFailure(toolCall.result)).length;
     const blocked = toolCalls.filter((toolCall) => isToolCallBlocked(toolCall.result)).length;
-    return { pending, running, failed, blocked, interrupted, unknown, completed: toolCalls.length - pending - running - failed - blocked - interrupted - unknown };
+    return { waiting, pending, running, failed, blocked, interrupted, unknown, completed: toolCalls.length - waiting - pending - running - failed - blocked - interrupted - unknown };
   }, [toolCalls]);
   const mustExpand = stats.pending > 0;
   const [automaticExpanded, setAutomaticExpanded] = useState(mustExpand || stats.running > 0);
@@ -37,6 +38,7 @@ export default function ToolCallGroup({ toolCalls, expanded: controlledExpanded,
     `${toolCalls.length} 次调用`,
     stats.running > 0 ? `${stats.running} 执行中` : "",
     stats.pending > 0 ? `${stats.pending} 待审批` : "",
+    stats.waiting > 0 ? `${stats.waiting} 等待回答` : "",
     stats.completed > 0 ? `${stats.completed} 成功` : "",
     stats.failed > 0 ? `${stats.failed} 失败` : "",
     stats.blocked > 0 ? `${stats.blocked} 已拦截` : "",

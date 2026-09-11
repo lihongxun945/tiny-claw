@@ -17,6 +17,8 @@ export interface ShellNode {
   suffix?: Array<ShellWord | ShellRedirect>;
   prefix?: Array<ShellWord | ShellRedirect>;
   commands?: ShellNode[];
+  list?: ShellNode;
+  redirections?: ShellRedirect[];
   left?: ShellNode;
   right?: ShellNode;
   op?: string;

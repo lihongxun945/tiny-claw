@@ -268,6 +268,7 @@ export interface Tool {
 }
 
 export interface ToolExecutionContext {
+  suspend?: (kind: string, payload: Record<string, unknown>) => string;
   /** Report observable activity after permission checks, without changing run state. */
   reportActivity?: (message: string) => void;
   signal?: AbortSignal;

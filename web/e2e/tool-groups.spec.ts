@@ -9,6 +9,15 @@ async function mockSession(page: import("@playwright/test").Page, toolCalls: Arr
   });
 }
 
+test("shows a saved-original entry for a bounded tool result", async ({ page }) => {
+  await mockSession(page, [{ id: "large", name: "web_search", input: { query: "paper" },
+    result: JSON.stringify({ truncated: true, results: [{ title: "paper", snippet: "preview" }], originalUrl: "/tool-result?session_id=tool-group-chat&tool_call_id=large" }) }]);
+  await page.goto("/#sid=tool-group-chat");
+  await page.locator(".tool-block summary").click();
+  await expect(page.getByText("内容已精简", { exact: false })).toBeVisible();
+  await expect(page.getByRole("link", { name: "下载完整结果" })).toHaveAttribute("href", "/tool-result?session_id=tool-group-chat&tool_call_id=large");
+});
+
 test("collapses completed tool calls into a scrollable summary", async ({ page }) => {
   await mockSession(page, Array.from({ length: 12 }, (_, index) => ({
     id: `call-${index}`,

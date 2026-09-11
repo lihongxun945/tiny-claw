@@ -14,11 +14,12 @@ export function estimateTokens(messages: Message[]): number {
 }
 
 function estimateMessageTokens(msg: Message): number {
+  const reasoning = msg._reasoningContent ? estimateTextTokens(msg._reasoningContent) : 0;
   if (typeof msg.content === "string") {
-    return estimateTextTokens(msg.content) + 4; // role 开销
+    return estimateTextTokens(msg.content) + reasoning + 4; // role 开销
   }
 
-  let tokens = 4;
+  let tokens = 4 + reasoning;
   for (const block of msg.content) {
     if (block.type === "text") {
       tokens += estimateTextTokens(block.text);

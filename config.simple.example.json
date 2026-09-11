@@ -63,6 +63,8 @@
     "feishu": { "enabled": true }
   },
   "plugins": {
+    "core-tool-context": { "maxResultTokens": 8000, "readMaxTokens": 4000 },
+    "core-user-input": { "enabled": true },
     "feishu": {
       "appId": "cli_xxx",
       "appSecret": "YOUR_FEISHU_APP_SECRET",

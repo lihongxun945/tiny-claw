@@ -14,7 +14,14 @@ export const coreContextInspectorPlugin: Plugin = {
         const path = snapshotPath(request.sessionId);
         const temporary = `${path}.${randomUUID()}.tmp`;
         try {
-          await writeFile(temporary, JSON.stringify(request), { encoding: "utf8", mode: 0o600 });
+          let lastRequest: PreparedModelRequest["lastRequest"];
+          if (request.kind === "estimate") {
+            try {
+              const previous = JSON.parse(await readFile(path, "utf8")) as PreparedModelRequest;
+              lastRequest = previous.kind === "estimate" ? previous.lastRequest : { createdAt: previous.createdAt, usage: previous.usage };
+            } catch { /* The first estimate has no earlier request. */ }
+          }
+          await writeFile(temporary, JSON.stringify({ ...request, lastRequest }), { encoding: "utf8", mode: 0o600 });
           await rename(temporary, path);
         } catch (error) {
           ctx.log("WARN", `保存上下文快照失败: ${error instanceof Error ? error.message : String(error)}`, request.sessionId);

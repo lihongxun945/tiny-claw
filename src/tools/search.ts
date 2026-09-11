@@ -1,4 +1,5 @@
 import type { Tool, Config } from "../types.js";
+import { toolContextOptions } from "../tool-context.js";
 
 interface SearchResult {
   title: string;
@@ -14,6 +15,34 @@ interface SearchProvider {
 const SEARCH_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const SEARCH_TIMEOUT = 3_000;
+
+async function readSearchResponse(resp: Response, maxBytes: number, signal?: AbortSignal): Promise<unknown> {
+  const reader = resp.body?.getReader();
+  if (!reader) throw new Error("搜索返回空响应");
+  const controller = new AbortController();
+  const cancel = () => { controller.abort(); void reader.cancel(); };
+  const timer = setTimeout(cancel, SEARCH_TIMEOUT);
+  signal?.addEventListener("abort", cancel, { once: true });
+  let bytes = 0;
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    if (signal?.aborted) cancel();
+    while (true) {
+      const chunk = await reader.read();
+      controller.signal.throwIfAborted();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > maxBytes) throw new Error(`搜索响应超过采集上限 ${maxBytes} bytes，内容未完整接收，请缩小查询范围`);
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    return JSON.parse(text + decoder.decode());
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", cancel);
+    await reader.cancel().catch(() => {});
+  }
+}
 
 /** 带超时和 User-Agent 的 fetch 封装 */
 async function searchFetch(url: string, options: { headers?: Record<string, string>; method?: string; body?: string; signal?: AbortSignal } = {}): Promise<Response> {
@@ -40,7 +69,7 @@ async function searchFetch(url: string, options: { headers?: Record<string, stri
 
 class OllamaProvider implements SearchProvider {
   name = "ollama";
-  constructor(private apiKey: string) {}
+  constructor(private apiKey: string, private maxBytes: number) {}
 
   async search(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
     const resp = await searchFetch("https://ollama.com/api/web_search", {
@@ -55,7 +84,7 @@ class OllamaProvider implements SearchProvider {
     if (!resp.ok) {
       throw new Error(`Ollama Web Search 请求失败 (${resp.status})`);
     }
-    const data = (await resp.json()) as {
+    const data = (await readSearchResponse(resp, this.maxBytes, signal)) as {
       results?: Array<{ title?: string; url?: string; content?: string }>;
     };
     return (data.results ?? []).slice(0, count).map((r) => ({
@@ -70,14 +99,14 @@ class OllamaProvider implements SearchProvider {
 
 class SearXNGProvider implements SearchProvider {
   name = "searxng";
-  constructor(private url: string) {}
+  constructor(private url: string, private maxBytes: number) {}
 
   async search(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
     const resp = await searchFetch(`${this.url}/search?q=${encodeURIComponent(query)}&format=json`, { signal });
     if (!resp.ok) {
       throw new Error(`SearXNG 请求失败 (${resp.status})`);
     }
-    const data = (await resp.json()) as {
+    const data = (await readSearchResponse(resp, this.maxBytes, signal)) as {
       results?: Array<{ title?: string; url?: string; content?: string }>;
     };
     return (data.results ?? []).slice(0, count).map((r) => ({
@@ -92,7 +121,7 @@ class SearXNGProvider implements SearchProvider {
 
 class BraveProvider implements SearchProvider {
   name = "brave";
-  constructor(private apiKey: string) {}
+  constructor(private apiKey: string, private maxBytes: number) {}
 
   async search(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
     const resp = await searchFetch(
@@ -102,7 +131,7 @@ class BraveProvider implements SearchProvider {
     if (!resp.ok) {
       throw new Error(`Brave Search 请求失败 (${resp.status})`);
     }
-    const data = (await resp.json()) as {
+    const data = (await readSearchResponse(resp, this.maxBytes, signal)) as {
       web?: {
         results?: Array<{ title?: string; url?: string; description?: string }>;
       };
@@ -119,6 +148,7 @@ class BraveProvider implements SearchProvider {
 
 class DuckDuckGoProvider implements SearchProvider {
   name = "duckduckgo";
+  constructor(private maxBytes: number) {}
 
   async search(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
     const resp = await searchFetch(
@@ -128,7 +158,7 @@ class DuckDuckGoProvider implements SearchProvider {
     if (!resp.ok) {
       throw new Error(`DuckDuckGo 请求失败 (${resp.status})`);
     }
-    const data = (await resp.json()) as {
+    const data = (await readSearchResponse(resp, this.maxBytes, signal)) as {
       Heading?: string;
       AbstractText?: string;
       AbstractURL?: string;
@@ -183,27 +213,28 @@ class DuckDuckGoProvider implements SearchProvider {
 }
 
 function createProvider(config: Config): SearchProvider {
+  const maxBytes = toolContextOptions(config).searchMaxResponseBytes;
   switch (config.searchProvider) {
     case "ollama": {
       if (!config.ollamaApiKey) {
         throw new Error("使用 Ollama Web Search 需要配置 ollamaApiKey");
       }
-      return new OllamaProvider(config.ollamaApiKey);
+      return new OllamaProvider(config.ollamaApiKey, maxBytes);
     }
     case "brave": {
       if (!config.braveApiKey) {
         throw new Error("使用 Brave Search 需要配置 braveApiKey");
       }
-      return new BraveProvider(config.braveApiKey);
+      return new BraveProvider(config.braveApiKey, maxBytes);
     }
     case "duckduckgo":
-      return new DuckDuckGoProvider();
+      return new DuckDuckGoProvider(maxBytes);
     case "searxng":
     default: {
       if (!config.searxngUrl) {
         throw new Error("使用 SearXNG 需要配置 searxngUrl（自建实例地址）");
       }
-      return new SearXNGProvider(config.searxngUrl);
+      return new SearXNGProvider(config.searxngUrl, maxBytes);
     }
   }
 }

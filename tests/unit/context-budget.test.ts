@@ -40,9 +40,10 @@ describe("calculateMessageTokenBudget", () => {
     const budgetWithoutFixedInput = calculateMessageTokenBudget(fullThresholdConfig, "", []);
     const budgetWithFixedInput = calculateMessageTokenBudget(fullThresholdConfig, "系统提示".repeat(100), tools);
 
-    expect(budgetWithoutFixedInput).toBe(8999);
+    expect(budgetWithoutFixedInput).toBe(8499);
     expect(budgetWithFixedInput).toBeLessThan(budgetWithoutFixedInput);
-    expect(budgetWithFixedInput).toBeLessThanOrEqual(9000);
+    expect(budgetWithFixedInput).toBeLessThanOrEqual(8500);
+    expect(calculateMessageTokenBudget(config({ contextCompressionThreshold: 1, plugins: { "core-tool-context": { safetyMargin: 0 } } }), "", [])).toBe(8999);
   });
 
   it("never returns a negative budget", () => {

@@ -6,6 +6,7 @@ import { loadSessionState, updateSessionState } from "../../session-state.js";
 import { readSessionMessages } from "../../session-store.js";
 import { estimateTokens } from "../../estimate-tokens.js";
 import { getEffectiveMaxContextTokens } from "../../context-budget.js";
+import { projectToolMessages, toolContextOptions } from "../../tool-context.js";
 import { createSessionSummaryEngine } from "../../session-memory/engine.js";
 import { compactSummary, shouldCompactSummary } from "../../session-memory/reducer.js";
 import {
@@ -58,7 +59,9 @@ function positiveInt(value: number | undefined, fallback: number): number {
 
 function summaryOptions(config: Config) {
   return {
-    maxContextTokens: getEffectiveMaxContextTokens(config),
+    maxContextTokens: Math.floor(getEffectiveMaxContextTokens(config) * (1 - toolContextOptions(config).safetyMargin)),
+    retries: toolContextOptions(config).summaryRetries,
+    config,
     limits: {
       maxOperations: positiveInt(config.sessionSummary?.maxOperations, DEFAULT_MAX_OPERATIONS),
       maxItemChars: positiveInt(config.sessionSummary?.maxItemChars, DEFAULT_MAX_ITEM_CHARS),
@@ -294,6 +297,12 @@ export const coreSessionSummaryPlugin: Plugin = {
         const previous = firstCurrentSequence !== undefined
           ? persisted.filter((message) => (message._sequence ?? 0) < firstCurrentSequence)
           : stripped.messages.slice(0, stripped.turnStartIndex);
+        const rawBySequence = new Map(persisted.map(message => [message._sequence, message]));
+        const rawCurrent = current.map(message => rawBySequence.get(message._sequence) ?? message);
+        let lastAssistant = -1;
+        rawCurrent.forEach((message, index) => { if (message.role === "assistant") lastAssistant = index; });
+        // Keep the latest exchange and user request; earlier complete exchanges may be summarized.
+        const eligibleCurrent = lastAssistant > 1 ? rawCurrent.slice(0, lastAssistant) : [];
         const buildContext = (): ModelCallContext => {
           const summaryText = hasSummaryItems(summary) ? renderSummary(summary) : undefined;
           const readable = sanitizeToolMessageChains(previous.filter((message) => (
@@ -301,7 +310,8 @@ export const coreSessionSummaryPlugin: Plugin = {
           )));
           return {
             ...modelContext,
-            messages: [...readable, ...current],
+            messages: projectToolMessages([...readable, ...rawCurrent.filter((message, index) => index === 0
+              || (message._sequence ?? Infinity) > summary.summarizedThroughSequence)], hookCtx.config),
             derivedContext: summaryText,
             contextSummaries: [...(modelContext.contextSummaries ?? []), ...(summaryText ? [{ title: "会话摘要", content: summaryText }] : [])],
             turnStartIndex: readable.length,
@@ -313,7 +323,7 @@ export const coreSessionSummaryPlugin: Plugin = {
         ]);
         let result = buildContext();
         if (tokens(result) <= modelContext.messageTokenBudget) return result;
-        const uncovered = previous.filter((message) => (message._sequence ?? 0) > summary.summarizedThroughSequence);
+        const uncovered = [...previous, ...eligibleCurrent].filter((message) => (message._sequence ?? 0) > summary.summarizedThroughSequence);
         let candidates = uncovered;
         if (candidates.length === 0) return result;
         const fixed = modelContext.fixedInputTokens ?? 0;

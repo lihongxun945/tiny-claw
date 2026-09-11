@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { resolveRootFile } from "../tools/workspace-path.js";
 import { parseShell, type ShellNode, type ShellWord } from "./shell-analysis.js";
 import { isReadOnlySed } from "./sed-analysis.js";
-import { isReadOnlyFind, isReadOnlyGit } from "./read-command-analysis.js";
+import { isReadOnlyAwk, isReadOnlyFind, isReadOnlyGit } from "./read-command-analysis.js";
 
 export type AutoApprovalRisk = "low" | "medium" | "high" | "critical";
 export type AutoApprovalAction = "allow" | "ask" | "deny";
@@ -66,8 +66,13 @@ export function evaluateAutoApproval(input: AutoApprovalInput): AutoApprovalDeci
   };
   const visit = (node: ShellNode, initialCwd: string): string => {
     let cwd = initialCwd;
-    if (node.type === "Script") {
+    if (node.type === "Script" || node.type === "CompoundList") {
       for (const child of node.commands ?? []) { const next = visit(child, cwd); if (!child.async) cwd = next; }
+      return cwd;
+    }
+    if (node.type === "Subshell" && node.list) {
+      visit({ type: "Command", suffix: node.redirections }, cwd);
+      visit(node.list, cwd);
       return cwd;
     }
     if (node.type === "Pipeline") { for (const child of node.commands ?? []) visit(child, cwd); return cwd; }
@@ -95,9 +100,18 @@ export function evaluateAutoApproval(input: AutoApprovalInput): AutoApprovalDeci
     if (name === "nohup") name = args.shift();
     if (!name) return cwd;
     const command = basename(name);
+    if (command === "timeout" && name === command) {
+      if (!/^\d+(?:\.\d+)?[smhd]?$/.test(args[0] ?? "") || !args[1] || args[1].startsWith("-")) {
+        uncertain("timeout 仅支持明确时限和直接命令，其他选项需要确认");
+      } else {
+        visit({ type: "Command", name: { type: "Word", text: args[1] }, suffix: args.slice(2).map(text => ({ type: "Word", text })) }, cwd);
+      }
+      return cwd;
+    }
     const readOnlyGit = command === "git" && isReadOnlyGit(args);
     if (command === "find" && !isReadOnlyFind(args)) uncertain("find 包含执行、写入或未支持的查询参数，需要确认");
-    if (command === "git" && !readOnlyGit && (["status", "ls-files", "rev-parse"].includes(args[0] ?? "") || args[0]?.startsWith("-"))) uncertain("git 包含未支持的查询选项或全局配置覆盖，需要确认");
+    if (command === "git" && !readOnlyGit && (["status", "ls-files", "rev-parse", "log", "branch", "diff"].includes(args[0] ?? "") || args[0]?.startsWith("-"))) uncertain("git 包含未支持的查询选项或全局配置覆盖，需要确认");
+    if (command === "awk" && !isReadOnlyAwk(args)) uncertain("awk 不是已支持的只读字段格式化，需要确认脚本与参数的影响");
     if (command === "sed" && !isReadOnlySed(args)) uncertain("sed 不是已支持的只读行打印用法，需要确认脚本与参数的影响");
     if (command !== name) uncertain(`命令使用显式可执行文件路径：${name}`);
     const operands = args.filter((arg) => !arg.startsWith("-"));
@@ -123,13 +137,16 @@ export function evaluateAutoApproval(input: AutoApprovalInput): AutoApprovalDeci
       if (args[i] === "--output" || (args[i] === "-o" && !["grep", "rg", "ps", "find"].includes(command) && !readOnlyGit)) write(args[i + 1] ?? "", cwd);
       if (args[i]!.startsWith("--output=")) write(args[i]!.slice(9), cwd);
     }
-    if (input.projectMode && !["sed", "find"].includes(command) && !readOnlyGit && !readCommands.has(command) && !writeCommands.has(command)) {
+    if (input.projectMode && !["sed", "find", "awk"].includes(command) && !readOnlyGit && !readCommands.has(command) && !writeCommands.has(command)) {
       if (!["node", "python", "python3", "npm", "git", "make"].includes(command)) uncertain(`未识别的项目命令：${command}`);
       if ((command === "npm" && !["run", "test", "build"].includes(args[0] ?? ""))
         || (command === "git" && ["push", "fetch", "pull", "clone"].some((a) => args.includes(a)))) decisions.push(ask("project-external-operation", `命令涉及包管理或远程仓库：${command}`));
       if (!within(input.rootPath, cwd)) decisions.push(ask("project-code-execution", `执行目录不在当前项目内：${cwd}`, "medium"));
       if (["node", "python", "python3"].includes(command)) {
-        const script = args[0] === "--" ? args[1] : args[0];
+        const checkingNode = command === "node" && ["--check", "-c"].includes(args[0] ?? "");
+        const scriptArgs = checkingNode ? args.slice(1) : args;
+        const script = scriptArgs[0] === "--" ? scriptArgs[1] : scriptArgs[0];
+        if (checkingNode && scriptArgs.length !== (scriptArgs[0] === "--" ? 2 : 1)) uncertain("node 语法检查仅支持单个项目文件");
         if (!script || script.startsWith("-") || /[*?\[\]{}]|:\/\//.test(script)) uncertain("仅自动允许明确的项目内脚本文件，内联代码或解释器选项需要确认");
         else if (!within(input.rootPath, resolve(cwd, script))) decisions.push(ask("external-script", `脚本不在当前项目内：${script}`));
       } else if (command === "npm") {

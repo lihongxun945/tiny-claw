@@ -158,6 +158,20 @@
     "feishu": { "enabled": true }
   },
   "plugins": {
+    "core-tool-context": {
+      "maxResultTokens": 8000,
+      "readMaxTokens": 4000,
+      "searchSnippetChars": 1500,
+      "safetyMargin": 0.05,
+      "summaryRetries": 1,
+      "searchMaxResponseBytes": 8388608
+    },
+    "core-user-input": {
+      "enabled": true,
+      "maxOptions": 8,
+      "maxQuestionChars": 4000,
+      "maxAnswerChars": 12000
+    },
     "feishu": {
       "appId": "cli_xxx",
       "appSecret": "YOUR_FEISHU_APP_SECRET",

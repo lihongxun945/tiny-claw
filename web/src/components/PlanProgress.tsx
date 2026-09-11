@@ -24,7 +24,7 @@ function getPlanStatus(plan: SessionPlan): string {
 export default function PlanProgress({ plan, historical = false, onResume, runState, run }: { plan: SessionPlan | null | undefined; historical?: boolean; onResume?: () => void; runState?: string; run?: RunView }) {
   const [expanded, setExpanded] = useState(false);
   const planId = plan?.id;
-  const elapsed = useElapsedTime(run?.startedAt, run?.completedAt, run?.state === "running" || run?.state === "waiting_approval");
+  const elapsed = useElapsedTime(run?.startedAt, run?.completedAt, run?.state === "running" || run?.state === "waiting_approval" || (run?.state === "waiting_user" && run.suspension?.status === "pending"));
   const duration = elapsed !== undefined ? <span className="plan-duration">总耗时 {formatDuration(elapsed)}</span> : null;
 
   useEffect(() => {
@@ -33,7 +33,7 @@ export default function PlanProgress({ plan, historical = false, onResume, runSt
 
   if (!plan) return null;
   const completed = plan.steps.filter((step) => step.status === "completed" || step.status === "skipped").length;
-  const status = runState === "waiting_approval" ? "等待审批" : runState === "running" ? "执行中" : getPlanStatus(plan);
+  const status = runState === "waiting_user" ? "等待回答" : runState === "waiting_approval" ? "等待审批" : runState === "running" ? "执行中" : getPlanStatus(plan);
   const currentStepIndex = plan.steps.findIndex((step) => step.id === plan.currentStepId);
   const fallbackStepIndex = plan.steps.findIndex((step) => step.status === "in_progress"
     || step.status === "waiting_approval"

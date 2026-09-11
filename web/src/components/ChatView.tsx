@@ -64,7 +64,8 @@ export default function ChatView({
     : messages.filter((message) => !((isStreaming || backendBusy) && streamingTurnId && message.role === "assistant" && message.turnId === streamingTurnId));
   const showBackendBusy = backendBusy && !isStreaming;
   const activity = !streamingTurnId || run?.turnId === streamingTurnId ? run?.status : undefined;
-  const active = isStreaming || backendBusy;
+  const waitingInput = run?.state === "waiting_user" && run.suspension?.status === "pending";
+  const active = (isStreaming || backendBusy) && !waitingInput;
   const statusText = isStopping ? "正在停止任务..."
     : awaitingApproval ? "等待您的审批，操作尚未执行"
     : connectionLost ? "连接已断开，正在重连；任务状态待确认"

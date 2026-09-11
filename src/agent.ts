@@ -17,11 +17,11 @@ import { applySessionConfig } from "./project.js";
 import { readSessionMeta } from "./session-store.js";
 import type { AgentActor, ChatResponse, Config, ContentBlock, Message, ToolUseBlock, ToolResultBlock, SessionContext, ExecutionMode } from "./types.js";
 import { randomUUID } from "node:crypto";
-import { calculateMessageTokenBudget, calculateHardMessageTokenBudget, getEffectiveMaxContextTokens } from "./context-budget.js";
-import { estimateTokens } from "./estimate-tokens.js";
+import { calculateMessageTokenBudget, calculateHardMessageTokenBudget } from "./context-budget.js";
+import { estimateTextTokens, estimateTokens } from "./estimate-tokens.js";
 import type { AgentStatusUpdate } from "./plugins/types.js";
 import { createPreparedModelRequest } from "./context-snapshot.js";
-import { readRun, startRun, updateRun, type SessionRun } from "./run-store.js";
+import { listRuns, readRun, startRun, updateRun, type SessionRun } from "./run-store.js";
 import type { TurnEndReason } from "./plugins/types.js";
 
 // === 事件类型 ===
@@ -114,6 +114,63 @@ export class AgentSession {
 
   hasPendingApproval(): boolean {
     return this.pendingApprovals.size > 0;
+  }
+
+  getPendingSuspension(): SessionRun | undefined {
+    return listRuns(this.workspacePath, this.id).find((run) => run.state === "waiting_user" && run.suspension?.status === "pending");
+  }
+
+  async cancelPendingSuspension(): Promise<boolean> {
+    const run = this.getPendingSuspension();
+    if (this.activeController || !run?.suspension) return false;
+    const controller = new AbortController();
+    this.activeController = controller;
+    try {
+      const result = JSON.stringify({ status: "cancelled", error: "用户已终止任务" });
+      updateRun(this.workspacePath, this.id, run.turnId, { state: "cancelled", status: undefined, reason: "用户取消等待回答的任务", suspension: { ...run.suspension, status: "cancelled", result } });
+      for (const call of [run.suspension.toolCall, ...run.suspension.skippedToolCalls]) await this.appendToolResult(call.id, result, run.turnId);
+      await this.pluginManager.endTurn(this.id, run.turnId);
+      return true;
+    } finally { this.activeController = undefined; }
+  }
+
+  async *resumeTool(requestId: string, result: string): AsyncGenerator<AgentEvent> {
+    const run = this.getPendingSuspension();
+    if (this.activeController || !run?.suspension || run.suspension.id !== requestId) {
+      yield { type: "error", message: "问题已处理、已取消或会话正在执行" };
+      return;
+    }
+    const pending = run.suspension;
+    const controller = new AbortController();
+    this.activeController = controller;
+    try {
+      const resumed = startRun(this.workspacePath, this.id, run.turnId, run.executionMode, undefined, run.selectedPlanId, { id: requestId, result });
+      yield { type: "run_state", run: resumed };
+      this.lastActivity = Date.now();
+      await this.pluginManager.beginTurn(this.id, run.turnId, run.executionMode);
+      if (!this.systemPrompt) this.systemPrompt = await this.pluginManager.callOnBuildPrompt("", this.id);
+      yield { type: "tool_call", toolCallId: pending.toolCall.id, name: pending.toolCall.name, input: pending.toolCall.input };
+      await this.appendToolResult(pending.toolCall.id, result, run.turnId);
+      yield { type: "tool_result", toolCallId: pending.toolCall.id, name: pending.toolCall.name, result };
+      for (const call of pending.skippedToolCalls) {
+        const skipped = JSON.stringify({ status: "blocked", executed: false, error: "前一个工具等待用户回答，此调用未执行；请结合答案重新决定是否调用" });
+        await this.appendToolResult(call.id, skipped, run.turnId);
+        yield { type: "tool_call", toolCallId: call.id, name: call.name, input: call.input };
+        yield { type: "tool_result", toolCallId: call.id, name: call.name, result: skipped };
+      }
+      yield* this.runModelLoop(controller, pending.actor, pending.iteration, "");
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      const failed = updateRun(this.workspacePath, this.id, run.turnId, { state: controller.signal.aborted ? "cancelled" : "interrupted", status: undefined, reason: error.message });
+      if (failed) yield { type: "run_state", run: failed };
+      await this.notifyError(error, pending.iteration);
+      yield { type: "error", message: error.message };
+    } finally {
+      clearTurnApproval(this.workspacePath, this.id, pending.actor);
+      if (readRun(this.workspacePath, this.id, run.turnId)?.state === "running") updateRun(this.workspacePath, this.id, run.turnId, { state: "interrupted", reason: "执行提前结束" });
+      await this.pluginManager.endTurn(this.id, run.turnId, !!this.getPendingSuspension() || this.pendingApprovals.size > 0);
+      this.activeController = undefined;
+    }
   }
 
   cancel(): boolean {
@@ -223,7 +280,7 @@ export class AgentSession {
     const restoredHistory = loadPersistedSessionMessages(
       workspacePath,
       id,
-      new Set(persistedApprovals.map(({ continuation }) => continuation.toolCall.id)),
+      new Set([...persistedApprovals.map(({ continuation }) => continuation.toolCall.id), ...listRuns(workspacePath, id).filter((run) => run.state === "waiting_user" && run.suspension?.status === "pending").map((run) => run.suspension!.toolCall.id)]),
     );
     this.history = new MessageHistory(restoredHistory.messages, restoredHistory.currentTurnStart);
     this.lastActivity = Date.now();
@@ -244,6 +301,10 @@ export class AgentSession {
   ): AsyncGenerator<AgentEvent> {
     if (this.config.remoteModel?.enabled !== false && !this.config.apiKey.trim()) {
       yield { type: "error", message: "尚未配置模型 API Key，请先在配置页面填写并保存。" };
+      return;
+    }
+    if (this.getPendingSuspension()) {
+      yield { type: "error", message: "当前任务正在等待回答，请先回答问题或终止任务" };
       return;
     }
     if (this.pendingApprovals.size > 0) {
@@ -304,7 +365,7 @@ export class AgentSession {
     } finally {
       if (started && readRun(this.workspacePath, this.id, turnId)?.state === "running") updateRun(this.workspacePath, this.id, turnId, { state: "interrupted", reason: "执行提前结束" });
       clearTurnApproval(this.workspacePath, this.id, actor);
-      await this.pluginManager.endTurn(this.id, turnId, this.pendingApprovals.size > 0);
+      await this.pluginManager.endTurn(this.id, turnId, this.pendingApprovals.size > 0 || !!this.getPendingSuspension());
       if (this.activeController === controller) this.activeController = undefined;
     }
   }
@@ -358,7 +419,7 @@ export class AgentSession {
       if (readRun(this.workspacePath, this.id, pending.turnId)?.state === "running") {
         updateRun(this.workspacePath, this.id, pending.turnId, { state: "interrupted", reason: "执行提前结束" });
       }
-      await this.pluginManager.endTurn(this.id, pending.turnId, this.pendingApprovals.size > 0);
+      await this.pluginManager.endTurn(this.id, pending.turnId, this.pendingApprovals.size > 0 || !!this.getPendingSuspension());
       if (this.activeController === controller) this.activeController = undefined;
     }
   }
@@ -403,7 +464,7 @@ export class AgentSession {
       if (readRun(this.workspacePath, this.id, pending.turnId)?.state === "running") {
         updateRun(this.workspacePath, this.id, pending.turnId, { state: "interrupted", reason: "执行提前结束" });
       }
-      await this.pluginManager.endTurn(this.id, pending.turnId, this.pendingApprovals.size > 0);
+      await this.pluginManager.endTurn(this.id, pending.turnId, this.pendingApprovals.size > 0 || !!this.getPendingSuspension());
       if (this.activeController === controller) this.activeController = undefined;
     }
   }
@@ -446,6 +507,11 @@ export class AgentSession {
       const turnStartIdx = this.history.getTurnStartIndexInContext(Infinity);
       const messageTokenBudget = calculateMessageTokenBudget(this.config, turnPrompt, toolDefs);
       const hardMessageTokenBudget = calculateHardMessageTokenBudget(this.config, turnPrompt, toolDefs);
+      const estimate = { ...createPreparedModelRequest({ config: this.config, sessionId: this.id,
+        turnId: this.pluginManager.getTurnId(this.id), iteration: agentIteration, attempt: 1,
+        systemPrompt: turnPrompt, messages: context, tools: toolDefs }), kind: "estimate" as const };
+      await this.pluginManager.callOnModelRequestPrepared(estimate, agentIteration, this.id);
+      yield { type: "context_usage", usage: estimate.usage, iteration: agentIteration, attempt: 1 };
 
       // 5. Before Model Call Hook：上下文压缩等
       const hookEventQueue = new EventQueue();
@@ -455,7 +521,7 @@ export class AgentSession {
           turnStartIndex: turnStartIdx,
           messageTokenBudget,
           hardMessageTokenBudget,
-          fixedInputTokens: getEffectiveMaxContextTokens(this.config) - this.config.maxTokens - hardMessageTokenBudget,
+          fixedInputTokens: estimateTextTokens(turnPrompt) + estimateTextTokens(JSON.stringify(toolDefs)),
           reportStatus: (status) => {
             const turn = this.pluginManager.getTurnId(this.id);
             if (turn) {
@@ -475,9 +541,8 @@ export class AgentSession {
         hookEvent = await hookEventQueue.next();
       }
       const modifiedContext = await hookPromise;
-      if (modifiedContext.messages !== context || modifiedContext.turnStartIndex !== turnStartIdx) {
-        this.history.replaceWithCompressed(modifiedContext.messages, modifiedContext.turnStartIndex);
-      }
+      // Hook messages are request projections; durable summaries own their coverage.
+      // Never replace raw in-memory history with a budget-limited projection.
       const effectiveTurnPrompt = modifiedContext.systemPromptSuffix
         ? `${turnPrompt}\n\n${modifiedContext.systemPromptSuffix}`
         : turnPrompt;
@@ -495,6 +560,11 @@ export class AgentSession {
         : modifiedContext.messages;
       const estimatedMessageTokens = estimateTokens(modelMessages);
       if (estimatedMessageTokens > effectiveMessageTokenBudget) {
+        const rejected = { ...createPreparedModelRequest({ contextSummaries: modifiedContext.contextSummaries,
+          config: this.config, sessionId: this.id, turnId: this.pluginManager.getTurnId(this.id),
+          iteration: agentIteration, attempt: 1, systemPrompt: effectiveTurnPrompt, messages: modelMessages, tools: toolDefs }), kind: "estimate" as const };
+        await this.pluginManager.callOnModelRequestPrepared(rejected, agentIteration, this.id);
+        yield { type: "context_usage", usage: rejected.usage, iteration: agentIteration, attempt: 1 };
         const error = new Error(
           `当前请求压缩后仍超过模型上下文限制（消息约 ${estimatedMessageTokens} tokens，预算 ${effectiveMessageTokenBudget} tokens）。请缩小单次输入或工具读取范围。`,
         );
@@ -528,6 +598,9 @@ export class AgentSession {
         });
         await this.pluginManager.callOnModelRequestPrepared(preparedRequest, agentIteration, this.id);
         yield { type: "context_usage", usage: preparedRequest.usage, iteration: agentIteration, attempt: attempt + 1 };
+        if (estimatedMessageTokens > calculateHardMessageTokenBudget(this.config, retryPrompt, toolDefs)) {
+          throw new Error("重试请求超过上下文预算，未发送模型请求。请缩小输入范围后继续。");
+        }
         if (controller.signal.aborted) throw new Error("会话已取消");
         yield this.activity("execution:model_wait", "正在等待模型响应...");
         let receivedText = false;
@@ -626,6 +699,14 @@ export class AgentSession {
         if (controller.signal.aborted) throw new Error("会话已取消");
 
         const result = yield* this.executeTimedToolCall(toolCall, controller, actor, agentIteration);
+
+        const suspendedRun = turn ? readRun(this.workspacePath, this.id, turn) : undefined;
+        if (suspendedRun?.suspension?.status === "pending" && suspendedRun.suspension.toolCall.id === toolCall.id) {
+          updateRun(this.workspacePath, this.id, suspendedRun.turnId, { suspension: { ...suspendedRun.suspension, skippedToolCalls: response.toolCalls.slice(toolCallIndex + 1) } });
+          fullText = yield* this.runTurnEndHooks("waiting_user", agentIteration, fullText);
+          yield { type: "done", text: fullText, reason: "waiting_user" };
+          return;
+        }
 
         if (requiresUserConfirmation(result)) {
           const approvalId = getApprovalId(result);
@@ -738,6 +819,12 @@ export class AgentSession {
       try {
         if (turn) updateRun(this.workspacePath, this.id, turn, { pendingToolCallId: toolCall.id });
         result = await tool.execute(toolCall.input, {
+          suspend: (kind, payload) => {
+            if (!turn) throw new Error("当前没有可暂停的运行轮次");
+            const id = randomUUID();
+            updateRun(this.workspacePath, this.id, turn, { suspension: { id, kind, payload, status: "pending", toolCall, skippedToolCalls: [], iteration: agentIteration, actor } });
+            return id;
+          },
           reportActivity,
           signal: controller.signal,
           sessionId: this.id,

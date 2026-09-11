@@ -1,5 +1,29 @@
 import { expect, test } from "@playwright/test";
 
+test("distinguishes a rejected estimate from the preceding request after reload", async ({ page }) => {
+  await page.route("**/history/sessions", route => route.fulfill({ json: { sessions: [{ id: "estimate", lastActivity: Date.now(), preview: "预算", context: { mode: "chat" } }] } }));
+  await page.route("**/history/sessions/estimate/messages", route => route.fulfill({ json: { messages: [] } }));
+  await page.route("**/context?*", route => route.fulfill({ json: { snapshot: {
+    sessionId: "estimate", kind: "estimate", iteration: 2, attempt: 1, systemPrompt: "", messages: [], tools: [],
+    usage: { input: 176000, maxContext: 128000, percent: 100, systemPrompt: 9000, messages: 167000, tools: 0, outputReserved: 16000 },
+    lastRequest: { createdAt: "2026-09-11T06:17:31Z", usage: { percent: 29 } },
+  } } }));
+  await page.goto("/#sid=estimate");
+  await page.reload();
+  await page.getByRole("button", { name: "上下文 100%", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "当前模型上下文" });
+  await expect(dialog).toContainText("最新预算估算（未发送）");
+  await expect(dialog).toContainText("上次请求占用");
+  await expect(dialog).toContainText("29%");
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 850 });
+    const box = (await dialog.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: `/tmp/context-estimate-${width}.png` });
+  }
+});
+
 test("keeps context usage beside approvals and full statistics in the dialog", async ({ page }) => {
   await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [
     { id: "context-session", lastActivity: Date.now(), preview: "上下文测试", context: { mode: "chat" } },

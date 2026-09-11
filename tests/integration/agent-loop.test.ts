@@ -1577,7 +1577,7 @@ describe("AgentSession loop", () => {
       const restored = new AgentSession(session.id, workspace, second, {}, client);
       expect((await collect(restored.chat("再继续"))).at(-1)).toMatchObject({ type: "done" });
       const request = JSON.parse(client.completeCalls[0][0].content as string);
-      expect(request.schema.sourceRange.fromSequence).toBe(saved.summarizedThroughSequence + 1);
+      expect(request.batch.fromSequence).toBe(saved.summarizedThroughSequence + 1);
       expect(request.messages.every((message: { sequence: number }) => message.sequence > saved.summarizedThroughSequence)).toBe(true);
       expect(readSessionMessages(workspace, session.id)).toContainEqual(expect.objectContaining({ _messageId: original._messageId, content: original.content }));
     } finally {
@@ -1892,7 +1892,7 @@ describe("AgentSession loop", () => {
       autoMemory: { enabled: false },
       sessionSummary: { enabled: true, persistent: true, turnThreshold: 100, recentTurns: 1 },
       maxTokens: 1000,
-      maxContextTokens: 10_000,
+      maxContextTokens: 16_000,
       contextCompressionThreshold: 0.7,
       historyWindowSize: 10,
     });
@@ -1990,7 +1990,7 @@ describe("AgentSession loop", () => {
       autoMemory: { enabled: false },
       sessionSummary: { enabled },
       maxTokens: 1000,
-      maxContextTokens: 10_000,
+      maxContextTokens: 16_000,
       contextCompressionThreshold: 0.7,
       historyWindowSize: 10,
     });
@@ -2073,8 +2073,9 @@ describe("AgentSession loop", () => {
       await collect(new AgentSession("tool-summary", workspace, firstManager, {}, client).chat("new task"));
       expect(client.completeCalls).toHaveLength(1);
       const request = JSON.parse(String(client.completeCalls[0][0].content));
-      expect(request.schema.sourceRange.throughSequence).toBe(4);
-      expect(request.messages[2].content).toContain("历史工具结果".repeat(3500));
+      expect(request.batch.throughSequence).toBe(4);
+      expect(request.messages[2].content).toContain("contentRef");
+      expect(request.messages[2].content).not.toContain("历史工具结果".repeat(3500));
       expect(JSON.stringify(client.calls[0])).not.toContain("old-tool");
       expect(JSON.stringify(readSessionMessages(workspace, "tool-summary"))).toContain("old-tool");
       await secondManager.loadCorePlugins();
@@ -2090,7 +2091,7 @@ describe("AgentSession loop", () => {
     }
   });
 
-  it("rejects oversized current tool results without truncating the original", async () => {
+  it("continues with bounded current tool results without truncating the original", async () => {
     const toolBudgetWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
       sessionSummary: { enabled: false },
@@ -2117,8 +2118,10 @@ describe("AgentSession loop", () => {
       const session = new AgentSession("tool-budget-session", toolBudgetWorkspace, toolBudgetManager, {}, client);
 
       const events = await collect(session.chat("继续总结"));
-      expect(events.at(-1)).toMatchObject({ type: "error", message: expect.stringContaining("超过模型上下文限制") });
-      expect(client.calls).toHaveLength(1);
+      expect(events.at(-1)).toMatchObject({ type: "done", text: "完成" });
+      expect(client.calls).toHaveLength(2);
+      expect(JSON.stringify(client.calls[1])).toContain("contentRef");
+      expect(JSON.stringify(client.calls[1])).not.toContain("超大搜索结果".repeat(20_000));
       expect(readSessionMessages(toolBudgetWorkspace, session.id)).toContainEqual(expect.objectContaining({
         content: [expect.objectContaining({ type: "tool_result", content: "超大搜索结果".repeat(20_000) })],
       }));

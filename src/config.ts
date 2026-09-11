@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { LOCAL_MODELS } from "./model/local-catalog.js";
 import { loadIdentity } from "./workspace/workspace.js";
 import type { Config } from "./types.js";
+import { TOOL_CONTEXT_DEFAULTS, toolContextOptions } from "./tool-context.js";
 
 const DEFAULTS: Partial<Config> = {
   maxTokens: 16384,
@@ -147,7 +148,7 @@ export function createDefaultConfig(): Record<string, unknown> {
     },
     enabledPlugins: [],
     externalPlugins: [],
-    plugins: {},
+    plugins: { "core-tool-context": { ...TOOL_CONTEXT_DEFAULTS } },
     pluginStates: {},
   };
 }
@@ -260,6 +261,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
   assertOptionalStringArray(raw.enabledPlugins, "enabledPlugins");
   assertOptionalStringArray(raw.externalPlugins, "externalPlugins");
   if (raw.plugins !== undefined) assertObject(raw.plugins, "plugins");
+  toolContextOptions({ plugins: raw.plugins } as Config);
   if (raw.pluginStates !== undefined) {
     assertObject(raw.pluginStates, "pluginStates");
     for (const [id, state] of Object.entries(raw.pluginStates)) {

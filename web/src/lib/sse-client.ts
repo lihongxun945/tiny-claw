@@ -29,7 +29,7 @@ export async function* streamApprovalResume(
   yield* streamPost(`/approvals/${encodeURIComponent(approvalId)}/${route}`, undefined, signal);
 }
 
-async function* streamPost(
+export async function* streamPost(
   url: string,
   body: Record<string, unknown> | undefined,
   signal?: AbortSignal,
