@@ -17,7 +17,7 @@ export function createUpdatePlanTool(workspace: string, getConfig: () => Config)
         if (!context?.sessionId || !context.turnId) throw new Error("缺少会话或轮次标识");
         if (args.title !== undefined && (typeof args.title !== "string" || !args.title.trim())) throw new Error("顶层 title 必须为非空字符串（计划整体标题）");
         if (args.plan_id !== undefined && typeof args.plan_id !== "string") throw new Error("plan_id 必须为字符串");
-        const max = (context.config ?? getConfig()).plan?.maxSteps ?? 8;
+        const max = (context.config ?? getConfig()).plan?.maxSteps ?? 100;
         if (!Array.isArray(args.steps) || args.steps.length < 1 || args.steps.length > max) throw new Error(`步骤数必须在 1 到 ${max} 之间`);
         const ids = new Set<string>();
         const steps: PlanStep[] = args.steps.map((value: unknown) => {

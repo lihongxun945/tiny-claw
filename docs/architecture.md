@@ -112,9 +112,15 @@ desktop/                # Electron macOS 桌面壳
 
 ## 桌面应用
 
-macOS 桌面版使用 Electron 承载现有 Web UI，不改变 Agent Loop 和插件边界。Electron 主进程创建窗口后先加载内置启动页，启动页与窗口背景跟随操作系统深浅色外观，展示应用 Logo 和服务启动状态；同时启动独立 Gateway 子进程，Gateway 就绪后在同一窗口切换到本机随机端口上的 Web UI。窗口不直接开放 Node.js 能力。受 sandbox 和 context isolation 保护的 preload 只暴露 `selectProjectDirectory()`，通过固定 IPC 请求调用系统目录选择器；主进程仅接受当前主窗口的请求。浏览器版没有该桥接能力，继续使用手动路径输入。桌面主进程创建系统菜单栏图标，关闭主窗口时只隐藏窗口并保持 Gateway 常驻；点击菜单栏图标、Dock 图标或再次启动应用会恢复并聚焦现有窗口。只有通过菜单栏“退出 tiny-claw”、`Command+Q` 等显式退出应用时，主进程才向 Gateway 发送 `SIGTERM`，等待其销毁插件并关闭 HTTP 服务。
+桌面入口同时支持 macOS ARM64 和 Windows x64，复用同一 Web UI、Gateway 和插件体系。Windows 使用 electron-builder NSIS 安装向导，默认按当前用户安装、不删除用户数据；Windows 暂不签名，macOS 维持 Developer ID 签名和公证。Windows 图标从现有 PNG 由打包器生成 ICO，托盘使用普通图片而不是 macOS Template 图像，配置 AppUserModelId；默认数据目录来自 app.getPath("userData")，通常为 `%APPDATA%/tiny-claw/workspace`。显式 `--user-data-dir` 支持隔离测试目录。
 
-桌面版 workspace 默认位于 `~/Library/Application Support/tiny-claw/workspace`。首次启动由统一配置初始化器生成不含真实密钥的完整默认配置，应用升级和重新安装不会覆盖已有配置、会话、记忆、技能及插件。开发模式和 CLI/Gateway 模式仍使用原有 `./workspace` 或显式指定的目录。
+Electron 通过私有父子进程 IPC 发送 desktop:shutdown；Gateway 取消前台任务、等待流完成、销毁插件及托管任务后退出。IPC 断开也触发清理；超时沿用原有 3 秒兜底，Windows 使用 taskkill /T /F 结束进程树，POSIX 使用信号。Shell 执行统一由 platform/shell.ts 查找 Git for Windows 的 bin/bash.exe（安装目录或 PATH 中 git.exe 的同一安装），拒绝以 WSL bash 代替。缺失 Bash 时返回依赖安装提示，不阻断其他工具。动态 Skill 命令也使用同一 Shell。Windows 仅对可明确解析的盘符/相对路径进行自动审批；/tmp、/usr、自定义挂载等不确定路径请求人工确认。受管 TMPDIR 和安全转换后的执行路径统一为正斜杠。命令取消/超时通过 platform/process-tree.ts 终止 Windows 进程树，POSIX 进程组行为不变。
+
+Tag 发布工作流拆为 macos/windows/publish 三个 Job。各平台独立全量测试和本地模型测试，在原生 Runner 构建；Windows 无签名凭据，macOS 保留现有签名凭据。desktop-smoke 验证打包后 LanceDB 写入/向量查询、llama CPU 原生模块、窗口启动、隔离配置、隐藏/恢复及 Gateway 退出；Windows 额外运行 NSIS 静默安装/卸载。两边完成后统一创建 Release，避免并发创建；已成功平台的 Artifacts 不受另一平台失败影响。版本检查要求 Tag、package.json 与 lockfile 一致，产物使用平台独立 SHA256 校验文件。
+
+桌面版使用 Electron 承载现有 Web UI，不改变 Agent Loop 和插件边界。Electron 主进程创建窗口后先加载内置启动页，启动页与窗口背景跟随操作系统深浅色外观，展示应用 Logo 和服务启动状态；同时启动独立 Gateway 子进程，Gateway 就绪后在同一窗口切换到本机随机端口上的 Web UI。窗口不直接开放 Node.js 能力。受 sandbox 和 context isolation 保护的 preload 只暴露 `selectProjectDirectory()`，通过固定 IPC 请求调用系统目录选择器；主进程仅接受当前主窗口的请求。浏览器版没有该桥接能力，继续使用手动路径输入。桌面主进程创建系统托盘/菜单栏图标，关闭主窗口时只隐藏窗口并保持 Gateway 常驻；点击托盘、macOS Dock 或再次启动应用会恢复并聚焦现有窗口。显式退出应用时通过上述 IPC 关闭流程等待 Gateway 清理完成。
+
+macOS 桌面版 workspace 默认位于 `~/Library/Application Support/tiny-claw/workspace`。首次启动由统一配置初始化器生成不含真实密钥的完整默认配置，应用升级和重新安装不会覆盖已有配置、会话、记忆、技能及插件。开发模式和 CLI/Gateway 模式仍使用原有 `./workspace` 或显式指定的目录。
 
 macOS 发布由 Tag 触发 GitHub Actions。流水线在临时钥匙串中导入 Developer ID Application 证书，签名 Electron 应用并生成 DMG，然后使用 Apple `notarytool` 公证最终 DMG、装订公证票据并验证签名与磁盘映像完整性。证书、私钥密码和 Apple 公证凭据仅通过 GitHub Actions Secrets 注入，临时钥匙串在任务结束时删除。
 
@@ -209,6 +215,8 @@ core-user-input 注册 ask_user 和 POST /user-input/answer。插件负责题型
 
 Web 静态服务器按插件注册路由转发新增 API，RouteContext 提供通用 SSE 工具恢复桥接，不让插件直接管理 Session 或 SSE 订阅。问题等待与权限审批完全独立，回答不产生权限授权。
 
+`core-notifications` 在 onTurnEnd 阶段根据 TurnEndReason 纯自动生成系统通知，不经过大模型。默认对 approval_required、waiting_user、completed、iteration_limit 通知，interrupted 不通知；配置 `notifications.enabled` 为总开关、`notifications.reasons` 为原因白名单，通知标题和正文由插件内置，不暴露为配置。Agent 通过 SSE 推送 `notification` 事件，Web 与 Electron 渲染层仅在页面/窗口不在前台聚焦时才弹系统通知（后台抑制固定开启），不依赖 Service Worker 或 Web Push。
+
 ### 工具审批
 
 Approval 仍关联具体工具、参数和 continuation。批准或拒绝在原 Run 中恢复，恢复计划不代表批准操作；授权只消费一次。等待审批时不能发送新任务，允许批准、拒绝或取消整个等待任务。取消将未执行调用记录为 blocked，清理审批和运行轮次；不调用模型自动继续。到期将审批标记为 expired 并持久化，不删除 continuation，Run 保持 waiting_approval。plan-recovery.ts 仅在 continuation 丢失时将 Run 转 interrupted，旧孤立 waiting_approval 步骤转 waiting_user。
@@ -290,6 +298,8 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 | debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
 | security | 基础安全边界：bash 策略、Gateway host/token、工具审计 | 见下文 |
 | project | 项目会话权限与迭代上限 | security.mode=auto, maxAgentIterations=1000 |
+| plan | 计划/进度配置 | enabled=true, maxSteps=100 |
+| notifications | 通知配置：总开关与触发原因 | enabled=true, reasons=approval_required,waiting_user,completed,iteration_limit |
 | searchProvider | 搜索引擎 (ollama/searxng/brave/duckduckgo) | duckduckgo |
 | ollamaApiKey | Ollama Web Search API key | - |
 | searxngUrl | SearXNG 实例地址 | - |
@@ -446,7 +456,7 @@ bash、background_start 和技能动态命令显式声明支持安全执行转�
 ```
 用户输入
   ↓
-PluginManager 加载核心插件（tools, sub-agent, prompts, history, session-summary, auto-memory, compress, logger）
+PluginManager 加载核心插件（tools, sub-agent, prompts, history, session-summary, auto-memory, compress, logger, notifications）
   ↓
 AgentSession 初始化 → PluginManager.setRuntimeDeps()
   ↓

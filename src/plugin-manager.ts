@@ -15,6 +15,7 @@ import type {
   ChatCommandResult,
   ExecuteChatCommandOptions,
   TurnEndReason,
+  NotificationPayload,
   ModelCallContext,
   AgentStatusUpdate,
   PreparedModelRequest,
@@ -620,17 +621,21 @@ export class PluginManager {
     }
   }
 
-  async callOnTurnEnd(reason: TurnEndReason, iteration: number, sessionId: string, reportStatus?: (status: AgentStatusUpdate) => void, signal?: AbortSignal): Promise<void> {
+  async callOnTurnEnd(reason: TurnEndReason, iteration: number, sessionId: string, reportStatus?: (status: AgentStatusUpdate) => void, signal?: AbortSignal): Promise<NotificationPayload[]> {
+    const notifications: NotificationPayload[] = [];
     for (const hooks of this.getHooks()) {
       if (hooks.onTurnEnd) {
         signal?.throwIfAborted();
-        await hooks.onTurnEnd(
+        const result = await hooks.onTurnEnd(
           { ...this.buildHookContext(iteration, sessionId, 0, reportStatus), signal },
           reason,
         );
+        if (Array.isArray(result)) notifications.push(...result);
+        else if (result) notifications.push(result);
         signal?.throwIfAborted();
       }
     }
+    return notifications;
   }
 
   async callOnTurnNotices(reason: TurnEndReason, iteration: number, sessionId: string): Promise<Array<{ id: string; text: string }>> {

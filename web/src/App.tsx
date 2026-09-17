@@ -14,6 +14,7 @@ import MemoryManager from "./components/MemoryManager.js";
 import ProjectView from "./components/ProjectView.js";
 import PlanProgress from "./components/PlanProgress.js";
 import { readInitialTheme, saveTheme, type Theme } from "./lib/theme.js";
+import { ensureNotificationPermission, showBackgroundNotification } from "./lib/notifications.js";
 
 type View = "chat" | "project" | "memory" | "logs" | "plugins" | "config";
 
@@ -116,6 +117,10 @@ export default function App() {
   useEffect(() => {
     saveTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    void ensureNotificationPermission();
+  }, []);
 
   useEffect(() => {
     fetchConfig().then((config) => {
@@ -349,6 +354,10 @@ export default function App() {
           if (lastProjectSessionRef.current === sid) setProjectStatusRefreshKey((key) => key + 1);
           setSidebarRefreshKey((k) => k + 1);
           await refreshSessionPlan(sid);
+          break;
+        }
+        case "notification": {
+          showBackgroundNotification(d.notification as unknown as import("./types.js").NotificationPayload);
           break;
         }
         case "error": {

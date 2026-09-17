@@ -1,4 +1,4 @@
-name: Release macOS DMG
+name: Release Desktop
 
 on:
   push:
@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  macos:
     runs-on: macos-14
     timeout-minutes: 60
     env:
@@ -31,13 +31,7 @@ jobs:
           cache: npm
 
       - name: Check release version
-        shell: bash
-        run: |
-          package_version="$(node -p "require('./package.json').version")"
-          if [[ "${GITHUB_REF_NAME}" != "v${package_version}" ]]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match package.json version v${package_version}" >&2
-            exit 1
-          fi
+        run: node scripts/check-release-version.mjs
 
       - name: Install dependencies
         run: |
@@ -51,11 +45,7 @@ jobs:
         run: npx playwright install chromium
 
       - name: Run tests
-        run: |
-          npm run typecheck
-          npm run web:build
-          npm test
-          npm run test:e2e
+        run: npm run test:all
 
       - name: Test embedded Qwen model
         run: npm run test:local-model
@@ -100,6 +90,9 @@ jobs:
 
       - name: Build signed macOS DMG
         run: npm run desktop:dist
+
+      - name: Smoke test packaged application
+        run: npm run desktop:smoke
 
       - name: Notarize and staple DMG
         env:
@@ -181,19 +174,17 @@ jobs:
         run: |
           codesign --verify --deep --strict --verbose=2 release/mac-arm64/tiny-claw.app
           hdiutil verify release/tiny-claw-*.dmg
-          shasum -a 256 release/tiny-claw-*.dmg > release/SHA256SUMS.txt
+          node scripts/release-checksums.mjs macos
 
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            release/tiny-claw-*.dmg \
-            release/tiny-claw-*.dmg.blockmap \
-            release/SHA256SUMS.txt \
-            --verify-tag \
-            --generate-notes \
-            --title "tiny-claw ${GITHUB_REF_NAME}"
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos
+          if-no-files-found: error
+          path: |
+            release/*.dmg
+            release/*.dmg.blockmap
+            release/SHA256SUMS-macos.txt
 
       - name: Remove temporary signing keychain
         if: always()
@@ -202,3 +193,76 @@ jobs:
           if [[ -n "${SIGNING_KEYCHAIN:-}" && -f "${SIGNING_KEYCHAIN}" ]]; then
             security delete-keychain "${SIGNING_KEYCHAIN}"
           fi
+
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: npm
+      - name: Check release version
+        run: node scripts/check-release-version.mjs
+      - name: Install dependencies
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix web ci
+      - name: Install ripgrep
+        run: choco install ripgrep --yes --no-progress
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+      - name: Run tests
+        run: npm run test:all
+      - name: Test embedded Qwen model
+        run: npm run test:local-model
+      - name: Build unsigned Windows installer
+        run: npm run desktop:dist:win
+      - name: Install and smoke test Windows application
+        run: |
+          $installer = (Get-ChildItem release/*-windows-x64-setup.exe).FullName
+          $installPath = Join-Path $env:RUNNER_TEMP 'tiny-claw install'
+          $result = Start-Process -FilePath $installer -ArgumentList "/S /D=$installPath" -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "Installer failed: $($result.ExitCode)" }
+          if (!(Test-Path "$installPath/tiny-claw.exe")) { throw 'Installed application missing' }
+          try {
+            npm run desktop:smoke -- "$installPath"
+            if ($LASTEXITCODE -ne 0) { throw 'Installed application smoke test failed' }
+          } finally {
+            $uninstaller = (Get-ChildItem "$installPath/Uninstall*.exe").FullName
+            Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait
+          }
+      - name: Generate Windows checksum
+        run: node scripts/release-checksums.mjs windows
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          if-no-files-found: error
+          path: |
+            release/*-windows-x64-setup.exe
+            release/*.exe.blockmap
+            release/SHA256SUMS-windows.txt
+
+  publish:
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: release
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release/* \
+            --verify-tag --generate-notes \
+            --title "tiny-claw ${GITHUB_REF_NAME}" \
+            --notes "Windows x64 installer is unsigned. macOS ARM64 DMG is signed and notarized."

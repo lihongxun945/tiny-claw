@@ -23,7 +23,7 @@ import { buildModelContext } from "./model-context.js";
 import type { AgentStatusUpdate } from "./plugins/types.js";
 import { createPreparedModelRequest } from "./context-snapshot.js";
 import { listRuns, readRun, startRun, updateRun, type SessionRun } from "./run-store.js";
-import type { TurnEndReason } from "./plugins/types.js";
+import type { NotificationPayload, TurnEndReason } from "./plugins/types.js";
 
 // === 事件类型 ===
 
@@ -35,6 +35,7 @@ export type AgentEvent =
   | { type: "tool_call"; toolCallId: string; name: string; input: Record<string, unknown>; startedAt?: number }
   | { type: "tool_result"; toolCallId: string; name: string; result: string; completedAt?: number }
   | { type: "done"; text: string; reason: TurnEndReason }
+  | { type: "notification"; notification: NotificationPayload }
   | { type: "error"; message: string };
 
 // === 流式事件队列 ===
@@ -232,7 +233,10 @@ export class AgentSession {
       yield event.value;
       event = await queue.next();
     }
-    await promise;
+    const notifications = await promise;
+    for (const notification of notifications) {
+      yield { type: "notification", notification };
+    }
     if (turn) {
       const run = updateRun(this.workspacePath, this.id, turn, {
         state: reason === "approval_required" ? "waiting_approval" : reason === "iteration_limit" ? "interrupted" : reason,

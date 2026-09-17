@@ -26,7 +26,7 @@ export function createPlanCreateTool(workspacePath: string, getConfig: () => Con
       const goal = typeof args.goal === "string" ? args.goal.trim() : "";
       if (!goal) return JSON.stringify({ error: "goal 不能为空，请描述当前任务最终要达成的结果" });
       const steps = Array.isArray(args.steps) ? args.steps.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
-      const maxSteps = (context.config ?? getConfig()).plan?.maxSteps ?? 8;
+      const maxSteps = (context.config ?? getConfig()).plan?.maxSteps ?? 100;
       if (steps.length < 1 || steps.length > maxSteps) return JSON.stringify({ error: `计划步骤数必须在 1 到 ${maxSteps} 之间` });
       return JSON.stringify({ plan: createSessionPlan(workspacePath, context.sessionId, context.turnId, steps, goal) });
     },
@@ -102,7 +102,7 @@ export function createPlanReviseTool(workspacePath: string, getConfig: () => Con
       const steps = Array.isArray(args.steps)
         ? args.steps.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim())
         : [];
-      const maxSteps = (context.config ?? getConfig()).plan?.maxSteps ?? 8;
+      const maxSteps = (context.config ?? getConfig()).plan?.maxSteps ?? 100;
       try {
         const planTurnId = activePlanTurnId(workspacePath, context.sessionId, context.turnId);
         return JSON.stringify({ plan: revisePendingPlanSteps(workspacePath, context.sessionId, planTurnId, steps, maxSteps) });

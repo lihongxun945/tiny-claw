@@ -49,6 +49,13 @@ export interface SSEEvent {
   data: unknown;
 }
 
+export interface NotificationPayload {
+  title: string;
+  body?: string;
+  sessionId?: string;
+  turnId?: string;
+}
+
 export interface ChatCommand {
   name: string;
   aliases: string[];

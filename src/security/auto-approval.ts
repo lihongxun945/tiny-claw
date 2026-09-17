@@ -4,6 +4,7 @@ import { resolveRootFile } from "../tools/workspace-path.js";
 import { parseShell, type ShellNode, type ShellWord } from "./shell-analysis.js";
 import { isReadOnlySed } from "./sed-analysis.js";
 import { isReadOnlyAwk, isReadOnlyFind, isReadOnlyGit } from "./read-command-analysis.js";
+import { nativeShellPath } from "../platform/shell.js";
 
 export type AutoApprovalRisk = "low" | "medium" | "high" | "critical";
 export type AutoApprovalAction = "allow" | "ask" | "deny";
@@ -85,9 +86,15 @@ export function evaluateAutoApproval(input: AutoApprovalInput): AutoApprovalDeci
     edits.push({ start: value.loc.start.char, end: value.loc.end.char + 1, text });
   };
   const uncertain = (reason: string) => decisions.push(ask("unresolved-shell", reason, "medium"));
+  const shellPath = (path: string, cwd: string): string | undefined => {
+    const native = nativeShellPath(path);
+    if (native === undefined) { uncertain(`无法确定 Git Bash 路径对应的 Windows 位置：${path}`); return undefined; }
+    return resolve(cwd, native);
+  };
   const write = (path: string, cwd: string) => {
     if (/[*?\[\]{}]/.test(path)) { uncertain(`写入目标包含动态路径模式：${path}`); return; }
-    if (!permittedPath(path, cwd)) decisions.push(ask("external-shell-write", `命令写入目标不在允许范围内：${resolve(cwd, path)}`));
+    const target = shellPath(path, cwd);
+    if (target && !permittedPath(target, cwd)) decisions.push(ask("external-shell-write", `命令写入目标不在允许范围内：${target}`));
   };
   const word = (value: ShellWord, cwd: string, outputOnly = false): string | undefined => {
     if (!value.expansion?.length) {
@@ -96,7 +103,7 @@ export function evaluateAutoApproval(input: AutoApprovalInput): AutoApprovalDeci
     }
     const text = /^"[^"\\]*"$/.test(value.text) ? value.text.slice(1, -1) : value.text;
     if (input.tempPath && value.expansion.every((e) => e.type === "ParameterExpansion" && e.parameter === "TMPDIR")
-      && /^\$(?:TMPDIR|\{TMPDIR\})(?:\/|$)/.test(text)) return text.replace(/^\$(?:TMPDIR|\{TMPDIR\})/, input.tempPath);
+      && /^\$(?:TMPDIR|\{TMPDIR\})(?:\/|$)/.test(text)) return text.replace(/^\$(?:TMPDIR|\{TMPDIR\})/, process.platform === "win32" ? input.tempPath.replace(/\\/g, "/") : input.tempPath);
     for (const expansion of value.expansion) if (expansion.commandAST) visit(expansion.commandAST, cwd);
     if (!outputOnly || value.expansion.some((e) => e.type !== "ParameterExpansion")) uncertain("命令包含无法静态确定的展开表达式");
     return undefined;
@@ -154,7 +161,7 @@ export function evaluateAutoApproval(input: AutoApprovalInput): AutoApprovalDeci
     }
     const readOnlyGit = command === "git" && isReadOnlyGit(args, input.prepareExecution && name === "git");
     const localGitWrite = command === "git" && input.projectMode && within(input.rootPath, cwd)
-      && isLocalGitWrite(args, path => within(input.rootPath, resolve(cwd, path)));
+      && isLocalGitWrite(args, path => { const target = shellPath(path, cwd); return !!target && within(input.rootPath, target); });
     if (command === "git" && !readOnlyGit && !localGitWrite) {
       decisions.push(ask("git-operation-review", "Git 操作不属于已支持的只读查询、项目内暂存、普通提交或分支创建，需要确认"));
     }
@@ -170,7 +177,8 @@ export function evaluateAutoApproval(input: AutoApprovalInput): AutoApprovalDeci
         const executable = realpathSync(resolve(cwd, "node_modules/.bin", args[0]!));
         if (within(realpathSync(input.rootPath), executable) && statSync(executable).isFile()) {
           accessSync(executable, constants.X_OK);
-          replaceWord(node.name, `'${executable.replace(/'/g, "'\\''")}'`);
+          const shellExecutable = process.platform === "win32" ? executable.replace(/\\/g, "/") : executable;
+          replaceWord(node.name, `'${shellExecutable.replace(/'/g, "'\\''")}'`);
           replaceWord(node.suffix?.find(item => item.type === "Word") as ShellWord | undefined, "");
           localNpx = true;
         }
@@ -196,7 +204,7 @@ export function evaluateAutoApproval(input: AutoApprovalInput): AutoApprovalDeci
     if (command === "curl" || command === "wget") decisions.push(ask("network-shell-command", `网络命令需确认目标与写入行为：${command}`));
     if (command === "cd") {
       if (args.length !== 1 || args[0]!.startsWith("-")) uncertain("无法确定 cd 的目标目录");
-      else cwd = resolve(cwd, args[0]!);
+      else cwd = shellPath(args[0]!, cwd) ?? cwd;
       return cwd;
     }
     if (writeCommands.has(command)) {
@@ -218,7 +226,10 @@ export function evaluateAutoApproval(input: AutoApprovalInput): AutoApprovalDeci
         const script = scriptArgs[0] === "--" ? scriptArgs[1] : scriptArgs[0];
         if (checkingNode && scriptArgs.length !== (scriptArgs[0] === "--" ? 2 : 1)) uncertain("node 语法检查仅支持单个项目文件");
         if (!script || script.startsWith("-") || /[*?\[\]{}]|:\/\//.test(script)) uncertain("仅自动允许明确的项目内脚本文件，内联代码或解释器选项需要确认");
-        else if (!within(input.rootPath, resolve(cwd, script))) decisions.push(ask("external-script", `脚本不在当前项目内：${script}`));
+        else {
+          const target = shellPath(script, cwd);
+          if (target && !within(input.rootPath, target)) decisions.push(ask("external-script", `脚本不在当前项目内：${script}`));
+        }
       } else if (command === "npm") {
         // Arguments after -- belong to the project script, not npm itself.
         const separator = args.indexOf("--");

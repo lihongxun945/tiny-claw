@@ -8,7 +8,7 @@ import { loadConfig } from "../../src/config.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 import { projectTempDirectory } from "../../src/security/project-trust.js";
 
-describe.skipIf(process.platform === "win32")("bash process cancellation", () => {
+describe("bash process cancellation", () => {
   it("runs local npx without npx resolution and writes logs to the managed temporary directory", async () => {
     const workspace = createTempWorkspace({ security: { mode: "auto" } });
     const project = createTempWorkspace();
@@ -86,7 +86,7 @@ describe.skipIf(process.platform === "win32")("bash process cancellation", () =>
       removeTempWorkspace(workspace);
     }
   });
-  it.each([false, true])("terminates background descendants (timeout=%s)", async (timeout) => {
+  it.skipIf(process.platform === "win32").each([false, true])("terminates POSIX background descendants (timeout=%s)", async (timeout) => {
     const workspace = createTempWorkspace({ security: { mode: "allow" }, bashTerminationGraceMs: 50 });
     const controller = new AbortController();
     const pidFile = resolve(workspace, "child.pid");
@@ -111,4 +111,32 @@ describe.skipIf(process.platform === "win32")("bash process cancellation", () =>
       removeTempWorkspace(workspace);
     }
   });
+  it.skipIf(process.platform !== "win32").each([false, true])("terminates Windows process trees (timeout=%s)", async timeout => {
+    const workspace = createTempWorkspace({ security: { mode: "allow" } });
+    const controller = new AbortController();
+    let pending: Promise<string> | undefined;
+    let pid: number | undefined;
+    try {
+      writeFileSync(resolve(workspace, "parent.cjs"), `
+        const { spawn } = require('node:child_process');
+        const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
+        require('node:fs').writeFileSync('child.pid', String(child.pid));
+        setInterval(() => {}, 1000);
+      `);
+      const config = loadConfig(workspace);
+      pending = createBashTool(workspace, () => config).execute({ command: "node parent.cjs", timeout: timeout ? 2 : 30 }, { config, signal: controller.signal });
+      await vi.waitFor(() => expect(existsSync(resolve(workspace, "child.pid"))).toBe(true), { timeout: 5000 });
+      pid = Number(readFileSync(resolve(workspace, "child.pid"), "utf8"));
+      if (!timeout) controller.abort();
+      const result = JSON.parse(await pending);
+      expect(result.exitCode).toBe(-1);
+      expect(result.stderr).toContain(timeout ? "超时" : "已取消");
+      expect(() => process.kill(pid!, 0)).toThrow();
+    } finally {
+      controller.abort();
+      await pending;
+      if (pid) { try { process.kill(pid, "SIGKILL"); } catch {} }
+      removeTempWorkspace(workspace);
+    }
+  }, 15000);
 });

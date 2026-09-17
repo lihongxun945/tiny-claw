@@ -83,6 +83,7 @@ export interface Config {
   /** 项目开发模式配置 */
   project?: ProjectConfig;
   plan?: PlanConfig;
+  notifications?: NotificationsConfig;
   workspacePath: string;
   systemPrompt: string;
 }
@@ -92,6 +93,12 @@ export type ExecutionMode = "normal" | "plan";
 export interface PlanConfig {
   enabled?: boolean;
   maxSteps?: number;
+}
+
+export interface NotificationsConfig {
+  enabled?: boolean;
+  /** 自动触发系统通知的轮次结束原因（默认关闭 interrupted）。 */
+  reasons?: string[];
 }
 
 export interface ProjectConfig {

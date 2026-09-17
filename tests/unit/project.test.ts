@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { applySessionConfig, inspectProject, parseGitStatus, readProjectDiff, readProjectGitStatus } from "../../src/project.js";
@@ -9,7 +9,7 @@ import { createFileWriteTool } from "../../src/tools/file_write.js";
 import { loadConfig } from "../../src/config.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
-process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+process.env.GIT_CONFIG_GLOBAL = devNull;
 
 describe("project development context", () => {
   const paths: string[] = [];
@@ -21,14 +21,15 @@ describe("project development context", () => {
   it("inspects paths with shell metacharacters without shell interpolation", async () => {
     const parent = mkdtempSync(resolve(tmpdir(), "tiny-claw-project-parent-"));
     paths.push(parent);
-    const root = resolve(parent, 'repo "$(echo unsafe)"');
+    const name = process.platform === "win32" ? "项目 repo $(echo unsafe) & test" : 'repo "$(echo unsafe)"';
+    const root = resolve(parent, name);
     mkdirSync(root);
     writeFileSync(resolve(root, "package.json"), "{}", "utf-8");
     writeFileSync(resolve(root, "AGENTS.md"), "project rule", "utf-8");
 
     await expect(inspectProject(root)).resolves.toMatchObject({
       root: realpathSync(root),
-      name: 'repo "$(echo unsafe)"',
+      name,
       stack: ["Node.js / npm"],
       rules: expect.stringContaining("project rule"),
     });

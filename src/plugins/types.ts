@@ -100,7 +100,7 @@ export interface PluginHooks {
   onAfterTool?: (ctx: HookContext, name: string, result: string) =>
     string | Promise<string> | void;
   onAfterIteration?: (ctx: HookContext) => void | Promise<void>;
-  onTurnEnd?: (ctx: HookContext, reason: TurnEndReason) => void | Promise<void>;
+  onTurnEnd?: (ctx: HookContext, reason: TurnEndReason) => NotificationPayload[] | NotificationPayload | void | Promise<NotificationPayload[] | NotificationPayload | void>;
   onTurnNotice?: (ctx: HookContext, reason: TurnEndReason) => { id: string; text: string } | undefined | Promise<{ id: string; text: string } | undefined>;
   onError?: (ctx: HookContext, error: Error) => void | Promise<void>;
 }
@@ -114,6 +114,13 @@ export interface ToolGateResult {
 }
 
 export type TurnEndReason = "completed" | "approval_required" | "iteration_limit" | "waiting_user" | "interrupted";
+
+export interface NotificationPayload {
+  title: string;
+  body?: string;
+  sessionId?: string;
+  turnId?: string;
+}
 
 export interface ContextTokenUsage {
   systemPrompt: number;

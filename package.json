@@ -14,13 +14,15 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "test:local-model": "RUN_LOCAL_MODEL_TEST=1 vitest run tests/integration/local-model-smoke.test.ts",
+    "test:local-model": "node scripts/test-local-model.mjs",
     "test:all": "npm run typecheck && npm run web:build && npm run test:coverage && npm run test:e2e",
     "web:dev": "cd web && npm run dev",
     "web:build": "cd web && npm install && npm run build",
     "desktop:compile": "tsc -p desktop/tsconfig.json",
     "desktop:build": "npm run web:build && npm run build && npm run desktop:compile",
-    "desktop:dist": "npm run desktop:build && electron-builder --mac dmg --arm64 --publish never"
+    "desktop:dist": "npm run desktop:build && electron-builder --mac dmg --arm64 --publish never",
+    "desktop:dist:win": "npm run desktop:build && electron-builder --win nsis --x64 --publish never",
+    "desktop:smoke": "node scripts/desktop-smoke.mjs"
   },
   "author": "lihongxun",
   "license": "ISC",
@@ -41,6 +43,7 @@
   "dependencies": {
     "@lancedb/lancedb": "^0.33.0",
     "@larksuiteoapi/node-sdk": "^1.65.0",
+    "apache-arrow": "18.1.0",
     "bash-parser": "0.5.0",
     "node-llama-cpp": "^3.19.1",
     "semver": "^7.8.5",
@@ -86,6 +89,21 @@
           ]
         }
       ]
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "forceCodeSigning": false,
+      "artifactName": "tiny-claw-${version}-windows-${arch}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "runAfterFinish": false,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
     },
     "dmg": {
       "title": "tiny-claw ${version}",

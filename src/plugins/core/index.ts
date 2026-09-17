@@ -20,6 +20,7 @@ import { coreVectorMemoryPlugin } from "./vector-memory.js";
 import { coreProfileMemoryPlugin } from "./profile-memory.js";
 import { coreContextInspectorPlugin } from "./context-inspector.js";
 import { coreToolContextPlugin } from "./tool-context.js";
+import { coreNotificationsPlugin } from "./notifications.js";
 
 export const corePlugins: Plugin[] = [
   coreChatCommandsPlugin,
@@ -43,4 +44,5 @@ export const corePlugins: Plugin[] = [
   coreSessionRecallPlugin,
   coreAutoMemoryPlugin,
   coreLoggerPlugin,
+  coreNotificationsPlugin,
 ];

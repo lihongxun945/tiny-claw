@@ -12,6 +12,7 @@ export function createTempWorkspace(config: Record<string, unknown> = {}): strin
       apiUrl: "https://example.com/api",
       apiKey: "test-api-key",
       model: "test-model",
+      notifications: { enabled: false },
       ...config,
     }, null, 2)}\n`,
     "utf-8",

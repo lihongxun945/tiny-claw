@@ -17,6 +17,8 @@ const DEFAULTS: Partial<Config> = {
   searchProvider: "duckduckgo",
 };
 
+const VALID_NOTIFICATION_REASONS = ["completed", "approval_required", "iteration_limit", "waiting_user", "interrupted"];
+
 export function createDefaultConfig(): Record<string, unknown> {
   return {
     remoteModel: { enabled: true },
@@ -134,7 +136,11 @@ export function createDefaultConfig(): Record<string, unknown> {
     },
     plan: {
       enabled: true,
-      maxSteps: 8,
+      maxSteps: 100,
+    },
+    notifications: {
+      enabled: true,
+      reasons: ["approval_required", "waiting_user", "completed", "iteration_limit"],
     },
     searchProvider: "duckduckgo",
     ollamaApiKey: "",
@@ -463,7 +469,17 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertObject(raw.plan, "plan");
     const plan = raw.plan as Record<string, unknown>;
     assertOptionalBoolean(plan.enabled, "plan.enabled");
-    assertOptionalNumber(plan.maxSteps, "plan.maxSteps", { min: 1, max: 50, integer: true });
+    assertOptionalNumber(plan.maxSteps, "plan.maxSteps", { min: 1, max: 100, integer: true });
+  }
+  if (raw.notifications !== undefined) {
+    assertObject(raw.notifications, "notifications");
+    const notifications = raw.notifications as Record<string, unknown>;
+    assertOptionalBoolean(notifications.enabled, "notifications.enabled");
+    assertOptionalStringArray(notifications.reasons, "notifications.reasons");
+    const reasons = notifications.reasons as unknown[] | undefined;
+    if (reasons?.some((value) => !VALID_NOTIFICATION_REASONS.includes(String(value)))) {
+      throw new Error("配置字段 notifications.reasons 包含不支持的触发类型");
+    }
   }
 }
 
@@ -520,6 +536,7 @@ export function loadConfig(workspacePath: string): Config {
     security: raw.security as Config["security"] | undefined,
     project: raw.project as Config["project"] | undefined,
     plan: raw.plan as Config["plan"] | undefined,
+    notifications: raw.notifications as Config["notifications"] | undefined,
     workspacePath,
     systemPrompt: loadIdentity(workspacePath),
   };

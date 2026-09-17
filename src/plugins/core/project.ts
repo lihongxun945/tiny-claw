@@ -2,6 +2,7 @@ import type { Plugin } from "../types.js";
 import { buildProjectPrompt, getProjectLimits, inspectProject, readProjectDiff, readProjectGitStatus } from "../../project.js";
 import { loadConfig } from "../../config.js";
 import { isTrustedProject, projectTempDirectory, setProjectTrust } from "../../security/project-trust.js";
+import { resolveBash } from "../../platform/shell.js";
 
 export const coreProjectPlugin: Plugin = {
   name: "core-project",
@@ -74,6 +75,11 @@ export const coreProjectPlugin: Plugin = {
       async onBuildPrompt(hookCtx, prompt) {
         const root = hookCtx.sessionContext.project?.root;
         if (!root) return prompt;
+        if (process.platform === "win32") {
+          let shell: string;
+          try { shell = `Git Bash: ${resolveBash()}`; } catch (error) { shell = String(error); }
+          prompt += `\n当前系统为 Windows。Shell 工具使用 Bash 语法，不是 PowerShell/cmd；命令内 Windows 路径使用带引号的 C:/... 格式或相对路径。${shell}`;
+        }
         const trusted = isTrustedProject(hookCtx.config, root, ctx.workspacePath);
         const execution = trusted
           ? `用户已授权信任此项目代码。临时日志请写入 $TMPDIR（${projectTempDirectory(ctx.workspacePath, root)}）；系统修改和范围外写入仍需审批。`

@@ -99,7 +99,7 @@ async function runSearch(options: {
   const args = options.mode === "files"
     ? ["--files", "--glob", options.query, "."]
     : ["--json", ...(options.mode === "text" ? ["--fixed-strings"] : []), ...(options.glob ? ["--glob", options.glob] : []), "--", options.query, "."];
-  const child = spawn("rg", args, { cwd: options.start, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn("rg", args, { cwd: options.start, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   const results: unknown[] = [];
   let stdoutBuffer = "";
   let stderr = "";
@@ -117,12 +117,12 @@ async function runSearch(options: {
     if (!line || truncated) return;
     let result: unknown;
     if (options.mode === "files") {
-      result = { path: relative(options.root, resolve(options.start, line)) };
+      result = { path: normalizePath(relative(options.root, resolve(options.start, line.replace(/\r$/, "")))) };
     } else {
       const event = JSON.parse(line) as { type?: string; data?: { path?: { text?: string }; line_number?: number; lines?: { text?: string }; submatches?: Array<{ start: number; end: number }> } };
       if (event.type !== "match" || !event.data?.path?.text) return;
       result = {
-        path: relative(options.root, resolve(options.start, event.data.path.text)),
+        path: normalizePath(relative(options.root, resolve(options.start, event.data.path.text))),
         line: event.data.line_number,
         text: event.data.lines?.text?.replace(/\r?\n$/, ""),
         matches: event.data.submatches,

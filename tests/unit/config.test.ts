@@ -211,6 +211,8 @@ describe("loadConfig", () => {
     [{ plugins: [] }, "配置字段 plugins 必须是对象"],
     [{ pluginStates: [] }, "配置字段 pluginStates 必须是对象"],
     [{ pluginStates: { demo: { enabled: "yes" } } }, "配置字段 pluginStates.demo.enabled 必须是布尔值"],
+    [{ notifications: { enabled: "yes" } }, "配置字段 notifications.enabled 必须是布尔值"],
+    [{ notifications: { reasons: ["unknown"] } }, "配置字段 notifications.reasons 包含不支持的触发类型"],
   ])("rejects invalid configuration", (overrides, message) => {
     const workspacePath = createTempWorkspace(overrides);
     workspaces.push(workspacePath);
@@ -221,5 +223,16 @@ describe("loadConfig", () => {
     const workspacePath = createTempWorkspace({ profile: { enabled: false, maxItemChars: 4000, maxTotalChars: 9000 } });
     workspaces.push(workspacePath);
     expect(loadConfig(workspacePath).profile).toEqual({ enabled: false, maxItemChars: 4000, maxTotalChars: 9000 });
+  });
+
+  it("defaults notifications to enabled with approved reasons and preserves overrides", () => {
+    expect(createDefaultConfig().notifications).toEqual({
+      enabled: true,
+      reasons: ["approval_required", "waiting_user", "completed", "iteration_limit"],
+    });
+
+    const workspacePath = createTempWorkspace({ notifications: { enabled: false, reasons: ["completed"] } });
+    workspaces.push(workspacePath);
+    expect(loadConfig(workspacePath).notifications).toEqual({ enabled: false, reasons: ["completed"] });
   });
 });

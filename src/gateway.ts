@@ -457,6 +457,9 @@ function sendAgentEventSSE(res: ServerResponse, event: AgentEvent, sessionId?: s
     case "done":
       send("done", { text: event.text, reason: event.reason, session_id: sessionId });
       break;
+    case "notification":
+      send("notification", { notification: event.notification });
+      break;
     case "error":
       send("error", { message: event.message });
       break;
@@ -1406,12 +1409,17 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
   server.listen(port, gatewayHost);
 
   // 优雅关闭
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     const msg = "Gateway 正在关闭";
     console.log(`\n${msg}...`);
     appendLog(workspacePath, "info", msg);
     if (viteChild) viteChild.kill();
     if (webServer) webServer.close();
+    for (const session of sessions.values()) session.cancel();
+    await Promise.all([...streams.values()].map(stream => stream.finished));
     await pm.destroy();
     server.close();
     if (isDaemonChild) {
@@ -1422,6 +1430,12 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  if (process.send) {
+    process.on("message", message => {
+      if (message && typeof message === "object" && "type" in message && message.type === "desktop:shutdown") void shutdown();
+    });
+    process.on("disconnect", () => { void shutdown(); });
+  }
 }
 
 async function main() {

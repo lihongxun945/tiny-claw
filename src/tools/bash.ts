@@ -7,6 +7,8 @@ import type { Config } from "../types.js";
 import { checkDangerousToolPermission } from "./permission.js";
 import { resolveRootFile } from "./workspace-path.js";
 import { projectTempDirectory } from "../security/project-trust.js";
+import { resolveBash, shellEnvironment } from "../platform/shell.js";
+import { terminateWindowsTree } from "../platform/process-tree.js";
 
 const MAX_OUTPUT = 10000;
 const DEFAULT_TIMEOUT = 30;
@@ -92,9 +94,13 @@ export function executeShell(command: string, timeout: number, cwd: string, grac
       resolve(JSON.stringify({ stdout: "", stderr: "命令执行已取消", exitCode: -1 }));
       return;
     }
-    const proc = spawn("bash", ["-c", command], {
+    let bash: string;
+    try { bash = resolveBash(); }
+    catch (error) { resolve(JSON.stringify({ stdout: "", stderr: String(error), exitCode: -1 })); return; }
+    const proc = spawn(bash, ["-c", command], {
       cwd,
-      env: { ...process.env, ...(tempPath ? { TMPDIR: tempPath } : {}) },
+      env: shellEnvironment(tempPath),
+      windowsHide: true,
       detached: process.platform !== "win32",
     });
 
@@ -128,6 +134,10 @@ export function executeShell(command: string, timeout: number, cwd: string, grac
       if (terminating || settled) return;
       terminating = true;
       stderr += message;
+      if (process.platform === "win32" && proc.pid) {
+        void terminateWindowsTree(proc.pid).catch(error => { stderr += `\n${String(error)}`; }).finally(() => finish(-1));
+        return;
+      }
       kill("SIGTERM");
       // Descendants may ignore TERM or retain pipes after the shell exits.
       killTimer = setTimeout(() => { kill("SIGKILL"); finish(-1); }, graceMs);
@@ -155,7 +165,7 @@ export function executeShell(command: string, timeout: number, cwd: string, grac
     if (signal?.aborted) onAbort();
 
     proc.on("close", (code) => {
-      if (!terminating) { kill("SIGKILL"); finish(code); }
+      if (!terminating) { if (process.platform !== "win32") kill("SIGKILL"); finish(code); }
     });
 
     proc.on("error", (err) => {

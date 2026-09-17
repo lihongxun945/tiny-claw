@@ -30,7 +30,7 @@ describe("explicit project trust", () => {
       expect(isTrustedProject(config, root)).toBe(false);
       config.security = { mode: "auto", trustedProjects: [root] };
       mkdirSync(resolve(root, "child"));
-      symlinkSync(root, resolve(workspace, "alias"));
+      symlinkSync(root, resolve(workspace, "alias"), "junction");
       expect(isTrustedProject(config, resolve(workspace, "alias"))).toBe(true);
       expect(isTrustedProject(config, resolve(root, "child"))).toBe(false);
       const temp = projectTempDirectory(workspace, root);
@@ -39,7 +39,7 @@ describe("explicit project trust", () => {
         rootPath: root, config, restrictToRoot: true, sessionContext: { mode: "project", project: { root, name: "test" } },
       });
       expect(JSON.parse(result).stdout.trim()).toBe(realpathSync(temp));
-      symlinkSync(other, resolve(temp, "escape"));
+      symlinkSync(other, resolve(temp, "escape"), "junction");
       expect(await createBashTool(workspace, () => config).execute({ command: 'echo hello > "$TMPDIR/escape/out"' }, {
         rootPath: root, config, sessionContext: { mode: "project", project: { root, name: "test" } },
       })).toContain("requiresConfirmation");

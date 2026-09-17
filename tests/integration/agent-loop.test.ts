@@ -173,6 +173,26 @@ describe("AgentSession loop", () => {
     ]);
   });
 
+  it("emits a notification event for notifiable turn end reasons", async () => {
+    const notificationsWorkspace = createTempWorkspace({ notifications: { enabled: true } });
+    const notificationsManager = new PluginManager(notificationsWorkspace);
+    await notificationsManager.loadCorePlugins();
+    try {
+      const client = new FakeModelClient([{ text: "hello", toolCalls: [] }]);
+      const session = new AgentSession("notify", notificationsWorkspace, notificationsManager, {}, client);
+
+      const events = await collect(session.chat("hi"));
+      expect(events).toEqual([
+        { type: "text_delta", text: "hello" },
+        { type: "notification", notification: { title: "本轮完成", body: "皮皮虾已完成本轮任务，可回来查看结果", sessionId: "notify", turnId: expect.any(String) } },
+        { type: "done", text: "hello", reason: "completed" },
+      ]);
+    } finally {
+      await notificationsManager.destroy();
+      removeTempWorkspace(notificationsWorkspace);
+    }
+  });
+
   it("publishes observable model and tool activity and clears it at completion", async () => {
     registerTool(manager, {
       name: "activity_test", description: "test", inputSchema: { type: "object", properties: {} },

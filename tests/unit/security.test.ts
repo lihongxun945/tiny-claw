@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { relative, resolve } from "node:path";
 import { createBashTool } from "../../src/tools/bash.js";
@@ -38,7 +38,7 @@ describe("security boundary", () => {
     paths.push(workspacePath, outsidePath);
     writeFileSync(resolve(workspacePath, "inside.txt"), "inside", "utf-8");
     writeFileSync(resolve(outsidePath, "outside.txt"), "outside", "utf-8");
-    symlinkSync(outsidePath, resolve(workspacePath, "escape"));
+    symlinkSync(outsidePath, resolve(workspacePath, "escape"), "junction");
 
     const unrestricted = () => ({ ...loadConfig(workspacePath), security: { mode: "allow" as const } });
     const read = createFileReadTool(workspacePath, unrestricted);
@@ -63,20 +63,22 @@ describe("security boundary", () => {
     const bash = createBashTool(workspacePath, () => loadConfig(workspacePath));
 
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    expect(await bash.execute({ command: "pwd" })).toContain(workspacePath);
+    const expectCwd = (result: string, path: string) => expect(realpathSync(JSON.parse(result).stdout.trim())).toBe(realpathSync(path));
+    const pwd = process.platform === "win32" ? "pwd -W" : "pwd";
+    expectCwd(await bash.execute({ command: pwd }), workspacePath);
 
     config.security = { tools: { bash: { mode: "ask" } } };
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
-    const pending = JSON.parse(await bash.execute({ command: "pwd", cwd: outsidePath }));
-    expect(pending).toMatchObject({ requiresConfirmation: true, command: "pwd", cwd: outsidePath });
+    const pending = JSON.parse(await bash.execute({ command: pwd, cwd: outsidePath }));
+    expect(pending).toMatchObject({ requiresConfirmation: true, command: pwd, cwd: outsidePath });
     expect(approveRequest(workspacePath, pending.approvalId)).toMatchObject({ status: "approved" });
-    expect(await bash.execute({ command: "pwd", cwd: outsidePath })).toContain(outsidePath);
-    expect(await bash.execute({ command: "pwd", cwd: outsidePath })).toContain('"requiresConfirmation":true');
+    expectCwd(await bash.execute({ command: pwd, cwd: outsidePath }), outsidePath);
+    expect(await bash.execute({ command: pwd, cwd: outsidePath })).toContain('"requiresConfirmation":true');
 
     config.security.tools.bash.mode = "allow";
     writeFileSync(configPath, JSON.stringify(config), "utf-8");
-    expect(await bash.execute({ command: "pwd" })).toContain(workspacePath);
-    expect(await bash.execute({ command: "pwd", cwd: outsidePath })).toContain(outsidePath);
+    expectCwd(await bash.execute({ command: pwd }), workspacePath);
+    expectCwd(await bash.execute({ command: pwd, cwd: outsidePath }), outsidePath);
   });
 
   it("automatically allows ordinary operations, asks for high-risk changes and denies catastrophic commands", async () => {
@@ -263,7 +265,7 @@ describe("security boundary", () => {
       "---",
       "external",
     ].join("\n"), "utf-8");
-    symlinkSync(outsidePath, resolve(workspacePath, "skills", "external"));
+    symlinkSync(outsidePath, resolve(workspacePath, "skills", "external"), "junction");
 
     const skillList = createSkillListTool(workspacePath);
     expect(await skillList.execute({})).toContain("暂无可用技能");

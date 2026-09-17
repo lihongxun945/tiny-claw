@@ -1,6 +1,6 @@
 # tiny-claw
 
-tiny-claw 是一个插件化、可扩展的个人 AI Agent，能够围绕用户目标规划步骤、调用工具并持续执行任务，支持资料检索、文件处理和项目开发。它集成了长期记忆、上下文管理和权限审批，可连接远程模型或运行本地模型，并通过 macOS 客户端、Web UI、CLI 和飞书提供交互入口。开发者可以通过 Skill、Sub-agent 和自定义插件扩展能力，构建适合自己工作方式的智能助手。
+tiny-claw 是一个插件化、可扩展的个人 AI Agent，能够围绕用户目标规划步骤、调用工具并持续执行任务，支持资料检索、文件处理和项目开发。它集成了长期记忆、上下文管理和权限审批，可连接远程模型或运行本地模型，并通过 macOS/Windows 客户端、Web UI、CLI 和飞书提供交互入口。开发者可以通过 Skill、Sub-agent 和自定义插件扩展能力，构建适合自己工作方式的智能助手。
 
 ![tiny-claw WebUI](docs/images/tiny-claw-webui.png)
 
@@ -13,8 +13,9 @@ tiny-claw 是一个插件化、可扩展的个人 AI Agent，能够围绕用户�
 - 会话历史、上下文压缩、滚动摘要和跨会话长期记忆
 - Skill、Sub-agent 和自定义插件扩展
 - 危险操作权限审批、单次授权与本轮授权
-- Web UI、macOS 客户端、Gateway API 和飞书机器人
+- Web UI、macOS/Windows 客户端、Gateway API 和飞书机器人
 - 图片输入、上下文占用与请求内容查看、模型调用调试和工具审计日志
+- 后台系统通知（审批、等待输入、任务完成等）
 
 ## 本次更新（0.1.0-beta.22）
 
@@ -31,19 +32,28 @@ Web UI 和 macOS 客户端支持模型调用 `ask_user` 主动弹出问题，提
 
 能力由 `core-user-input` 插件实现，配置位于 `plugins.core-user-input`：`enabled` 默认 true，`maxOptions` 默认 8，`maxQuestionChars` 默认 4000，`maxAnswerChars` 默认 12000。CLI、飞书保持正文提问；子 Agent 不开放弹窗工具，由主 Agent 汇总需要澄清的问题。
 
+## 系统通知
+
+Web UI 和 macOS 客户端在任务需要关注时会发送系统通知，例如需要审批、等待输入、本轮完成或达到迭代上限。通知由 `core-notifications` 插件在每轮结束时纯自动触发，不经过模型；仅当页面或窗口不在前台聚焦时才弹出，避免打扰当前操作。配置 `notifications.enabled` 为总开关，`notifications.reasons` 为触发原因列表，默认 `approval_required, waiting_user, completed, iteration_limit`。
+
 ## 项目定位
 
 tiny-claw 面向个人任务自动化与项目开发，注重执行过程可见、数据本地保存和能力按需扩展。核心机制采用 TypeScript 实现，工具、记忆与外部平台接入通过插件组织，方便阅读源码、定制行为和集成到现有工作流程。
 
 ## 快速开始
 
-推荐普通用户使用 macOS 客户端，无需安装 Node.js 或手动启动 Gateway。只有需要研究 Agent 实现、调试源码或参与项目开发时，才推荐从源码本地启动。
+推荐普通用户使用 macOS 或 Windows 客户端，无需安装 Node.js 或手动启动 Gateway。只有需要研究 Agent 实现、调试源码或参与项目开发时，才推荐从源码本地启动。开发项目所需的 Node.js、Python 等工具仍由项目自行安装。
 
-### 使用 macOS 客户端（推荐）
+### 使用桌面客户端（推荐）
 
 #### 下载与安装
 
-从 GitHub Releases 下载 `tiny-claw-<version>-arm64.dmg`，打开 DMG 后将 `tiny-claw.app` 拖入“应用程序”目录。当前客户端仅支持 Apple Silicon Mac。
+- **macOS（Apple Silicon）**：从 GitHub Releases 下载 `tiny-claw-<version>-arm64.dmg`，打开后将 `tiny-claw.app` 拖入“应用程序”目录，保留现有签名及公证。
+- **Windows（x64）**：下载 `tiny-claw-<version>-windows-x64-setup.exe`，按安装向导选择目录。当前 Windows 安装包未签名，可能显示未知发布者或被 SmartScreen/企业安全策略拦截；请核对发布来源及 `SHA256SUMS-windows.txt`，不要关闭系统防护。暂不提供 Windows ARM64 安装包。
+
+Windows 若需要执行 Shell 或使用 Git 项目能力，请先安装 [Git for Windows](https://gitforwindows.org/) 并重启客户端。Shell 使用 Git Bash，不使用 PowerShell、cmd 或 WSL；命令中的路径推荐写成带引号的 `C:/项目目录/...` 或相对路径。未安装 Git Bash 不影响聊天和文件工具，执行 Shell 时会明确提示缺失依赖。
+
+Windows 关闭窗口后仍驻留系统托盘，通过托盘菜单退出才结束服务和托管任务。用户数据默认保存在 `%APPDATA%\tiny-claw\workspace`，macOS 默认位于 `~/Library/Application Support/tiny-claw/workspace`；升级和卸载默认保留用户数据。不要直接编辑安装目录中的文件。
 
 #### 首次配置
 
@@ -95,7 +105,7 @@ tiny-claw 面向个人任务自动化与项目开发，注重执行过程可见�
 - 工具耗时使用后端时间戳，切回窗口立即校准，完成后保留耗时；计划信息条和历史计划显示本轮总耗时（包含等待审批）。刷新不归零，旧记录缺少时间时不显示估算值。后台任务的运行时间独立于启动工具调用耗时。
 - 当前计划信息条显示完成步骤数与当前步骤，不展示百分比；展开后查看完整计划。轮次结束后，计划保留在对应历史消息中。
 - 不再区分普通与计划模式；旧模式偏好兼容读取，但不限制工具。`plan.enabled` 可关闭进度展示功能，不影响聊天执行。
-- 计划支持 1 到 `plan.maxSteps`（默认 8）个步骤，可自由修订；最终回答不会自动把未完成步骤标为完成。
+- 计划支持 1 到 `plan.maxSteps`（默认 100）个步骤，可自由修订；最终回答不会自动把未完成步骤标为完成。
 - 运行与计划分别持久化。页面刷新继续订阅已有输出，Gateway 重启后的运行标记为中断，不自动重放可能已执行的命令。等待审批时也可点击“停止”取消任务。
 - 历史回答保留当轮计划快照；后续更新可关联历史计划，但不会改写旧记录。新轮次不默认继承旧计划，旧 `plan.decisionRetries` 和 `plan.maxGateCorrections` 不再生效。
 - 项目模式的 `project_search` 会优先使用系统 `rg` 加速；未安装 ripgrep 时会自动使用内置搜索实现。
@@ -120,7 +130,7 @@ macOS 客户端的所有用户数据保存在：
 
 ### 从源码本地启动（开发者）
 
-源码启动适合研究 Agent Loop、插件系统、上下文与记忆实现，或者调试和参与 tiny-claw 开发。普通使用请优先选择上面的 macOS 客户端。
+源码启动适合研究 Agent Loop、插件系统、上下文与记忆实现，或者调试和参与 tiny-claw 开发。普通使用请优先选择上面的桌面客户端。
 
 #### 安装依赖
 
@@ -247,7 +257,7 @@ WebUI 支持浅色和深色主题，可在左侧栏底部切换。首次打开�
 | `debug` | `false` | `{ "enabled": true, "modelIO": true }` | 模型输入输出调试日志 |
 | `security` | 见下文 | `{ "bash": { "mode": "allow" } }` | bash、Gateway、工具审计安全配置 |
 | `project` | 见下文 | `{ "security": { "mode": "ask" }, "openTimeoutMs": 30000, "gitTimeoutMs": 10000, "diffMaxChars": 200000, "treeMaxDepth": 4, "treeMaxEntries": 2000, "searchMaxResults": 200, "searchMaxChars": 50000, "searchTimeoutMs": 10000 }` | 项目会话权限、打开/Git/搜索超时和工具输出限制 |
-| `plan` | `{ "enabled": true, "maxSteps": 8 }` | 同默认值 | 计划执行模式开关与单个计划最大步骤数；支持调研后细化计划及等待用户确认后继续 |
+| `plan` | `{ "enabled": true, "maxSteps": 100 }` | 同默认值 | 计划执行模式开关与单个计划最大步骤数；支持调研后细化计划及等待用户确认后继续 |
 
 本地模型可直接在 WebUI“配置”页面下载和测试，无需安装 Ollama。模型文件保存在 `workspace/models/`；Qwen3.5 4B 更适合中文和 Agent 场景，Gemma 4 提供从 E2B 到 31B 的不同规模。选择模型不会自动下载，点击“下载并安装”后卡片会显示实时百分比和下载字节数；下载完成后才能测试本地模型。远程和本地模型使用独立卡片和测试按钮，测试不会写入会话历史或执行工具。Qwen3.5 和 Gemma 4 目录中的模型均采用 Apache-2.0；模型不会被打包进 tiny-claw 安装包。
 

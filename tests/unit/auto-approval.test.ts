@@ -4,7 +4,9 @@ import { resolve } from "node:path";
 import { evaluateAutoApproval } from "../../src/security/auto-approval.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
-const decide = (command: string, trustedProject = false) => evaluateAutoApproval({ toolName: "bash", args: {}, command, rootPath: "/project", cwd: "/project", projectMode: true, trustedProject, tempPath: "/managed-temp" });
+const shellFixture = (command: string) => process.platform === "win32"
+  ? command.replaceAll("/project", resolve("/project").replace(/\\/g, "/")).replaceAll("/managed-temp", resolve("/managed-temp").replace(/\\/g, "/")) : command;
+const decide = (command: string, trustedProject = false) => evaluateAutoApproval({ toolName: "bash", args: {}, command: shellFixture(command), rootPath: "/project", cwd: resolve("/project"), projectMode: true, trustedProject, tempPath: resolve("/managed-temp") });
 describe("structured shell approval", () => {
   it.each(["CI=true npm test", "NODE_ENV=test npm test", "FORCE_COLOR=0 npm test", "NO_COLOR=1 node scripts/eval.js",
     "nproc", "nproc --all", "sysctl -n hw.ncpu hw.memsize", "vm_stat", "od -c file"])("allows narrow environment and system queries: %s", command => {
@@ -42,9 +44,9 @@ describe("structured shell approval", () => {
   });
   it("prepares safe diff commands only for consumers that execute the replacement", () => {
     const input = { toolName: "bash", args: {}, rootPath: "/project", cwd: "/project", projectMode: true, prepareExecution: true };
-    const result = evaluateAutoApproval({ ...input, command: "cd /project && git diff --stat; git diff src/ai/eval.js" });
+    const result = evaluateAutoApproval({ ...input, command: shellFixture("cd /project && git diff --stat; git diff src/ai/eval.js") });
     expect(result.action).toBe("allow");
-    expect(result.executionCommand).toBe("cd /project && git -c core.fsmonitor=false --no-pager diff --no-ext-diff --no-textconv --stat; git -c core.fsmonitor=false --no-pager diff --no-ext-diff --no-textconv src/ai/eval.js");
+    expect(result.executionCommand).toBe(shellFixture("cd /project && git -c core.fsmonitor=false --no-pager diff --no-ext-diff --no-textconv --stat; git -c core.fsmonitor=false --no-pager diff --no-ext-diff --no-textconv src/ai/eval.js"));
     for (const command of ["git diff --ext-diff", "git diff --textconv", "git -c alias.diff=evil diff", "git diff --output=/tmp/out", "git diff; sudo reboot"]) {
       const decision = evaluateAutoApproval({ ...input, command });
       expect(decision.action).not.toBe("allow");
@@ -59,11 +61,11 @@ describe("structured shell approval", () => {
       writeFileSync(executable, "#!/usr/bin/env node\nconsole.log('local');\n");
       chmodSync(executable, 0o700);
       symlinkSync(executable, resolve(workspace, "node_modules/.bin/runner"));
-      symlinkSync("/bin/echo", resolve(workspace, "node_modules/.bin/external"));
+      symlinkSync(process.execPath, resolve(workspace, "node_modules/.bin/external"), "file");
       const input = { toolName: "bash", args: {}, rootPath: workspace, cwd: workspace, projectMode: true, prepareExecution: true };
       const result = evaluateAutoApproval({ ...input, command: "CI=true npx runner test --flag | tail -20" });
       expect(result.action).toBe("allow");
-      expect(result.executionCommand).toContain(`'${realpathSync(executable)}'`);
+      expect(result.executionCommand).toContain(`'${process.platform === "win32" ? realpathSync(executable).replace(/\\/g, "/") : realpathSync(executable)}'`);
       expect(result.executionCommand).not.toContain("npx");
       for (const command of ["npx missing", "npx external", "npx -y runner", "npx --package=runner runner", "npx runner@latest", "cd /tmp && npx runner", "npx runner > /tmp/result"]) {
         expect(evaluateAutoApproval({ ...input, command }).action).not.toBe("allow");
@@ -84,7 +86,7 @@ describe("structured shell approval", () => {
     "node --check scripts/eval.js", "node -c -- scripts/eval.js",
     "timeout 120 node scripts/eval.js 2>&1 | tail -40",
     "nohup timeout 2m npm test", "timeout 10 timeout 2 node scripts/eval.js",
-    "(cat package.json)", "(cd /tmp; cat file); touch local",
+    "(cat package.json)", "(cd ../outside; cat file); touch local",
     "(cd /project/scripts && node eval.js) >/dev/null",
   ])("allows supported query and wrapper syntax: %s", command => expect(decide(command).action).toBe("allow"));
   it.each([
@@ -187,7 +189,7 @@ describe("structured shell approval", () => {
     const root = createTempWorkspace();
     const outside = createTempWorkspace();
     try {
-      symlinkSync(outside, resolve(root, "escape"));
+      symlinkSync(outside, resolve(root, "escape"), "junction");
       expect(evaluateAutoApproval({ toolName: "bash", args: {}, rootPath: root, projectMode: true, command: "node escape/script.js" }).action).toBe("ask");
     } finally { removeTempWorkspace(root); removeTempWorkspace(outside); }
   });
@@ -195,7 +197,7 @@ describe("structured shell approval", () => {
     const root = createTempWorkspace();
     const outside = createTempWorkspace();
     try {
-      symlinkSync(outside, resolve(root, "escape"));
+      symlinkSync(outside, resolve(root, "escape"), "junction");
       expect(evaluateAutoApproval({ toolName: "bash", args: {}, rootPath: root, command: "echo x >escape/report" }).action).toBe("ask");
     } finally { removeTempWorkspace(root); removeTempWorkspace(outside); }
   });

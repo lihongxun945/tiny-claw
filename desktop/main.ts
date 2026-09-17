@@ -11,6 +11,7 @@ import {
 import { createLoadingPageUrl } from "./loading-page.js";
 import { initializeDesktopWorkspace } from "./workspace.js";
 import { selectProjectDirectory } from "./directory-picker.js";
+import { stopDesktopGateway } from "./gateway-lifecycle.js";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -67,25 +68,16 @@ async function stopGateway(): Promise<void> {
   gatewayProcess = null;
   if (!child || child.exitCode !== null) return;
 
-  await new Promise<void>((resolveStop) => {
-    const forceTimer = setTimeout(() => {
-      if (child.exitCode === null) child.kill("SIGKILL");
-    }, 3_000);
-    child.once("exit", () => {
-      clearTimeout(forceTimer);
-      resolveStop();
-    });
-    child.kill("SIGTERM");
-  });
+  await stopDesktopGateway(child, 3_000);
 }
 
 async function createTray(): Promise<void> {
   const iconPath = app.isPackaged
-    ? resolve(process.resourcesPath, "trayTemplate.png")
-    : resolve(app.getAppPath(), "build/trayTemplate.png");
+    ? resolve(process.resourcesPath, process.platform === "darwin" ? "trayTemplate.png" : "loading-logo.png")
+    : resolve(app.getAppPath(), process.platform === "darwin" ? "build/trayTemplate.png" : "build/icon.png");
   const trayIcon = nativeImage.createFromPath(iconPath);
-  trayIcon.setTemplateImage(true);
-  tray = new Tray(trayIcon);
+  if (process.platform === "darwin") trayIcon.setTemplateImage(true);
+  tray = new Tray(process.platform === "win32" ? trayIcon.resize({ width: 32, height: 32 }) : trayIcon);
   tray.setToolTip("tiny-claw");
   tray.setContextMenu(Menu.buildFromTemplate([
     {
@@ -105,6 +97,7 @@ async function launchDesktop(): Promise<void> {
   const workspacePath = initializeDesktopWorkspace(app.getPath("userData"));
   const [apiPort, webPort] = await Promise.all([reservePort(), reservePort()]);
   const appRoot = app.getAppPath();
+  const logoPath = app.isPackaged ? resolve(process.resourcesPath, "loading-logo.png") : resolve(appRoot, "build/icon.png");
   const tsxCli = resolve(appRoot, "node_modules/tsx/dist/cli.mjs");
   const gatewayEntry = resolve(appRoot, "dist/gateway.js");
   const webUrl = `http://127.0.0.1:${webPort}/`;
@@ -115,6 +108,7 @@ async function launchDesktop(): Promise<void> {
     minWidth: 960,
     minHeight: 640,
     title: "tiny-claw",
+    icon: logoPath,
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#111113" : "#f7f7f5",
     webPreferences: {
       contextIsolation: true,
@@ -139,9 +133,6 @@ async function launchDesktop(): Promise<void> {
     if (mainWindow === window) mainWindow = null;
   });
 
-  const logoPath = app.isPackaged
-    ? resolve(process.resourcesPath, "loading-logo.png")
-    : resolve(appRoot, "build/icon.png");
   const logoDataUrl = nativeImage.createFromPath(logoPath).toDataURL();
   await Promise.all([
     window.loadURL(createLoadingPageUrl(logoDataUrl)),
@@ -168,7 +159,8 @@ async function launchDesktop(): Promise<void> {
         ...process.env,
         ELECTRON_RUN_AS_NODE: "1",
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+      windowsHide: true,
     },
   );
 
@@ -185,6 +177,9 @@ async function launchDesktop(): Promise<void> {
   await window.loadURL(webUrl);
 }
 
+// An explicit data directory also permits isolated packaged-app smoke tests.
+const userDataDirectory = app.commandLine.getSwitchValue("user-data-dir");
+if (userDataDirectory) app.setPath("userData", resolve(userDataDirectory));
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
@@ -194,7 +189,10 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady()
-    .then(launchDesktop)
+    .then(() => {
+      if (process.platform === "win32") app.setAppUserModelId("com.lihongxun.tiny-claw");
+      return launchDesktop();
+    })
     .catch((error) => {
       dialog.showErrorBox("tiny-claw 启动失败", error instanceof Error ? error.message : String(error));
       app.quit();
@@ -213,6 +211,6 @@ if (!hasSingleInstanceLock) {
     quitting = true;
     if (!gatewayProcess) return;
     event.preventDefault();
-    void stopGateway().finally(() => app.quit());
+    void stopGateway().catch(error => console.error("Gateway shutdown failed", error)).finally(() => app.quit());
   });
 }

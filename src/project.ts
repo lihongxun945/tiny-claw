@@ -241,6 +241,7 @@ function projectSignature(root: string): string {
 
 async function runGit(root: string, args: string[], timeoutMs: number): Promise<{ stdout: string }> {
   return execFileAsync("git", ["-C", root, ...args], {
+    windowsHide: true,
     encoding: "utf-8",
     timeout: timeoutMs,
     maxBuffer: 20 * 1024 * 1024,

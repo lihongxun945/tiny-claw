@@ -11,6 +11,11 @@ describe("desktop release", () => {
     );
 
     expect(packageJson.scripts["desktop:dist"]).toContain("--publish never");
+    expect(packageJson.scripts["desktop:dist:win"]).toContain("--win nsis --x64 --publish never");
+    expect(packageJson.build.win.target).toEqual([{ target: "nsis", arch: ["x64"] }]);
+    expect(packageJson.build.win.forceCodeSigning).toBe(false);
+    expect(packageJson.dependencies["apache-arrow"]).toBe("18.1.0");
+    expect(packageJson.build.nsis.deleteAppDataOnUninstall).toBe(false);
     expect(packageJson.build.mac.icon).toBe("build/icon.png");
     expect(packageJson.build.extraResources).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -29,5 +34,10 @@ describe("desktop release", () => {
     expect(workflow).toContain("permissions:\n  contents: write");
     expect(workflow).toContain("GH_TOKEN: ${{ github.token }}");
     expect(workflow).toContain('gh release create "${GITHUB_REF_NAME}"');
+    expect(workflow).toContain("needs: [macos, windows]");
+    expect(workflow).toContain("runs-on: windows-2022");
+    expect(workflow.match(/run: npm run test:all/g)).toHaveLength(2);
+    expect(workflow).toContain("run: npm run desktop:smoke");
+    expect(workflow).toContain('npm run desktop:smoke -- "$installPath"');
   });
 });

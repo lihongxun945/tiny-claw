@@ -7,6 +7,7 @@
 - Node.js 20.17 或更高版本
 - npm
 - macOS 客户端构建仅支持 Apple Silicon Mac
+- Windows 客户端构建使用 Windows x64，Shell 工具需要 Git for Windows
 
 ## 安装依赖
 
@@ -50,6 +51,8 @@ Gateway API 默认监听 `127.0.0.1:3000`，Vite 开发服务默认监听 `127.0
 | `npm run test:all` | 执行类型检查、WebUI 构建、覆盖率和 E2E 测试 |
 | `npm run build` | 编译主程序并复制运行时资源 |
 | `npm run desktop:compile` | 编译 Electron 主进程 |
+| `npm run desktop:dist:win` | 在 Windows 构建 x64 NSIS 安装包 |
+| `npm run desktop:smoke` | 验证打包后的应用与原生模块 |
 
 ## 技术栈
 
@@ -57,7 +60,7 @@ Gateway API 默认监听 `127.0.0.1:3000`，Vite 开发服务默认监听 `127.0
 - React + Vite：WebUI
 - Vitest：单元与集成测试
 - Playwright：浏览器端到端测试
-- Electron + electron-builder：macOS 客户端和 DMG
+- Electron + electron-builder：macOS DMG 与 Windows NSIS 客户端
 - node-llama-cpp：内置本地模型推理
 
 ## 开发约定

@@ -47,8 +47,9 @@ export interface TestGateway {
 export async function startTestGateway(workspacePath: string, token?: string): Promise<TestGateway> {
   const apiPort = await getFreePort();
   const webPort = await getFreePort();
-  const tsxBin = resolve("node_modules/.bin/tsx");
-  const child = spawn(tsxBin, [
+  const tsxBin = resolve("node_modules/tsx/dist/cli.mjs");
+  const child = spawn(process.execPath, [
+    tsxBin,
     resolve("src/gateway.ts"),
     "--daemon-child",
     "--port",
@@ -58,7 +59,8 @@ export async function startTestGateway(workspacePath: string, token?: string): P
     "--workspace",
     workspacePath,
   ], {
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    windowsHide: true,
   });
 
   const apiUrl = `http://127.0.0.1:${apiPort}`;
@@ -73,7 +75,6 @@ export async function startTestGateway(workspacePath: string, token?: string): P
     webUrl,
     async stop() {
       if (child.exitCode !== null) return;
-      child.kill("SIGTERM");
       await new Promise<void>((resolveStop) => {
         const timer = setTimeout(() => {
           child.kill("SIGKILL");
@@ -83,6 +84,7 @@ export async function startTestGateway(workspacePath: string, token?: string): P
           clearTimeout(timer);
           resolveStop();
         });
+        child.send({ type: "desktop:shutdown" });
       });
     },
   };
