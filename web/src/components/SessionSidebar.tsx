@@ -211,13 +211,13 @@ export default function SessionSidebar({ activeSessionId, currentView, sidebarMo
       </div>
       <div className="sidebar-nav">
         <button
-          className={`nav-btn ${currentView === "chat" ? "active" : ""}`}
-          onClick={() => onViewChange("chat")}
-        ><span aria-hidden="true">◫</span>对话</button>
-        <button
           className={`nav-btn ${currentView === "project" ? "active" : ""}`}
           onClick={() => onViewChange("project")}
         ><span aria-hidden="true">📁</span>项目</button>
+        <button
+          className={`nav-btn ${currentView === "chat" ? "active" : ""}`}
+          onClick={() => onViewChange("chat")}
+        ><span aria-hidden="true">◫</span>对话</button>
         <button
           className={`nav-btn ${currentView === "memory" ? "active" : ""}`}
           onClick={() => onViewChange("memory")}

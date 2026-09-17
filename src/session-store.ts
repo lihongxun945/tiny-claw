@@ -123,6 +123,8 @@ export function readSessionMessages(workspacePath: string, sessionId: string): M
       messages.push({
         role: record.role,
         content: record.content,
+        ...(record._source === "runtime_notice" ? { _source: record._source } : {}),
+        ...(typeof record._reasoningContent === "string" ? { _reasoningContent: record._reasoningContent } : {}),
         _messageId: typeof record._messageId === "string" && record._messageId
           ? record._messageId
           : legacyMessageId(sessionId, sequence, record.role, record.content),

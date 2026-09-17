@@ -22,9 +22,9 @@ export const DEFAULT_SUB_AGENT_TOOLS = [
 ];
 
 const ALWAYS_DISABLED_TOOLS = ["sub_agent_run"];
-const DEFAULT_MAX_ITERATIONS = 3;
+const DEFAULT_MAX_ITERATIONS = 100;
 const DEFAULT_MAX_CONCURRENCY = 3;
-const HARD_MAX_ITERATIONS = 8;
+const HARD_MAX_ITERATIONS = 100;
 const HARD_MAX_CONCURRENCY = 8;
 
 export interface SubAgentTask {

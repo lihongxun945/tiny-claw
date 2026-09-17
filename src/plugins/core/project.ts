@@ -78,7 +78,7 @@ export const coreProjectPlugin: Plugin = {
         const execution = trusted
           ? `用户已授权信任此项目代码。临时日志请写入 $TMPDIR（${projectTempDirectory(ctx.workspacePath, root)}）；系统修改和范围外写入仍需审批。`
           : "自动审批模式下，明确的项目内脚本、测试和构建默认允许执行，无需额外信任；内联代码、未知命令、系统修改和范围外写入仍需审批。每次审批模式保持不变。";
-        return `${prompt}\n\n${buildProjectPrompt(await inspectProject(root))}\n${execution}\n长任务使用 background_start 启动，通过 background_status 查看日志、background_stop 终止；不要使用 nohup 或 & 绕开任务管理。`;
+        return `${prompt}\n\n${buildProjectPrompt(await inspectProject(root))}\n${execution}\n临时日志请写入受管 $TMPDIR（${projectTempDirectory(ctx.workspacePath, root)}），不要使用任意 /tmp 路径。普通 git diff 会禁用外部辅助程序；npx 仅自动运行项目已安装的本地工具，不自动下载。\n长任务使用 background_start 启动，通过 background_status 查看日志、background_stop 终止；不要使用 nohup 或 & 绕开任务管理。`;
       },
     });
   },

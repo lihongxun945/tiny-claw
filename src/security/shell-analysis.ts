@@ -1,7 +1,8 @@
 import parse from "bash-parser";
 
 export interface ShellWord {
-  type: "Word";
+  type: "Word" | "AssignmentWord";
+  loc?: { start: { char: number }; end: { char: number } };
   text: string;
   expansion?: Array<{ type: string; parameter?: string; commandAST?: ShellNode }>;
 }
@@ -26,5 +27,5 @@ export interface ShellNode {
 
 /** The parser performs syntax analysis only; no shell is launched. */
 export function parseShell(source: string): ShellNode {
-  return parse(source) as ShellNode;
+  return parse(source, { insertLOC: true }) as ShellNode;
 }

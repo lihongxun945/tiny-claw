@@ -15,7 +15,7 @@ export function isReadOnlyFind(args: string[]): boolean {
   return true;
 }
 
-export function isReadOnlyGit(args: string[]): boolean {
+export function isReadOnlyGit(args: string[], hardenedDiff = false): boolean {
   const [command, ...options] = args;
   if (command === "branch") return options.length === 1 && options[0] === "--show-current";
   if (command === "log") {
@@ -29,10 +29,10 @@ export function isReadOnlyGit(args: string[]): boolean {
   }
   // Patch output can invoke configured helpers; only permit explicitly disabled helpers.
   if (command === "diff") {
-    if (!options.includes("--no-ext-diff") || !options.includes("--no-textconv")) return false;
+    if (!hardenedDiff && (!options.includes("--no-ext-diff") || !options.includes("--no-textconv"))) return false;
     for (const option of options) {
       if (option === "--") return true;
-      if (!["--no-ext-diff", "--no-textconv", "--stat", "--numstat", "--shortstat", "--name-only", "--name-status", "--cached", "--staged", "--check", "-p"].includes(option)) return false;
+      if (!["--no-ext-diff", "--no-textconv", "--stat", "--numstat", "--shortstat", "--name-only", "--name-status", "--cached", "--staged", "--check", "-p"].includes(option) && (!hardenedDiff || option.startsWith("-"))) return false;
     }
     return true;
   }

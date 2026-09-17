@@ -108,10 +108,13 @@ describe("tool context lifecycle", () => {
       const execute = vi.fn(async () => "资料".repeat(2500));
       context(manager).registerTool({ name: "read_large", description: "read", inputSchema: { type: "object" }, execute });
       const client = new FakeModelClient([
-        { text: "", toolCalls: [{ type: "tool_use", id: "first", name: "read_large", input: {} }] },
-        { text: "", toolCalls: [{ type: "tool_use", id: "second", name: "read_large", input: {} }] },
+        { text: "", reasoningContent: "first reasoning", toolCalls: [{ type: "tool_use", id: "first", name: "read_large", input: {} }] },
+        { text: "", reasoningContent: "", toolCalls: [{ type: "tool_use", id: "second", name: "read_large", input: {} }] },
         messages => {
           expect(validateToolMessageChains(messages)).toBeUndefined();
+          const assistants = messages.filter(message => message.role === "assistant");
+          expect(assistants.at(-1)?._reasoningContent).toBe("");
+          if (failure) expect(assistants[0]._reasoningContent).toBe("first reasoning");
           expect(JSON.stringify(messages)).toContain("keep this requirement");
           if (!failure) expect(JSON.stringify(messages)).not.toContain('"id":"first"');
           return { text: "done", toolCalls: [] };

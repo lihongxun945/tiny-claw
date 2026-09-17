@@ -6,7 +6,7 @@ import type { Tool } from "../types.js";
 import type { Config } from "../types.js";
 import { checkDangerousToolPermission } from "./permission.js";
 import { resolveRootFile } from "./workspace-path.js";
-import { isTrustedProject, projectTempDirectory } from "../security/project-trust.js";
+import { projectTempDirectory } from "../security/project-trust.js";
 
 const MAX_OUTPUT = 10000;
 const DEFAULT_TIMEOUT = 30;
@@ -15,7 +15,7 @@ export function createBashTool(workspacePath: string, getConfig: () => Config): 
   return {
     name: "bash",
     description:
-      "在 shell 中执行命令并返回输出。用于运行 git、npm、ls 等命令。不要用于读取文件（用 file_read）或写入文件（用 file_write/file_edit）。",
+      "在 shell 中执行命令并返回输出。项目临时日志使用受管 $TMPDIR，不要写任意 /tmp 路径。自动审批会为普通 git diff 禁用外部辅助程序，并将 npx 限定为项目已安装的本地工具，转换后的命令随结果返回。不要用于读取文件（用 file_read）或写入文件（用 file_write/file_edit）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -55,22 +55,25 @@ export function createBashTool(workspacePath: string, getConfig: () => Config): 
         context,
         command,
         cwd,
+        prepareExecution: true,
       });
       if (!permission.allowed) return permission.result;
 
       const config = context?.config ?? getConfig();
-      const tempPath = context?.sessionContext?.mode === "project" && isTrustedProject(config, root, workspacePath) ? projectTempDirectory(workspacePath, root) : undefined;
+      const tempPath = context?.sessionContext?.mode === "project" ? projectTempDirectory(workspacePath, root) : undefined;
+      const executionCommand = permission.executionCommand ?? command;
       const outputDir = resolve(workspacePath, "tool-output");
       mkdirSync(outputDir, { recursive: true });
       const outputPath = resolve(outputDir, `${randomUUID()}.log`);
       let outputSaveError: string | undefined;
-      const result = JSON.parse(await executeShell(command, timeout, cwd, config.bashTerminationGraceMs ?? 1000, context?.signal, tempPath,
+      const result = JSON.parse(await executeShell(executionCommand, timeout, cwd, config.bashTerminationGraceMs ?? 1000, context?.signal, tempPath,
         (text) => {
           if (outputSaveError) return;
           try { appendFileSync(outputPath, text, { mode: 0o600 }); }
           catch (error) { outputSaveError = String(error); }
         },
-        () => context?.reportActivity?.(`正在执行命令：${command}`), config.bashMaxOutputChars ?? MAX_OUTPUT));
+        () => context?.reportActivity?.(`正在执行命令：${executionCommand}`), config.bashMaxOutputChars ?? MAX_OUTPUT));
+      if (permission.executionCommand) result.executionCommand = executionCommand;
       if (result.truncated) {
         if (outputSaveError) result.outputSaveError = outputSaveError;
         else result.outputPath = outputPath;

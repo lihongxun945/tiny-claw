@@ -22,7 +22,8 @@ export function checkDangerousToolPermission(options: {
   context?: ToolExecutionContext;
   command?: string;
   cwd?: string;
-}): { allowed: true } | { allowed: false; result: string } {
+  prepareExecution?: boolean;
+}): { allowed: true; executionCommand?: string } | { allowed: false; result: string } {
   const mode = getToolPermissionMode(options.config, options.toolName);
   if (mode === "allow") return { allowed: true };
 
@@ -39,14 +40,18 @@ export function checkDangerousToolPermission(options: {
       rootPath: options.context?.rootPath ?? options.workspacePath,
       projectMode,
       trustedProject,
-      tempPath: trustedProject ? projectTempDirectory(options.workspacePath, root) : undefined,
+      tempPath: projectMode ? projectTempDirectory(options.workspacePath, root) : undefined,
+      prepareExecution: options.prepareExecution,
     });
     appendLog(
       options.workspacePath,
       "AUDIT",
       `自动权限决策 ${options.toolName} ${JSON.stringify({ action: autoDecision.action, risk: autoDecision.risk, ruleId: autoDecision.ruleId, reason: autoDecision.reason, sessionId: options.context?.sessionId })}`,
     );
-    if (autoDecision.action === "allow") return { allowed: true };
+    if (autoDecision.action === "allow") {
+      if (autoDecision.executionCommand) appendLog(options.workspacePath, "AUDIT", `安全执行命令 ${JSON.stringify({ originalCommand: options.command ?? options.args.command, executionCommand: autoDecision.executionCommand, sessionId: options.context?.sessionId })}`);
+      return { allowed: true, ...(autoDecision.executionCommand ? { executionCommand: autoDecision.executionCommand } : {}) };
+    }
     if (autoDecision.action === "deny") {
       return {
         allowed: false,

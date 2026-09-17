@@ -150,7 +150,7 @@ export interface ModelCallContext {
   /** Display metadata for summaries already included in the actual request. */
   contextSummaries?: ContextSummarySection[];
   messages: Message[];
-  /** Temporary derived context inserted after history and before the current turn; never persisted. */
+  /** Temporary historical data appended to the system prompt, never an assistant message or persisted history. */
   derivedContext?: string;
   /** 仅用于当前模型调用的内部系统提示后缀，不写入消息历史。 */
   systemPromptSuffix?: string;

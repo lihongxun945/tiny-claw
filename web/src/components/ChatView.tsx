@@ -60,7 +60,7 @@ export default function ChatView({
   const previousScrollRef = useRef<{ sessionId: string | null; hasMessages: boolean } | undefined>(undefined);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Record<string, boolean>>({});
   const displayedMessages = streamingApprovalId
-    ? mergeApprovalResume(messages, streamingApprovalId, streamingText, streamingToolCalls)
+    ? mergeApprovalResume(messages, streamingApprovalId, streamingText, streamingToolCalls, { turnId: streamingTurnId })
     : messages.filter((message) => !((isStreaming || backendBusy) && streamingTurnId && message.role === "assistant" && message.turnId === streamingTurnId));
   const showBackendBusy = backendBusy && !isStreaming;
   const activity = !streamingTurnId || run?.turnId === streamingTurnId ? run?.status : undefined;

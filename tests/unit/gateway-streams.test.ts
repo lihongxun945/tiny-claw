@@ -3,6 +3,19 @@ import { GatewayStream } from "../../src/gateway-streams.js";
 import type { AgentEvent } from "../../src/agent.js";
 
 describe("reconnectable Gateway streams", () => {
+  it("updates a seeded approval tool instead of duplicating it", async () => {
+    const stream = new GatewayStream("turn", "approval");
+    stream.snapshot.text = "before\n";
+    stream.snapshot.toolCalls = [{ id: "call", name: "bash", input: {}, result: "pending" }];
+    async function* events(): AsyncGenerator<AgentEvent> {
+      yield { type: "tool_call", toolCallId: "call", name: "bash", input: {}, startedAt: 1000 };
+      yield { type: "tool_result", toolCallId: "call", name: "bash", result: "ok", completedAt: 2000 };
+      yield { type: "text_delta", text: "after" };
+    }
+    await stream.consume(events());
+    expect(stream.snapshot.text).toBe("before\nafter");
+    expect(stream.snapshot.toolCalls).toEqual([{ id: "call", name: "bash", input: {}, result: "ok", startedAt: 1000, completedAt: 2000 }]);
+  });
   it("restores structured activity and clears it on terminal runs", async () => {
     const stream = new GatewayStream("turn");
     const run = { id: "run", turnId: "turn", executionMode: "normal" as const, state: "running" as const, revision: 1, ordinal: 1, updatedAt: "now", owner: "test", ownerPid: 0,

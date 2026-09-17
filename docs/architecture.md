@@ -175,7 +175,7 @@ Shell 分析对 Subshell 内部递归检查，子环境的 cd 不传播到外层
 
 项目模式下，自动审批默认允许工作目录和入口文件均在当前项目内的 Node/Python 脚本；路径检查包含符号链接。允许 npm run/test/build 和不含选项或变量覆盖的 make 任务，不以 trustedProjects 为前提。解释器内联代码、未知选项、外部脚本、npm 执行目录/配置覆盖与未识别命令保守请求确认。外层 AST 仍独立检查管道、重定向、目录切换、系统和远程操作；普通模式及显式 ask/allow 不变。此策略是代码执行授权，不是沙箱，不检测脚本内部所有副作用。
 
-`security.trustedProjects` 在全局用户配置中保存额外授权的项目绝对路径，默认空数组；按真实路径精确匹配，不自动信任子目录、项目声明或已有项目。保留通用 git 命令的原授权逻辑以及托管临时目录授权，不覆盖系统危险操作与可识别的外部写入。`security/project-trust.ts` 创建 workspace 下 `project-tmp/<真实项目路径哈希>`，可信项目命令的 TMPDIR 与审批解析使用同一目录。
+`security.trustedProjects` 在全局用户配置中保存额外授权的项目绝对路径，默认空数组；按真实路径精确匹配，不自动信任子目录、项目声明或已有项目。托管临时目录授权不覆盖系统危险操作与可识别的外部写入，也不绕过 Git 操作分类。`security/project-trust.ts` 创建 workspace 下 `project-tmp/<真实项目路径哈希>`，可信项目命令的 TMPDIR 与审批解析使用同一目录。
 
 `core-background` 插件注册 background_start/status/stop 工具与 /tasks、/task-stop 命令，主 Agent Loop 不包含后台任务分支。启动仍经过计划门禁、统一权限审批和工具审计，background_start 默认继承 bash 权限覆盖。后台任务绑定发起 session，通过 ID 查询/取消，不能跨会话操作；运行控制器独立于消息轮次取消，应用 Scope 释放时终止进程组。任务上限、超时、有界日志通过 security.background 配置。状态记录原子保存至 sessions/<session>/background/<id>.json；运行中日志由内存提供，结束时持久化。重启后未知运行记录显示 interrupted，不通过旧 PID 操作进程或自动重放。进程异常崩溃不保证清理已脱离宿主的进程，当前不承诺跨重启续跑。
 
@@ -184,6 +184,8 @@ Shell 分析对 Subshell 内部递归检查，子环境的 cd 不传播到外层
 core-plan 是非阻塞进度插件，不是工作流引擎。简单问答直接回答，多阶段任务通过提示词鼓励模型调用 update_plan；不做额外意图分类请求，不要求先创建计划，不根据计划状态过滤或拦截执行工具。旧 executionMode 字段兼容读取和请求，但不再控制计划权限，WebUI 移除普通/计划切换。
 
 插件只注册 update_plan，接收 title、完整 steps（稳定 id、title、status、可选 summary）及可选历史 plan_id。首次调用创建当轮计划，后续调用整体更新；允许增删、修订和重新排列步骤，不强制顺序。格式错误只返回工具错误，不暂停运行。plan.enabled 控制进度插件工具和提示词启用，关闭后执行、审批、取消仍可用；plan.maxSteps 沿用步骤上限。旧 maxGateCorrections 和 decisionRetries 字段仅兼容读取，不再生效。
+
+title 可在更新时省略：优先保留本轮计划标题，本轮无可用标题时仅继承显式 plan_id 所关联的同会话历史计划标题；两者均无标题才要求提供顶层 title。显式传入空白或非字符串标题仍返回清晰的参数错误。步骤标题依然必填，历史计划及其快照不被修改，无关新轮次不自动继承最近计划。
 
 Plan 保存模型报告的进度，Run 保存真实执行状态。update_plan 不写 Run 状态，不批准工具，也不启动或恢复进程。即使没有计划、计划格式错误、计划完成，普通工具仍按独立安全策略执行。后台任务状态只来自后台任务执行记录，计划 in_progress 不代表评测进程存在。
 
@@ -221,11 +223,15 @@ GET /plan 返回计划列表、最新 Run、当前执行 turnId 和 activePlan�
 
 GatewayStream 保留当前 Run、turnId、累计文本、工具调用和事件序号。SSE 先发送 snapshot，再发送带序号的增量和 run_state；前端按序号去重并按轮次合并助手消息。刷新或切换会话重新订阅；连接状态与后端运行状态分开，断线不视为任务完成。历史会话 busy 从运行记录派生，审批入口来自持久化审批事实源。
 
+实时 snapshot 使用 `textMode=full-turn` 明确表示整轮内容。审批或用户回答续跑时，Gateway 先从同一 turnId 的历史初始化正文及工具调用，再追加本次增量；done 正文也包含续跑前的前缀。前端按 turnId 用整轮快照替换历史展示，不因 snapshot 携带 approvalId 再次拼接；工具开始事件按 toolCallId 更新已有条目，清除旧待审批结果。旧快照仍走兼容分支。连续刷新或重连不会重复追加同轮回答。
+
 当前回答下方用灰色状态行展示可观测执行阶段及阶段耗时。Agent 通过 Run.status 上报准备上下文、等待模型响应、接收回答、调用工具和处理结果；工具通过可选的 ToolExecutionContext.reportActivity 上报具体操作，不由模型正文推测。bash 通过审批并收到进程 spawn 事件后才报告执行命令，文件读取和项目搜索在权限检查后报告操作。状态携带 startedAt，经 run_state SSE 和快照恢复；前端按 Run revision 拒绝旧状态覆盖。光标仅在文本输出阶段显示，压缩、工具执行、停止和断线期间不显示；审批单独提示操作尚未执行。连接丢失独立展示，不将断线解释为后台仍在运行。工具详情和计划折叠不影响状态行可见性，终态后移除活动状态。
 
 重连失败保留累计正文、工具调用及 turnId，普通运行统一显示“正在处理”，不以连接有无推断后台执行。无事件流时 Gateway 仅对本进程拥有且执行器已空闲的 running 记录补写 interrupted；不干预其他进程或真实活动任务。模型循环的失败统一抛给发起入口，普通执行与审批恢复均先持久化终态、发送 run_state，再报告 error，避免流结束后遗留 running。
 
 OpenAI-compatible 流响应的 reasoning_content 作为协议元数据合并到 ChatResponse.reasoningContent，并随原助手消息以 _reasoningContent 持久化。工具结果回传及审批恢复时原样映射回 reasoning_content，不加入可见正文、不生成虚构推理内容；未提供该字段的模型不附加字段。旧历史未保存的推理字段无法凭空恢复。
+
+服务端返回 reasoning_content 相关 400 时，模型适配器抛出带协议诊断的 ReasoningProtocolError，日志插件记录请求 ID、轮次、消息角色、思考字段是否存在及长度和工具调用 ID，不额外记录思考正文。不为该错误补造思考字段、关闭思考模式或自动重试工具。
 
 会话摘要在 onBeforeModelCall 阶段按 Token 预算同步执行，不再在 onTurnEnd 按轮数整理。压缩期间输入保持锁定，通用状态持久化到 Run.status 并通过 SSE 更新，页面显示“正在进行上下文压缩...”。刷新后从流快照或 Run.status 恢复提示。摘要失败保留原始消息和已有 Checkpoint，硬预算允许时继续调用主模型；否则明确报错。
 
@@ -248,6 +254,8 @@ session_history_recall 在当前会话内按 tool_call_id 定位原文，可指�
 session-summary 使用同一投影构造抽取请求；输入大小按最终序列化字符数与模型 Token 上限双重检查。历史轮次和当前轮较早的完整工具交互均可压缩，最新用户请求与最新交互保留，未配对调用不进入抽取批次。Checkpoint 覆盖序号与 revision 持久化，原文不改写，重启按覆盖范围重建上下文。模型仅输出 operations，程序填写实际批次的版本与范围，仍校验引用、类型和版本冲突。结构化校验失败有限重试，失败或取消不推进覆盖位置；容量允许时继续，否则沿用 Run 错误终态解锁输入，不重放工具副作用。
 
 预算包含推理协议字段、系统提示、工具定义、消息与输出预留，并扣除可配置安全余量；最终检查及空响应重试前再次检查，不能发送本地已判定超限的请求。core-context-inspector 持久化 kind=estimate 的准备/失败估算与上次请求统计；正常请求快照保持兼容。WebUI 区分未发送的预算估算和上次请求占用。
+
+历史持久化与读取均保留模型返回的 `_reasoningContent` 字符串（包括空字符串），供 OpenAI 兼容适配器回传 `reasoning_content`。摘要重建、审批续跑和服务重启恢复不得丢弃该协议字段；旧记录缺失或字段类型非法时不伪造推理内容。
 
 配置位于 plugins.core-tool-context：maxResultTokens=8000、readMaxTokens=4000、searchSnippetChars=1500、safetyMargin=0.05、summaryRetries=1、searchMaxResponseBytes=8388608。搜索 HTTP 正文有独立采集字节限制和取消处理；超限明确报未完整接收，不宣称保存了未收到的原文。bash 等工具已有采集上限继续生效。
 
@@ -273,7 +281,7 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 | maxTokens | 单次响应最大 token | 16384 |
 | maxContextTokens | 上下文最大 token 估计 | 128000 |
 | contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
-| maxAgentIterations | Agent Loop 最大迭代次数；达到上限时明确提示，显式配置 0 表示不限 | 100 |
+| maxAgentIterations | Agent Loop 最大迭代次数；达到上限时明确提示，显式配置 0 表示不限 | 1000 |
 | emptyResponseRetries | 模型成功返回空文本且无工具调用时的重试次数 | 1 |
 | sessionSummary | Token 触发的持久化摘要配置 | enabled=true, persistent=true；旧 turnThreshold/recentTurns 不再生效 |
 | autoMemory | 自动记忆配置 | enabled=true, turnThreshold=10 |
@@ -281,7 +289,7 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 | attachments | 图片附件配置 | enabled=true, 每条最多 4 张、单张 10 MB |
 | debug | Debug 模式配置，可记录模型原始输入输出 | enabled=false |
 | security | 基础安全边界：bash 策略、Gateway host/token、工具审计 | 见下文 |
-| project | 项目会话权限与迭代上限 | security.mode=auto, maxAgentIterations=100 |
+| project | 项目会话权限与迭代上限 | security.mode=auto, maxAgentIterations=1000 |
 | searchProvider | 搜索引擎 (ollama/searxng/brave/duckduckgo) | duckduckgo |
 | ollamaApiKey | Ollama Web Search API key | - |
 | searxngUrl | SearXNG 实例地址 | - |
@@ -334,7 +342,7 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
   "subAgent": {
     "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "skill_list", "skill_use"],
     "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "sub_agent_run"],
-    "maxIterations": 3,
+    "maxIterations": 100,
     "maxConcurrency": 3
   }
 }
@@ -342,7 +350,7 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 
 - `allowedTools`：sub-agent 允许注册的工具白名单；未配置时使用默认只读工具集
 - `disabledTools`：在白名单基础上额外禁用的工具
-- `maxIterations`：每个 sub-agent 的最大 Agent Loop 轮数，硬上限为 8
+- `maxIterations`：每个 sub-agent 的最大 Agent Loop 轮数，默认 100，硬上限为 100
 - `maxConcurrency`：一次 `sub_agent_run` 最多并发的 sub-agent 数，硬上限为 8
 - `sub_agent_run` 始终禁用，避免 sub-agent 递归派生 sub-agent
 
@@ -380,6 +388,14 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 自动审批策略位于独立安全模块，输出 `allow`、`ask` 或 `deny` 以及风险等级、规则 ID 和原因。策略默认放行普通工具和命令，当前工作目录内的创建、覆盖、编辑、移动和删除均视为低风险；目录外写入、提权、系统状态修改和远程脚本执行进入 `ask`；格式化磁盘、删除根目录等灾难性操作直接 `deny`。每次自动决策写入审计日志，但不记录文件内容或密钥。
 
 `security/sed-analysis.ts` 单独识别 `sed` 的字面量只读行打印子集：`p`、数字或 `$` 行地址及范围、多条打印命令、`-e` / `--expression` 和只读选项。识别成功的命令不要求项目信任；`-i`、`w`、`e`、外部脚本或未支持的表达式保守请求确认。外层 shell 分析仍独立检查动态展开、管道中的其他命令和重定向，不因识别只读 `sed` 而放宽。显式 `ask` 模式仍始终请求审批。
+
+项目模式自动审批允许命令前的普通静态环境赋值（如 `AI_ENTRY`、`AI_OUTPUT_FILE`）；动态展开、独立赋值、加载器/解释器配置、PATH/HOME、Git 环境覆盖等仍需确认。普通对话保持原有 CI/NODE_ENV/FORCE_COLOR/NO_COLOR 有限白名单。自定义变量的业务含义由项目代码决定，该策略与允许执行项目脚本一致，不是对脚本内部副作用的沙箱保证。系统查询限定为 `nproc`/`nproc --all`、无参数 `vm_stat`、`od -c` 和 `sysctl -n` 的 CPU/内存硬件键，不整体放行这些命令。
+
+项目内 Git 暂存（明确路径或 add -A/-u）、仅带 -m/--message 的普通提交、单个新分支创建可自动通过，无需额外信任项目。路径越界、特殊 pathspec、未知选项、全局配置覆盖、历史重写、工作区恢复/清理和远程操作仍需确认，即使项目受信任也不例外。提交 hooks 和暂存 filters 属于项目代码执行授权范围，并非无副作用操作；管道与重定向仍独立检查。
+
+bash、background_start 和技能动态命令显式声明支持安全执行转换，审批分析器通过 AST 的源码位置构造 executionCommand；不能精确定位或整条命令存在其他风险时不自动转换放行。普通 git diff 在执行时禁用外部 diff、textconv、pager 和 fsmonitor；显式请求外部辅助程序仍需审批。直接 npx 调用仅在执行目录的 node_modules/.bin 存在可执行目标且真实路径位于当前项目内时，替换为该目标的绝对路径，绕开 npx 下载/缓存解析；包版本、安装参数、缺失目标和外部符号链接不自动放行。执行器必须使用同一 executionCommand，审计日志记录原命令与实际命令，bash/后台工具结果也返回实际命令。
+
+所有项目会话使用项目独立的受管 TMPDIR，写入及路径展开均按同一目录检查，不要求额外标记项目信任。前台、后台及技能动态命令设置相同 TMPDIR；提示词引导模型用 `$TMPDIR` 存放临时日志。任意 `/tmp` 写入、目录穿越、符号链接逃逸仍需审批，不静默改写用户指定的日志路径。显式 ask/allow 模式语义不变。
 
 `ask` 模式及自动策略返回的 `ask` 决策使用 workspace 级审批事实源。审批请求与 Agent continuation 原子写入 `workspace/approvals/<approvalId>.json`，文件权限为 `0600`；记录按 workspace、工具名、参数和调用者身份去重，过期时间由 `security.approvalTtlMs` 配置，默认 24 小时。已存在的 expiresAt 不随默认值变化。`AgentSession` 创建时从事实源恢复待审批调用，因此页面刷新、切换会话和 Gateway 重启不会丢失审批。单次批准后的许可只消费一次；“允许本轮”的后续临时授权仍只保存在当前恢复循环内，并在结束、失败或取消后清理。Gateway 暴露 `/approvals` 系列接口，Web UI 提供“批准本次”“允许本轮”和拒绝操作；批准与拒绝都会把最终工具结果送回原 Agent Loop。飞书审批继续按用户 `open_id` 和 `chat_id` 隔离。
 
@@ -560,7 +576,7 @@ Agent 向插件提供全部未压缩历史和当前轮消息，不按 historyWin
 
 `core-session-summary` 在模型请求前达到 Token 预算时读取已持久化的历史轮次，生成严格 JSON Delta；低占用时不按轮数生成。校验器要求 revision 与连续 sequence 范围正确，且每个操作只能引用本批真实 `messageId`；代码随后补全来源序号和 turnId、生成确定性 ID，并用纯 Reducer 执行 add/supersede/resolve。成功提交后才推进覆盖序号，后续只提取未覆盖消息。摘要请求也检查模型输入和输出预算，超预算的多消息输入分批提取；单条无法容纳时失败而不推进该批覆盖序号。达到 Delta 数量或存储字符阈值时，旧 revision 先归档，再固化新 Checkpoint。
 
-模型调用时，摘要被序列化为带 `data-kind="derived-summary"` 和 `role="internal"` 的临时派生上下文，插在保留的历史消息之后、当前用户轮次之前。Agent 使用跨 Anthropic、OpenAI 与本地模型均支持的 `assistant` 协议角色承载该上下文，但标签和正文明确声明它不是历史助手回复、用户消息或新指令；摘要只存在于本次模型请求，不写入内存历史或 Session Store。基础 System Prompt 因此不再随摘要 revision 变化。未被摘要覆盖的原文全部保留；旧版自由文本摘要只在首次读取时迁移，并带 legacy_summary 来源。旧摘要缺少覆盖时间时不推测覆盖范围，保留历史原文。
+模型调用时，摘要被序列化为带 `data-kind="derived-summary"` 和 `role="internal"` 的临时派生上下文。`model-context.ts` 在请求投影阶段将其追加到 System Prompt 的历史资料区，明确它不是新指令，不再使用 `assistant` 角色冒充模型输出，避免思考模式要求 `reasoning_content` 时拒绝请求。带 `_source: runtime_notice` 的程序提示持久化供 UI 展示，但请求投影将它们移入运行资料区；不根据文本猜测旧消息来源。真实模型消息和思考字段不改写，摘要不写入原始历史，工具调用和结果之间不插入合成消息。预算计算涵盖资料及其边界提示，上下文快照仍单列摘要并反映实际 System Prompt；动态资料变化可能影响前缀缓存。未被摘要覆盖的原文全部保留；旧版自由文本摘要只在首次读取时迁移，并带 legacy_summary 来源。旧摘要缺少覆盖时间时不推测覆盖范围，保留历史原文。
 
 `core-session-recall` 单独注册只读工具 `session_history_recall`。工具只能读取执行上下文中的当前 session，可按摘要来源 messageId、sequence 范围或关键词查询 `messages.jsonl`，返回稳定 ID、序号、turnId、角色、时间和原文。条数、查询长度和输出字符上限由 `sessionSummary.recallMaxResults`、`recallMaxQueryChars`、`recallMaxOutputChars` 控制。
 

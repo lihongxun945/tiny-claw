@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenAIChatClient } from "../../src/model/openai.js";
+import { ReasoningProtocolError } from "../../src/model/types.js";
 import type { Config, Message } from "../../src/types.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 import { attachmentToImageBlock, saveAttachment } from "../../src/attachments.js";
+import { appendSessionMessage, readSessionMessages } from "../../src/session-store.js";
 
 function config(): Config {
   return {
@@ -55,6 +57,58 @@ function streamResponse(text = "ok"): Response {
 }
 
 describe("OpenAIChatClient", () => {
+  it("reports only protocol metadata and never retries a reasoning rejection", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: { message: "reasoning_content must be passed back" } }), { status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const error = await new OpenAIChatClient(config()).chat([
+      { role: "assistant", content: "private answer", _reasoningContent: "private reasoning" },
+      { role: "user", content: "private question" },
+    ], vi.fn()).catch(error => error);
+    expect(error).toBeInstanceOf(ReasoningProtocolError);
+    expect(error.diagnostics).toEqual({ requestId: expect.any(String), messages: [
+      { index: 0, role: "assistant", reasoningPresent: true, reasoningLength: 17, toolCallIds: [] },
+      { index: 1, role: "user", reasoningPresent: false, toolCallIds: [] },
+    ] });
+    expect(JSON.stringify(error.diagnostics)).not.toContain("private");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["", undefined])("preserves the distinction between empty and missing reasoning (%s)", async (reasoning) => {
+    const fetchMock = vi.fn(async (_url, init) => {
+      const body = JSON.parse(String(init.body));
+      const assistant = body.messages[0];
+      if (reasoning === undefined) expect(assistant).not.toHaveProperty("reasoning_content");
+      else expect(assistant.reasoning_content).toBe("");
+      return streamResponse();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await new OpenAIChatClient(config()).chat([
+      { role: "assistant", content: "answer", ...(reasoning !== undefined ? { _reasoningContent: reasoning } : {}) },
+      { role: "user", content: "continue" },
+    ], vi.fn());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends persisted reasoning metadata when resuming a tool result", async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      await appendSessionMessage(workspacePath, "resume", { role: "assistant", _reasoningContent: "saved reasoning",
+        content: [{ type: "tool_use", id: "saved-call", name: "test", input: {} }] });
+      await appendSessionMessage(workspacePath, "resume", { role: "user",
+        content: [{ type: "tool_result", tool_use_id: "saved-call", content: "done" }] });
+      const fetchMock = vi.fn(async (_url, init) => {
+        const body = JSON.parse(String(init.body));
+        expect(body.messages[0].reasoning_content).toBe("saved reasoning");
+        expect(body.messages[1].tool_call_id).toBe("saved-call");
+        return streamResponse("done");
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new OpenAIChatClient({ ...config(), workspacePath });
+      await client.chat(readSessionMessages(workspacePath, "resume"), vi.fn());
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally { removeTempWorkspace(workspacePath); }
+  });
+
   it("round trips reasoning metadata without streaming it as visible text", async () => {
     const bodies: any[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_url, init) => {

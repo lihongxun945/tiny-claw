@@ -9,12 +9,21 @@ tiny-claw 是一个插件化、可扩展的个人 AI Agent，能够围绕用户�
 - 自主 Agent Loop、流式输出和多轮工具调用
 - 远程模型与内置 Qwen、Gemma 本地模型
 - Web 搜索、网页读取、Shell、文件读写和项目开发工具
-- 普通模式与可持久化、支持调研后动态细化的计划执行模式
+- 可选的规划工具，支持持久化任务目标、步骤与进度，不强制限制工具执行
 - 会话历史、上下文压缩、滚动摘要和跨会话长期记忆
 - Skill、Sub-agent 和自定义插件扩展
 - 危险操作权限审批、单次授权与本轮授权
 - Web UI、macOS 客户端、Gateway API 和飞书机器人
 - 图片输入、上下文占用与请求内容查看、模型调用调试和工具审计日志
+
+## 本次更新（0.1.0-beta.22）
+
+- **流式续跑更连贯**：审批恢复时合并同一轮已有文本和工具记录，刷新后继续接收完整轮次的更新，减少重复工具展示。
+- **规划更灵活**：更新进度可以省略整体标题，沿用本轮或明确关联的历史计划标题；规划工具仍是可选能力，审批独立生效。
+- **思考模型兼容修复**：摘要和程序生成的运行提示不再冒充模型回复，真实 `reasoning_content` 原样保留；协议错误增加结构化诊断，不伪造思考内容或重放工具。
+- **减少重复审批**：项目内普通静态环境变量、常规 Git 暂存/提交/分支创建可自动通过；Git Diff 安全转换、本地 npx 解析和受管临时目录继续保留安全边界。破坏性操作、远程操作和环境覆盖仍需确认。
+- **长任务支持**：主 Agent 默认迭代上限调整为 1000 次，Sub-agent 默认及最大上限为 100 次；已有显式配置保持不变。
+- **导航调整**：侧边栏将项目入口放在对话之前。
 
 ## 主动询问
 
@@ -59,11 +68,14 @@ tiny-claw 面向个人任务自动化与项目开发，注重执行过程可见�
 - 页面刷新或连接中断后会重新订阅当前任务，恢复已有输出并继续流式更新；同一轮输出合并为一条助手消息，关闭页面不会取消任务。
 - 模型请求前的同步摘要阶段显示“正在进行上下文压缩...”，期间输入框保持锁定；压缩完成后继续请求模型，任务结束才解除锁定；失败时保留原始消息和已有摘要，硬预算允许时继续。
 - 复杂任务可通过 `update_plan` 展示计划和进度，默认折叠；简单问答不需要计划。未创建计划或进度更新失败都不会阻止执行，安全审批保持独立。
+- 更新计划进度时可省略整体 `title`，保留本轮原标题；明确关联历史 `plan_id` 时可继承其标题。没有可用标题的新计划仍需提供 `title`，每次提交完整步骤列表。
+- 自动审批支持普通静态环境设置的项目测试（如 `CI=true`、`AI_ENTRY=scripts/test.js`）、普通 Git Diff 和已安装的本地 `npx` 工具。加载器变量、执行路径和 Git 环境覆盖仍需审批。Diff 自动禁用外部辅助程序，本地工具不会通过 npx 自动下载；实际转换命令会记录在结果和审计日志中。项目临时日志请使用受管 `$TMPDIR`，任意 `/tmp` 写入仍需确认。
+- 项目内的常规 `git add`、`git commit -m` 和分支创建可自动通过；破坏性操作、远程操作、特殊选项与项目外写入仍需审批。Git hooks、filters 和自定义环境变量的具体行为取决于项目代码，自动审批不等于沙箱隔离。
 - 点击停止显示“正在停止...”，确认结束后恢复输入；上下文压缩也可取消。macOS/Linux 上命令取消或超时会终止其进程组，包括普通后台子进程；`bashTerminationGraceMs` 配置强制终止前的宽限期，默认 1000 毫秒。
 - 自动审批按 shell 语法分析管道、重定向与工作目录；`2>/dev/null`、`2>&1` 和引号内普通文本不再误判为外部写入。不支持的语法请求确认，并显示具体原因。
 - 自动审批支持只读 `sed` 行打印，例如 `sed -n '15,100p' file`，无需信任项目；支持数字或 `$` 行地址和多个 `-e` 打印表达式。原地编辑、写文件、执行命令、外部脚本及未识别表达式仍需确认；管道和重定向分别检查。“每次审批”模式不受影响。
 - 自动审批也支持 `find` 的常见只读查询，以及 `git status`、`git ls-files`、`git rev-parse` 的已识别只读选项，无需额外信任项目。`find -o` 按“或”处理；执行外部命令、删除、写文件、Git 全局配置覆盖及未知选项仍需确认。
-- 只读查询还支持 `git branch --show-current`、`git log --oneline -N` 和受限的 awk 字段打印、算术格式化。Git diff 需显式带 `--no-ext-diff --no-textconv` 禁用外部助手，选项仍单独校验。项目文件的 `node --check` 可自动通过；`timeout 时限 命令` 和括号子 Shell 递归检查内部操作及重定向，不改变审批边界。环境赋值、任意内联代码和未支持的选项仍需确认。
+- 只读查询还支持 `git branch --show-current`、`git log --oneline -N` 和受限的 awk 字段打印、算术格式化。Git diff 需显式带 `--no-ext-diff --no-textconv` 禁用外部助手，选项仍单独校验。项目文件的 `node --check` 可自动通过；`timeout 时限 命令` 和括号子 Shell 递归检查内部操作及重定向，不改变审批边界。动态环境赋值、任意内联代码和未支持的选项仍需确认。
 - 项目模式的自动审批默认允许明确的项目内 Node/Python 脚本、`npm run` / `npm test` / `npm build` 及无额外选项的 make 任务，无需额外勾选“信任此项目”。内联代码、未知解释器选项、外部脚本、系统修改、远程操作和可识别的范围外写入仍需审批；“每次审批”保持不变。这是对项目代码执行的默认授权，不是沙箱，不能保证脚本内部没有其他副作用。
 - “信任此项目”仍保留在创建项目和项目设置中，用于已有的额外授权及托管 TMPDIR；不再是上述项目脚本执行的前提。同一真实目录共享设置，重启后保留。设置变更不自动执行待审批命令，也不终止已启动进程。
 - 可信项目可将临时日志写入 `$TMPDIR`，指向 workspace 下隔离的 `project-tmp/<项目路径哈希>`，不放开整个 `/tmp`。路径按真实目录和符号链接边界检查。
@@ -218,7 +230,7 @@ WebUI 支持浅色和深色主题，可在左侧栏底部切换。首次打开�
 | `emptyResponseRetries` | `1` | `1` | 模型成功返回空文本且无工具调用时的重试次数 |
 | `maxContextTokens` | `128000` | `128000` | 上下文窗口 token 估算上限 |
 | `contextCompressionThreshold` | `0.7` | `0.7` | 超过 `maxContextTokens * threshold` 时触发上下文压缩 |
-| `maxAgentIterations` | `100` | `100` | 单次任务最大 Agent Loop 次数；达到上限时会明确提示，配置 `0` 表示不限 |
+| `maxAgentIterations` | `1000` | `1000` | 单次任务最大 Agent Loop 次数；达到上限时会明确提示，配置 `0` 表示不限 |
 | `searchProvider` | `"duckduckgo"` | `"brave"` | 搜索服务：`ollama`、`searxng`、`brave`、`duckduckgo` |
 | `ollamaApiKey` | 无 | `"YOUR_OLLAMA_API_KEY"` | Ollama Web Search API Key，`searchProvider=ollama` 时使用 |
 | `searxngUrl` | 无 | `"http://localhost:8080"` | 自建 SearXNG 地址，`searchProvider=searxng` 时使用 |
@@ -248,7 +260,7 @@ WebUI 支持浅色和深色主题，可在左侧栏底部切换。首次打开�
   "subAgent": {
     "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "skill_list", "skill_use"],
     "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "sub_agent_run"],
-    "maxIterations": 3,
+    "maxIterations": 100,
     "maxConcurrency": 3
   }
 }
@@ -262,7 +274,7 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 |---|---:|---|---|
 | `subAgent.allowedTools` | 读取/检索类工具 | `["web_search", "file_read"]` | 子 agent 可使用的工具白名单 |
 | `subAgent.disabledTools` | `["sub_agent_run"]` | `["bash", "file_write"]` | 子 agent 禁用工具；`sub_agent_run` 始终禁用 |
-| `subAgent.maxIterations` | `3` | `3` | 单个子任务最大 Agent Loop 次数，上限 `8` |
+| `subAgent.maxIterations` | `100` | `100` | 单个子任务最大 Agent Loop 次数，上限 `100` |
 | `subAgent.maxConcurrency` | `3` | `3` | 并行执行的子任务数量，上限 `8` |
 
 ### 会话摘要配置
@@ -277,7 +289,7 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 
 单次工具输出在进入历史前限制大小：file_read 超限时明确标记并支持 offset/limit 分段读取；bash 保留 stdout/stderr 尾部，超限返回 truncated 和完整日志 outputPath，可通过 file_read 读取。项目搜索沿用 project.searchMaxChars/searchMaxResults。字符上限不等于 Token 保证，请求前仍执行模型硬预算检查。
 
-`core-session-summary` 为主会话及子 Agent 会话维护可追溯的 Checkpoint + Delta 结构化摘要，持久化到 `workspace/sessions/<session>/summary/current.json`。模型只输出带 `sourceMessageIds` 的变更意图，代码负责来源校验、ID 生成、Reducer 合并、revision 冲突检测和 Checkpoint 归档。摘要作为明确标记的临时派生上下文插在历史消息之后、当前用户轮次之前，不会伪装成用户消息、写入消息历史或改动稳定的 System Prompt；旧版 `state.json.summary` 会一次性迁移为带 legacy 来源的事实条目。
+`core-session-summary` 为主会话及子 Agent 会话维护可追溯的 Checkpoint + Delta 结构化摘要，持久化到 `workspace/sessions/<session>/summary/current.json`。模型只输出带 `sourceMessageIds` 的变更意图，代码负责来源校验、ID 生成、Reducer 合并、revision 冲突检测和 Checkpoint 归档。摘要作为明确标记的历史资料追加到本次 System Prompt，不冒充用户或助手消息，也不写入消息历史。程序生成的运行提示仍在页面展示，但新记录通过来源标记作为运行资料发送；真实模型回复的思考字段原样保留，以兼容思考模式的工具续跑。动态资料变化可能影响前缀缓存命中。旧版 `state.json.summary` 会一次性迁移为带 legacy 来源的事实条目。
 
 主会话和 `sub:` 子 Agent 复用同一套摘要实现。关闭摘要后不再自动裁剪历史，超出模型硬预算时明确报错。完整原始消息始终保存在 `messages.jsonl`；需要核对摘要来源或引用被压缩的原文时，模型可调用只读工具 `session_history_recall`，按 messageId、序号范围或关键词从当前会话取回。
 

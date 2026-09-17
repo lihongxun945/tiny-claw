@@ -17,7 +17,7 @@
   "bashTerminationGraceMs": 1000,
   "bashMaxOutputChars": 10000,
   "fileReadMaxChars": 20000,
-  "maxAgentIterations": 100,
+  "maxAgentIterations": 1000,
   "sessionSummary": {
     "enabled": true,
     "persistent": true,
@@ -128,7 +128,7 @@
         "git_diff": { "mode": "allow" }
       }
     },
-    "maxAgentIterations": 100,
+    "maxAgentIterations": 1000,
     "gitTimeoutMs": 10000,
     "diffMaxChars": 200000,
     "openTimeoutMs": 30000,
@@ -149,7 +149,7 @@
   "subAgent": {
     "allowedTools": ["web_search", "web_fetch", "file_read", "memory_list", "memory_read", "skill_list", "skill_use"],
     "disabledTools": ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "sub_agent_run"],
-    "maxIterations": 3,
+    "maxIterations": 100,
     "maxConcurrency": 3
   },
   "enabledPlugins": ["feishu"],

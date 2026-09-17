@@ -1,5 +1,6 @@
 import type { Plugin, HookContext } from "../types.js";
 import { appendLog } from "../../workspace/logger.js";
+import { ReasoningProtocolError } from "../../model/types.js";
 
 export const coreLoggerPlugin: Plugin = {
   name: "core-logger",
@@ -26,6 +27,11 @@ export const coreLoggerPlugin: Plugin = {
       // 错误：记录到日志
       onError: (_ctx: HookContext, error: Error) => {
         appendLog(workspacePath, "ERROR", error.message, _ctx.sessionId);
+        if (error instanceof ReasoningProtocolError) {
+          appendLog(workspacePath, "ERROR", `思考协议诊断 ${JSON.stringify({
+            turnId: _ctx.turnId, iteration: _ctx.iteration, ...error.diagnostics,
+          })}`, _ctx.sessionId);
+        }
       },
     });
   },

@@ -10,6 +10,43 @@ import {
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
 describe("session message persistence", () => {
+  it("preserves explicit runtime notice provenance without classifying legacy text", async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      await appendSessionMessage(workspacePath, "notices", { role: "assistant", content: "任务已停止", _source: "runtime_notice" });
+      await appendSessionMessage(workspacePath, "notices", { role: "assistant", content: "任务已停止" });
+      const messages = readSessionMessages(workspacePath, "notices");
+      expect(messages[0]._source).toBe("runtime_notice");
+      expect(messages[1]).not.toHaveProperty("_source");
+    } finally { removeTempWorkspace(workspacePath); }
+  });
+
+  it.each(["protocol metadata", ""])("preserves reasoning metadata through disk reads (%j)", async reasoning => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const persisted = await appendSessionMessage(workspacePath, "reasoning", {
+        role: "assistant", content: [{ type: "tool_use", id: "call", name: "test", input: {} }],
+        _reasoningContent: reasoning,
+      });
+      expect(readSessionMessages(workspacePath, "reasoning")).toEqual([persisted]);
+      expect(readSessionMessages(workspacePath, "reasoning")[0]._reasoningContent).toBe(reasoning);
+    } finally { removeTempWorkspace(workspacePath); }
+  });
+
+  it("ignores malformed reasoning metadata and preserves legacy records", () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const path = sessionMessagesPath(workspacePath, "reasoning");
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, [undefined, null, 123, {}].map(value => JSON.stringify({
+        role: "assistant", content: "answer", _reasoningContent: value,
+      })).join("\n"));
+      const messages = readSessionMessages(workspacePath, "reasoning");
+      expect(messages).toHaveLength(4);
+      expect(messages.every(message => message._reasoningContent === undefined)).toBe(true);
+    } finally { removeTempWorkspace(workspacePath); }
+  });
+
   it("assigns stable IDs and monotonic sequences under concurrent appends", async () => {
     const workspacePath = createTempWorkspace();
     try {

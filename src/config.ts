@@ -12,7 +12,7 @@ const DEFAULTS: Partial<Config> = {
   bashTerminationGraceMs: 1000,
   bashMaxOutputChars: 10000,
   fileReadMaxChars: 20000,
-  maxAgentIterations: 100,
+  maxAgentIterations: 1000,
   emptyResponseRetries: 1,
   searchProvider: "duckduckgo",
 };
@@ -122,7 +122,7 @@ export function createDefaultConfig(): Record<string, unknown> {
           git_diff: { mode: "allow" },
         },
       },
-      maxAgentIterations: 100,
+      maxAgentIterations: 1000,
       gitTimeoutMs: 10000,
       diffMaxChars: 200000,
       openTimeoutMs: 30000,
@@ -143,7 +143,7 @@ export function createDefaultConfig(): Record<string, unknown> {
     subAgent: {
       allowedTools: ["web_search", "web_fetch", "file_read", "memory_list", "memory_search", "memory_read", "skill_list", "skill_use"],
       disabledTools: ["bash", "file_write", "file_edit", "memory_save", "memory_append", "memory_delete", "memory_restore", "sub_agent_run"],
-      maxIterations: 3,
+      maxIterations: 100,
       maxConcurrency: 3,
     },
     enabledPlugins: [],
@@ -274,7 +274,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertObject(raw.subAgent, "subAgent");
     assertOptionalStringArray(raw.subAgent.allowedTools, "subAgent.allowedTools");
     assertOptionalStringArray(raw.subAgent.disabledTools, "subAgent.disabledTools");
-    assertOptionalNumber(raw.subAgent.maxIterations, "subAgent.maxIterations", { min: 1, max: 8, integer: true });
+    assertOptionalNumber(raw.subAgent.maxIterations, "subAgent.maxIterations", { min: 1, max: 100, integer: true });
     assertOptionalNumber(raw.subAgent.maxConcurrency, "subAgent.maxConcurrency", { min: 1, max: 8, integer: true });
   }
 

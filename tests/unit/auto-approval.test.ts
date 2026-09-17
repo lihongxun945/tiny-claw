@@ -1,11 +1,80 @@
 import { describe, expect, it } from "vitest";
-import { symlinkSync } from "node:fs";
+import { symlinkSync, mkdirSync, writeFileSync, chmodSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { evaluateAutoApproval } from "../../src/security/auto-approval.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
 const decide = (command: string, trustedProject = false) => evaluateAutoApproval({ toolName: "bash", args: {}, command, rootPath: "/project", cwd: "/project", projectMode: true, trustedProject, tempPath: "/managed-temp" });
 describe("structured shell approval", () => {
+  it.each(["CI=true npm test", "NODE_ENV=test npm test", "FORCE_COLOR=0 npm test", "NO_COLOR=1 node scripts/eval.js",
+    "nproc", "nproc --all", "sysctl -n hw.ncpu hw.memsize", "vm_stat", "od -c file"])("allows narrow environment and system queries: %s", command => {
+    expect(decide(command).action).toBe("allow");
+  });
+  it.each(["PATH=/tmp npm test", "NODE_OPTIONS=--require=/tmp/evil npm test", "BASH_ENV=/tmp/evil npm test", "CI=$(touch /tmp/pwn) npm test",
+    "CI=true", "sysctl -w hw.ncpu=1", "sysctl -n arbitrary", "vm_stat 1", "nproc --unknown"])("does not allow environment or system effects: %s", command => {
+    expect(decide(command).action).not.toBe("allow");
+  });
+  it.each([
+    "AI_ENTRY=scripts/pns-smoke.js AI_OUTPUT_FILE=pns-smoke.cjs node scripts/build-ai.cjs | tail -20",
+    "CUSTOM_FLAG=anything npm test", "LABEL='hello world' node scripts/build.js",
+    "git add src/test.ts README.md && git commit -m 'update tests'",
+    "git add -A", "git add -- src/test.ts", "git commit --message=fix", "git commit -m push", "git branch feature/test",
+  ])("allows ordinary project environment and local git writes: %s", command => {
+    expect(decide(command).action).toBe("allow");
+  });
+  it.each([
+    "GIT_DIR=/outside git add .", "GIT_CONFIG_COUNT=1 git status", "DYLD_INSERT_LIBRARIES=evil node scripts/build.js",
+    "PYTHONPATH=/outside python scripts/test.py", "npm_config_prefix=/outside npm test",
+    "HOME=/outside git commit -m test", "CUSTOM=$(touch local) npm test", "CUSTOM=$VALUE npm test",
+    "git reset --hard HEAD~1", "git clean -fd", "git restore .", "git checkout -- .",
+    "git push --force", "git fetch", "git pull", "git clone url", "git rebase main",
+    "git commit --amend -m test", "git commit --no-verify -m test", "git commit -F /outside/message",
+    "git add ../outside", "git add --pathspec-from-file=list", "git add ':/'", "git branch -D main",
+    "cd /outside && git add .", "git add . > /outside/log", "git add . && sudo reboot",
+  ])("retains review regardless of project trust: %s", command => {
+    expect(decide(command).action).not.toBe("allow");
+    expect(decide(command, true).action).not.toBe("allow");
+  });
+  it("does not extend project authorization to ordinary conversations", () => {
+    for (const command of ["CUSTOM=1 npm test", "git add .", "git commit -m test"]) {
+      expect(evaluateAutoApproval({ toolName: "bash", args: {}, command, rootPath: "/project" }).action).not.toBe("allow");
+    }
+  });
+  it("prepares safe diff commands only for consumers that execute the replacement", () => {
+    const input = { toolName: "bash", args: {}, rootPath: "/project", cwd: "/project", projectMode: true, prepareExecution: true };
+    const result = evaluateAutoApproval({ ...input, command: "cd /project && git diff --stat; git diff src/ai/eval.js" });
+    expect(result.action).toBe("allow");
+    expect(result.executionCommand).toBe("cd /project && git -c core.fsmonitor=false --no-pager diff --no-ext-diff --no-textconv --stat; git -c core.fsmonitor=false --no-pager diff --no-ext-diff --no-textconv src/ai/eval.js");
+    for (const command of ["git diff --ext-diff", "git diff --textconv", "git -c alias.diff=evil diff", "git diff --output=/tmp/out", "git diff; sudo reboot"]) {
+      const decision = evaluateAutoApproval({ ...input, command });
+      expect(decision.action).not.toBe("allow");
+      expect(decision.executionCommand).toBeUndefined();
+    }
+  });
+  it("resolves npx to an executable inside the project, never falling back to downloads", () => {
+    const workspace = createTempWorkspace();
+    try {
+      mkdirSync(resolve(workspace, "node_modules/.bin"), { recursive: true });
+      const executable = resolve(workspace, "node_modules/runner.js");
+      writeFileSync(executable, "#!/usr/bin/env node\nconsole.log('local');\n");
+      chmodSync(executable, 0o700);
+      symlinkSync(executable, resolve(workspace, "node_modules/.bin/runner"));
+      symlinkSync("/bin/echo", resolve(workspace, "node_modules/.bin/external"));
+      const input = { toolName: "bash", args: {}, rootPath: workspace, cwd: workspace, projectMode: true, prepareExecution: true };
+      const result = evaluateAutoApproval({ ...input, command: "CI=true npx runner test --flag | tail -20" });
+      expect(result.action).toBe("allow");
+      expect(result.executionCommand).toContain(`'${realpathSync(executable)}'`);
+      expect(result.executionCommand).not.toContain("npx");
+      for (const command of ["npx missing", "npx external", "npx -y runner", "npx --package=runner runner", "npx runner@latest", "cd /tmp && npx runner", "npx runner > /tmp/result"]) {
+        expect(evaluateAutoApproval({ ...input, command }).action).not.toBe("allow");
+      }
+    } finally { removeTempWorkspace(workspace); }
+  });
+  it("allows managed temporary logs without granting arbitrary temporary writes", () => {
+    expect(decide('npm test > "$TMPDIR/test.log" 2>&1').action).toBe("allow");
+    expect(decide('npm test > /tmp/test.log').action).not.toBe("allow");
+    expect(decide('npm test > "$TMPDIR/../../outside"').action).not.toBe("allow");
+  });
   it.each([
     "git status --porcelain; git branch --show-current; git log --oneline -5",
     "git log -n 10 --graph", "git log --max-count=5",
@@ -20,7 +89,7 @@ describe("structured shell approval", () => {
   ])("allows supported query and wrapper syntax: %s", command => expect(decide(command).action).toBe("allow"));
   it.each([
     "git log --output=/tmp/out", "git log --ext-diff -p", "git log --textconv -p",
-    "git log --max-count nope", "git branch -D main", "git branch new-name",
+    "git log --max-count nope", "git branch -D main",
     "git diff --stat", "git diff --no-ext-diff --no-textconv --output=/tmp/out",
     "git diff --no-ext-diff --no-textconv --ext-diff", "git diff --no-ext-diff --no-textconv --textconv",
     "awk '{system(\"id\")}'", "awk '{print $1 > \"/tmp/out\"}'", "awk '{print $1 | \"sh\"}'",

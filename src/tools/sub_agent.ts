@@ -68,9 +68,9 @@ export function createSubAgentTool(workspacePath: string): Tool {
         },
         max_iterations: {
           type: "number",
-          description: "每个 sub-agent 的最大 Agent Loop 轮数，默认读取配置，硬上限为 8。",
+          description: "每个 sub-agent 的最大 Agent Loop 轮数，默认读取配置，硬上限为 100。",
           minimum: 1,
-          maximum: 8,
+          maximum: 100,
         },
         max_concurrency: {
           type: "number",

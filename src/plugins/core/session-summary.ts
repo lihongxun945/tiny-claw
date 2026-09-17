@@ -4,7 +4,8 @@ import type { Config, Message } from "../../types.js";
 import { sanitizeToolMessageChains } from "../../message-sanitizer.js";
 import { loadSessionState, updateSessionState } from "../../session-state.js";
 import { readSessionMessages } from "../../session-store.js";
-import { estimateTokens } from "../../estimate-tokens.js";
+import { estimateTextTokens, estimateTokens } from "../../estimate-tokens.js";
+import { buildModelContext } from "../../model-context.js";
 import { getEffectiveMaxContextTokens } from "../../context-budget.js";
 import { projectToolMessages, toolContextOptions } from "../../tool-context.js";
 import { createSessionSummaryEngine } from "../../session-memory/engine.js";
@@ -317,10 +318,10 @@ export const coreSessionSummaryPlugin: Plugin = {
             turnStartIndex: readable.length,
           };
         };
-        const tokens = (context: ModelCallContext) => estimateTokens([
-          ...context.messages,
-          ...(context.derivedContext ? [{ role: "assistant" as const, content: context.derivedContext }] : []),
-        ]);
+        const tokens = (context: ModelCallContext) => {
+          const projected = buildModelContext("", context.messages, context.derivedContext, context.systemPromptSuffix);
+          return estimateTokens(projected.messages) + estimateTextTokens(projected.systemPrompt);
+        };
         let result = buildContext();
         if (tokens(result) <= modelContext.messageTokenBudget) return result;
         const uncovered = [...previous, ...eligibleCurrent].filter((message) => (message._sequence ?? 0) > summary.summarizedThroughSequence);

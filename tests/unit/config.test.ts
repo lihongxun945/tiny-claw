@@ -28,11 +28,24 @@ describe("loadConfig", () => {
       maxTokens: 16384,
       maxContextTokens: 128000,
       contextCompressionThreshold: 0.7,
-      maxAgentIterations: 100,
+      maxAgentIterations: 1000,
       searchProvider: "duckduckgo",
       workspacePath,
       systemPrompt: "You are tiny-claw.",
     });
+  });
+
+  it("uses the new iteration defaults and preserves explicit limits", () => {
+    const defaults = createDefaultConfig();
+    expect(defaults).toMatchObject({
+      maxAgentIterations: 1000,
+      project: { maxAgentIterations: 1000 },
+      subAgent: { maxIterations: 100 },
+    });
+    expect(() => validateConfig(defaults)).not.toThrow();
+    const workspace = createTempWorkspace({ maxAgentIterations: 50, subAgent: { maxIterations: 12 } });
+    workspaces.push(workspace);
+    expect(loadConfig(workspace)).toMatchObject({ maxAgentIterations: 50, subAgent: { maxIterations: 12 } });
   });
 
   it("ignores obsolete values without changing active custom settings or the original file", () => {
@@ -168,6 +181,7 @@ describe("loadConfig", () => {
   it.each([
     [{ maxTokens: 0 }, "配置字段 maxTokens 超出允许范围"],
     [{ maxAgentIterations: -1 }, "配置字段 maxAgentIterations 超出允许范围"],
+    [{ subAgent: { maxIterations: 101 } }, "配置字段 subAgent.maxIterations 超出允许范围"],
     [{ emptyResponseRetries: 6 }, "配置字段 emptyResponseRetries 超出允许范围"],
     [{ searchProvider: "unknown" }, "配置字段 searchProvider 不受支持"],
     [{ security: { mode: "unknown" } }, "配置字段 security.mode 不受支持"],

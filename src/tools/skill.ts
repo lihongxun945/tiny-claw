@@ -4,6 +4,7 @@ import { execSync } from "node:child_process";
 import type { Config, SessionContext, Tool, ToolExecutionContext } from "../types.js";
 import { resolveRootFile, resolveWorkspaceFile } from "./workspace-path.js";
 import { checkDangerousToolPermission } from "./permission.js";
+import { projectTempDirectory } from "../security/project-trust.js";
 
 export interface SkillMeta {
   name: string;
@@ -122,6 +123,8 @@ function executeDynamicCommands(workspacePath: string, body: string, skillDir: s
   // 替换 ${CLAUDE_SKILL_DIR}
   result = result.replace(/\$\{CLAUDE_SKILL_DIR\}/g, skillDir);
   let approvalResult: string | undefined;
+  const env = context?.sessionContext?.mode === "project" && context.rootPath
+    ? { ...process.env, TMPDIR: projectTempDirectory(workspacePath, context.rootPath) } : process.env;
 
   // 处理 !`command` 语法：执行命令并替换为输出
   result = result.replace(/!`([^`]+)`/g, (_, cmd) => {
@@ -133,13 +136,14 @@ function executeDynamicCommands(workspacePath: string, body: string, skillDir: s
       context,
       command: cmd,
       cwd: skillDir,
+      prepareExecution: true,
     });
     if (!permission.allowed) {
       approvalResult ??= permission.result;
       return `[动态命令需要用户确认或已被安全策略拒绝。命令: ${cmd}]`;
     }
     try {
-      return execSync(cmd, { encoding: "utf-8", timeout: 10_000, cwd: skillDir }).trim();
+      return execSync(permission.executionCommand ?? cmd, { encoding: "utf-8", timeout: 10_000, cwd: skillDir, env }).trim();
     } catch (err) {
       return `[命令执行失败: ${err instanceof Error ? err.message : String(err)}]`;
     }
@@ -156,13 +160,14 @@ function executeDynamicCommands(workspacePath: string, body: string, skillDir: s
       context,
       command,
       cwd: skillDir,
+      prepareExecution: true,
     });
     if (!permission.allowed) {
       approvalResult ??= permission.result;
       return `[动态命令需要用户确认或已被安全策略拒绝。命令: ${command}]`;
     }
     try {
-      return execSync(command, { encoding: "utf-8", timeout: 10_000, cwd: skillDir }).trim();
+      return execSync(permission.executionCommand ?? command, { encoding: "utf-8", timeout: 10_000, cwd: skillDir, env }).trim();
     } catch (err) {
       return `[命令执行失败: ${err instanceof Error ? err.message : String(err)}]`;
     }

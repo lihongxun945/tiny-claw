@@ -540,11 +540,23 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     });
   };
   const runStream = async (res: ServerResponse, sessionId: string, turnId: string, events: AsyncIterable<AgentEvent>, approvalId?: string) => {
+    const continuation = approvalId ? listSessionApprovalContinuations(workspacePath, sessionId)
+      .find(item => item.approval.id === approvalId)?.continuation : undefined;
+    turnId = continuation?.turnId ?? turnId;
     const stream = new GatewayStream(turnId, approvalId);
+    const previous = buildMessageListFromMessages(readSessionMessages(workspacePath, sessionId), sessionId, workspacePath)
+      .filter(message => message.role === "assistant" && message.turnId === turnId);
+    const prefix = previous.map(message => message.text).filter(Boolean).join("\n");
+    stream.snapshot.textMode = "full-turn";
+    stream.snapshot.text = prefix ? `${prefix}\n` : "";
+    stream.snapshot.toolCalls = previous.flatMap(message => message.toolCalls)
+      .filter((call): call is typeof call & { id: string } => typeof call.id === "string");
     streams.set(sessionId, stream);
     attachStream(res, sessionId, stream);
     async function* displayEvents(): AsyncGenerator<AgentEvent> {
-      for await (const event of events) yield event.type === "tool_result"
+      for await (const event of events) yield event.type === "done"
+        ? { ...event, text: prefix ? [prefix, event.text].filter(Boolean).join("\n") : event.text }
+        : event.type === "tool_result"
         ? { ...event, result: displayToolResult(event.result, event.toolCallId, sessionId, config) } : event;
     }
     await stream.consume(displayEvents());

@@ -8,7 +8,7 @@ import { sessionDir } from "../../session-store.js";
 import { executeShell } from "../../tools/bash.js";
 import { resolveRootFile } from "../../tools/workspace-path.js";
 import { checkDangerousToolPermission } from "../../tools/permission.js";
-import { isTrustedProject, projectTempDirectory } from "../../security/project-trust.js";
+import { projectTempDirectory } from "../../security/project-trust.js";
 import { withAudit } from "./tools.js";
 import { parseShell, type ShellNode } from "../../security/shell-analysis.js";
 
@@ -71,17 +71,18 @@ export const coreBackgroundPlugin: Plugin = {
         let cwd: string;
         try { cwd = resolveRootFile(root, typeof args.cwd === "string" ? args.cwd : "."); }
         catch (error) { return JSON.stringify({ error: String(error) }); }
-        const command = String(args.command ?? "");
+        let command = String(args.command ?? "");
         const detachedSyntax = (node: ShellNode): boolean => !!node.async || node.name?.text === "nohup"
           || (node.commands ?? []).some(detachedSyntax) || (!!node.left && detachedSyntax(node.left)) || (!!node.right && detachedSyntax(node.right));
         try {
           if (detachedSyntax(parseShell(command))) return JSON.stringify({ error: "托管任务请提交前台命令，不要使用 nohup 或 &" });
         } catch { return JSON.stringify({ error: "无法解析后台任务命令" }); }
-        const permission = checkDangerousToolPermission({ workspacePath: ctx.workspacePath, config, toolName: "background_start", args, command, cwd, context });
+        const permission = checkDangerousToolPermission({ workspacePath: ctx.workspacePath, config, toolName: "background_start", args, command, cwd, context, prepareExecution: true });
         if (!permission.allowed) return permission.result;
+        command = permission.executionCommand ?? command;
         if (context.signal?.aborted) return JSON.stringify({ error: "本轮已取消" });
         if (running.size >= (config.security?.background?.maxRunning ?? 4)) return JSON.stringify({ error: "运行中后台任务达到上限" });
-        const temp = isTrustedProject(config, root, ctx.workspacePath) ? projectTempDirectory(ctx.workspacePath, root) : undefined;
+        const temp = projectTempDirectory(ctx.workspacePath, root);
         const job: Job = { id: randomUUID(), sessionId: context.sessionId, command, state: "running", log: "", startedAt: Date.now() };
         const controller = new AbortController();
         const active: RunningJob = { job, controller, done: Promise.resolve() };
@@ -98,7 +99,7 @@ export const coreBackgroundPlugin: Plugin = {
           running.delete(job.id);
           try { save(job); } catch (error) { ctx.log("WARN", `后台任务保存失败：${String(error)}`, job.sessionId); }
         });
-        return JSON.stringify({ id: job.id, state: job.state, startedAt: job.startedAt, independentOfTurn: true });
+        return JSON.stringify({ id: job.id, state: job.state, startedAt: job.startedAt, independentOfTurn: true, ...(permission.executionCommand ? { executionCommand: command } : {}) });
       },
     }));
     const controls = [

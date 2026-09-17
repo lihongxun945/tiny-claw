@@ -323,6 +323,8 @@ test("keeps the project list visible while navigating utility views", async ({ p
 
   await page.goto("/");
   await page.getByRole("button", { name: "项目", exact: true }).click();
+  await expect(page.locator(".sidebar-nav .nav-btn").nth(0)).toHaveAccessibleName("项目");
+  await expect(page.locator(".sidebar-nav .nav-btn").nth(1)).toHaveAccessibleName("对话");
   await expect(page.locator(".project-group-title")).toHaveText("tiny-claw");
   await expect(page.locator(".sidebar-primary-action")).toContainText("新建项目");
 

@@ -19,6 +19,7 @@ import type { AgentActor, ChatResponse, Config, ContentBlock, Message, ToolUseBl
 import { randomUUID } from "node:crypto";
 import { calculateMessageTokenBudget, calculateHardMessageTokenBudget } from "./context-budget.js";
 import { estimateTextTokens, estimateTokens } from "./estimate-tokens.js";
+import { buildModelContext } from "./model-context.js";
 import type { AgentStatusUpdate } from "./plugins/types.js";
 import { createPreparedModelRequest } from "./context-snapshot.js";
 import { listRuns, readRun, startRun, updateRun, type SessionRun } from "./run-store.js";
@@ -208,7 +209,7 @@ export class AgentSession {
     for (const notice of await this.pluginManager.callOnTurnNotices(reason, iteration, this.id)) {
       if (this.history.getRecentMessages(Infinity).some((message) => message._messageId === notice.id)) continue;
       const text = `\n\n${notice.text}`;
-      const persisted = await appendHistory(this.workspacePath, { role: "assistant", content: [{ type: "text", text }], _timestamp: Date.now(), _turnId: turn, _messageId: notice.id }, this.id);
+      const persisted = await appendHistory(this.workspacePath, { role: "assistant", _source: "runtime_notice", content: [{ type: "text", text }], _timestamp: Date.now(), _turnId: turn, _messageId: notice.id }, this.id);
       this.history.push(persisted);
       fullText += text;
       yield { type: "text_delta", text };
@@ -543,21 +544,14 @@ export class AgentSession {
       const modifiedContext = await hookPromise;
       // Hook messages are request projections; durable summaries own their coverage.
       // Never replace raw in-memory history with a budget-limited projection.
-      const effectiveTurnPrompt = modifiedContext.systemPromptSuffix
-        ? `${turnPrompt}\n\n${modifiedContext.systemPromptSuffix}`
-        : turnPrompt;
+      const { systemPrompt: effectiveTurnPrompt, messages: modelMessages } = buildModelContext(
+        turnPrompt, modifiedContext.messages, modifiedContext.derivedContext, modifiedContext.systemPromptSuffix,
+      );
       const effectiveMessageTokenBudget = Math.min(
         modifiedContext.hardMessageTokenBudget ?? hardMessageTokenBudget,
         calculateHardMessageTokenBudget(this.config, effectiveTurnPrompt, toolDefs),
       );
 
-      const modelMessages = modifiedContext.derivedContext
-        ? [
-            ...modifiedContext.messages.slice(0, modifiedContext.turnStartIndex),
-            { role: "assistant" as const, content: modifiedContext.derivedContext },
-            ...modifiedContext.messages.slice(modifiedContext.turnStartIndex),
-          ]
-        : modifiedContext.messages;
       const estimatedMessageTokens = estimateTokens(modelMessages);
       if (estimatedMessageTokens > effectiveMessageTokenBudget) {
         const rejected = { ...createPreparedModelRequest({ contextSummaries: modifiedContext.contextSummaries,
@@ -749,6 +743,7 @@ export class AgentSession {
       const notice = `\n\n任务已停止：Agent 已达到最大迭代次数（${this.config.maxAgentIterations} 次），当前任务可能尚未完成。你可以继续发送“继续”，或在设置中调整 maxAgentIterations。`;
       const noticeMessage: Message = {
         role: "assistant",
+        _source: "runtime_notice",
         content: [{ type: "text", text: notice.trim() }],
         _timestamp: Date.now(),
         _turnId: this.pluginManager.getTurnId(this.id),

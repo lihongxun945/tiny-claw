@@ -36,3 +36,13 @@ export interface ModelClientOptions {
   sessionId?: string;
   reportDebug?: (event: ModelDebugEvent) => void;
 }
+
+export class ReasoningProtocolError extends Error {
+  constructor(message: string, readonly diagnostics: {
+    requestId: string;
+    messages: Array<{ index: number; role: string; reasoningPresent: boolean; reasoningLength?: number; toolCallIds: string[] }>;
+  }) {
+    super(message);
+    this.name = "ReasoningProtocolError";
+  }
+}

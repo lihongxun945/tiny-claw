@@ -28,12 +28,15 @@ export interface SessionPlan {
   steps: PlanStep[];
 }
 
-export function saveProgressPlan(workspace: string, session: string, turn: string, title: string, steps: PlanStep[], previousPlanId?: string): SessionPlan {
+export function saveProgressPlan(workspace: string, session: string, turn: string, title: string | undefined, steps: PlanStep[], previousPlanId?: string): SessionPlan {
   const current = readSessionPlan(workspace, session, turn);
-  if (previousPlanId && !listSessionPlans(workspace, session).some(plan => plan.id === previousPlanId)) throw new Error("当前会话中不存在所关联的计划");
+  const previous = previousPlanId ? listSessionPlans(workspace, session).find(plan => plan.id === previousPlanId) : undefined;
+  if (previousPlanId && !previous) throw new Error("当前会话中不存在所关联的计划");
+  const resolvedTitle = title ?? (current?.goal?.trim() || previous?.goal?.trim());
+  if (!resolvedTitle?.trim()) throw new Error("新建计划需要提供顶层 title（计划整体标题）；本轮及所关联计划均无可用标题");
   const now = new Date().toISOString();
   const plan: SessionPlan = {
-    id: current?.id ?? randomUUID(), turnId: turn, goal: title, steps,
+    id: current?.id ?? randomUUID(), turnId: turn, goal: resolvedTitle, steps,
     previousPlanId: previousPlanId === current?.id ? current?.previousPlanId : previousPlanId ?? current?.previousPlanId,
     createdAt: current?.createdAt ?? now, updatedAt: now, revision: (current?.revision ?? 0) + 1,
     currentStepId: steps.find(step => step.status === "in_progress")?.id,

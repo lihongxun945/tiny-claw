@@ -11,6 +11,7 @@ interface StreamToolCall {
 }
 
 export interface StreamSnapshot {
+  textMode?: "full-turn";
   run?: SessionRun;
   sequence: number;
   turnId: string;
@@ -47,9 +48,12 @@ export class GatewayStream {
         }
         if (event.type === "text_delta") this.snapshot.text += event.text;
         if (event.type === "status") this.snapshot.status = event.message;
-        if (event.type === "tool_call") this.snapshot.toolCalls.push({
-          id: event.toolCallId, name: event.name, input: event.input, startedAt: event.startedAt,
-        });
+        if (event.type === "tool_call") {
+          const call = { id: event.toolCallId, name: event.name, input: event.input, startedAt: event.startedAt };
+          const index = this.snapshot.toolCalls.findIndex(item => item.id === event.toolCallId);
+          if (index < 0) this.snapshot.toolCalls.push(call);
+          else this.snapshot.toolCalls[index] = call;
+        }
         if (event.type === "tool_result") {
           const call = this.snapshot.toolCalls.find((item) => item.id === event.toolCallId);
           if (call) { call.result = event.result; call.completedAt = event.completedAt; }

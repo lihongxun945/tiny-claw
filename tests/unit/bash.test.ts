@@ -1,12 +1,55 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createBashTool } from "../../src/tools/bash.js";
 import { createFileReadTool } from "../../src/tools/file_read.js";
 import { loadConfig } from "../../src/config.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
+import { projectTempDirectory } from "../../src/security/project-trust.js";
 
 describe.skipIf(process.platform === "win32")("bash process cancellation", () => {
+  it("runs local npx without npx resolution and writes logs to the managed temporary directory", async () => {
+    const workspace = createTempWorkspace({ security: { mode: "auto" } });
+    const project = createTempWorkspace();
+    try {
+      mkdirSync(resolve(project, "node_modules/.bin"), { recursive: true });
+      writeFileSync(resolve(project, "node_modules/runner"), "#!/bin/sh\nprintf '%s' \"$CI\"\n", { mode: 0o700 });
+      symlinkSync("../runner", resolve(project, "node_modules/.bin/runner"));
+      const config = loadConfig(workspace);
+      const context = { config, rootPath: project, sessionId: "local", sessionContext: { mode: "project" as const, project: { root: project, name: "project" } } };
+      const tool = createBashTool(workspace, () => config);
+      const result = JSON.parse(await tool.execute({ command: 'CI=true npx runner > "$TMPDIR/test.log"; cat "$TMPDIR/test.log"' }, context));
+      expect(result).toMatchObject({ exitCode: 0, stdout: "true" });
+      expect(result.executionCommand).not.toContain("npx");
+      expect(readFileSync(resolve(projectTempDirectory(workspace, project), "test.log"), "utf8")).toBe("true");
+      expect(JSON.parse(await tool.execute({ command: "npx missing-package" }, context)).requiresConfirmation).toBe(true);
+      expect(JSON.parse(await tool.execute({ command: "npx runner" }, { ...context, config: { ...config, security: { mode: "ask" } } })).requiresConfirmation).toBe(true);
+    } finally { removeTempWorkspace(workspace); removeTempWorkspace(project); }
+  });
+  it("disables configured external diff and textconv programs in the actual git process", async () => {
+    const workspace = createTempWorkspace({ security: { mode: "auto" } });
+    const project = createTempWorkspace();
+    try {
+      const git = (args: string[]) => execFileSync("git", args, { cwd: project, stdio: "pipe" });
+      git(["init"]);
+      writeFileSync(resolve(project, "file"), "before\n");
+      writeFileSync(resolve(project, ".gitattributes"), "file diff=unsafe\n");
+      writeFileSync(resolve(project, "helper.sh"), "#!/bin/sh\ntouch helper-ran\n", { mode: 0o700 });
+      git(["add", "file", ".gitattributes"]);
+      git(["config", "diff.external", "./helper.sh"]);
+      git(["config", "diff.unsafe.textconv", "./helper.sh"]);
+      writeFileSync(resolve(project, "file"), "after\n");
+      const config = loadConfig(workspace);
+      const result = JSON.parse(await createBashTool(workspace, () => config).execute({ command: "git diff file" }, {
+        config, rootPath: project, sessionContext: { mode: "project", project: { root: project, name: "project" } },
+      }));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("+after");
+      expect(result.executionCommand).toContain("--no-ext-diff --no-textconv");
+      expect(existsSync(resolve(project, "helper-ran"))).toBe(false);
+    } finally { removeTempWorkspace(workspace); removeTempWorkspace(project); }
+  });
   it("bounds output explicitly and retains a readable full log across project boundaries", async () => {
     const workspace = createTempWorkspace({ security: { mode: "allow" }, bashMaxOutputChars: 8, fileReadMaxChars: 12 });
     const project = createTempWorkspace();

@@ -5,6 +5,53 @@ test.beforeEach(async ({ page }) => {
 });
 
 for (const width of [390, 1280]) {
+  test(`keeps one answer after refreshing a resumed full-turn snapshot (${width})`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 850 });
+    let finishing = false;
+    let finished = false;
+    let release!: () => void;
+    const paused = new Promise<void>(resolve => { release = resolve; });
+    const run = { turnId: "resume-turn", revision: 2, state: "running", startedAt: Date.now() };
+    const tool = { id: "resumed-call", name: "bash", input: { command: "test" }, result: "ok" };
+    await page.route("**/history/sessions", route => route.fulfill({ json: { sessions: [
+      { id: "resume-refresh", preview: "刷新续跑", busy: !finished, lastActivity: 1, context: { mode: "chat" } },
+    ] } }));
+    await page.route("**/history/sessions/resume-refresh/messages", route => route.fulfill({ json: { messages: [
+      { role: "assistant", turnId: run.turnId, text: "审批前内容\n续跑内容", toolCalls: [tool], timestamp: 1 },
+    ] } }));
+    await page.route("**/plan?*", async route => {
+      if (finishing) await paused;
+      await route.fulfill({ json: { plans: [], activePlan: null, run: finished ? { ...run, state: "completed", revision: 3 } : run } }).catch(() => {});
+    });
+    await page.route("**/sessions/resume-refresh/events", async route => {
+      finishing = true;
+      const events = [
+        ["snapshot", { textMode: "full-turn", turnId: run.turnId, approvalId: "old-approval", run, text: "审批前内容\n续跑内容", toolCalls: [tool], sequence: 3 }],
+        ["tool_call", { tool_call_id: tool.id, name: "bash", input: tool.input, sequence: 4 }],
+        ["tool_result", { tool_call_id: tool.id, name: "bash", result: "ok", sequence: 5 }],
+        ["text_delta", { text: "完成", sequence: 6 }],
+        ["done", { text: "审批前内容\n续跑内容完成", reason: "completed", session_id: "resume-refresh", sequence: 7 }],
+      ];
+      await route.fulfill({ contentType: "text/event-stream", body: events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("") });
+    });
+    try {
+      await page.goto("/#sid=resume-refresh");
+      for (let i = 0; i < 2; i++) {
+        await expect(page.locator(".message.assistant")).toHaveCount(1);
+        await expect(page.locator(".message.assistant")).toContainText("续跑内容完成");
+        expect(await page.locator(".message.assistant").innerText()).not.toMatch(/审批前内容[\s\S]*审批前内容/);
+        await page.reload();
+      }
+      await expect(page.locator(".message.assistant")).toContainText("续跑内容完成");
+      await page.screenshot({ path: `/tmp/resume-refresh-${width}.png` });
+      finished = true;
+      release();
+      await expect(page.locator(".message.assistant")).toHaveCount(1);
+    } finally { release(); }
+  });
+}
+
+for (const width of [390, 1280]) {
   test(`shows a restored activity line without a typing cursor during tools (${width})`, async ({ page }) => {
     await page.setViewportSize({ width, height: 850 });
     let received = false;

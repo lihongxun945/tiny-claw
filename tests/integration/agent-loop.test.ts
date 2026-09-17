@@ -1153,13 +1153,19 @@ describe("AgentSession loop", () => {
   });
 
   it("persists reasoning across approval and ends a failed resumed run", async () => {
+    const config = loadConfig(workspacePath);
+    config.sessionSummary.enabled = true;
+    writeFileSync(resolve(workspacePath, "config.json"), JSON.stringify(config), "utf-8");
     let calls = 0;
+    saveSessionState(workspacePath, { sessionId: "reason-resume", summary: "审批续跑摘要", pendingMessages: [], turnsSinceSummary: 0 });
     registerTool(manager, { name: "reason-gate", description: "gate", inputSchema: { type: "object" },
       execute: async () => ++calls === 1 ? JSON.stringify({ requiresConfirmation: true, approvalId: "reason-approval" }) : "ok" });
     const client = new FakeModelClient([
       { text: "", reasoningContent: "protocol metadata", toolCalls: [{ type: "tool_use", id: "r-call", name: "reason-gate", input: {} }] },
-      (messages) => {
+      (messages, _tools, systemPrompt) => {
         expect(messages.find(m => m.role === "assistant")?._reasoningContent).toBe("protocol metadata");
+        expect(systemPrompt).toContain("审批续跑摘要");
+        expect(JSON.stringify(messages)).not.toContain("session_memory_summary");
         throw new Error("model 400");
       },
     ]);
@@ -1170,6 +1176,8 @@ describe("AgentSession loop", () => {
     expect(events.at(-1)).toMatchObject({ type: "error", message: "model 400" });
     expect(readRun(workspacePath, session.id, turn)?.state).toBe("interrupted");
     expect(session.isBusy()).toBe(false);
+    expect(calls).toBe(2); // One approval check, then one actual execution; no replay after the API error.
+    expect(JSON.stringify(readSessionMessages(workspacePath, session.id))).toContain('"content":"ok"');
   });
 
   it("continues the original model loop after an approval is granted", async () => {
@@ -1269,6 +1277,7 @@ describe("AgentSession loop", () => {
 
   it("restores a persisted approval in a new AgentSession", async () => {
     const config = loadConfig(workspacePath);
+    config.sessionSummary.enabled = true;
     config.security = { ...config.security, mode: "ask" };
     writeFileSync(resolve(workspacePath, "config.json"), JSON.stringify(config), "utf-8");
     const execute = vi.fn(async (args: Record<string, unknown>, context?: Parameters<Tool["execute"]>[1]) => {
@@ -1284,9 +1293,11 @@ describe("AgentSession loop", () => {
     registerTool(manager, { name: "durable_tool", description: "durable", inputSchema: { type: "object" }, execute });
     const firstClient = new FakeModelClient([{
       text: "等待审批",
+      reasoningContent: "durable protocol metadata",
       toolCalls: [{ type: "tool_use", id: "durable-call", name: "durable_tool", input: { value: 1 } }],
     }]);
     const firstSession = new AgentSession("durable-approval", workspacePath, manager, {}, firstClient);
+    saveSessionState(workspacePath, { sessionId: firstSession.id, summary: "重启恢复摘要", pendingMessages: [], turnsSinceSummary: 0 });
     expect((await collect(firstSession.chat("run"))).at(-1)).toEqual({ type: "done", text: "等待审批", reason: "approval_required" });
     const approval = listApprovals(workspacePath)[0];
     expect(listSessionApprovalContinuations(workspacePath, firstSession.id)).toHaveLength(1);
@@ -1295,7 +1306,12 @@ describe("AgentSession loop", () => {
     const restoredManager = new PluginManager(workspacePath);
     await restoredManager.loadCorePlugins();
     registerTool(restoredManager, { name: "durable_tool", description: "durable", inputSchema: { type: "object" }, execute });
-    const restoredClient = new FakeModelClient([(messages) => {
+    const restoredClient = new FakeModelClient([(messages, _tools, systemPrompt) => {
+      expect(systemPrompt).toContain("重启恢复摘要");
+      expect(JSON.stringify(messages)).not.toContain("session_memory_summary");
+      expect(messages.find(message => Array.isArray(message.content)
+        && message.content.some(block => block.type === "tool_use" && block.id === "durable-call"))?._reasoningContent)
+        .toBe("durable protocol metadata");
       expect(JSON.stringify(messages)).toContain('"tool_use_id":"durable-call"');
       expect(JSON.stringify(messages)).toContain('"content":"restored-result"');
       return { text: "恢复完成", toolCalls: [] };
@@ -1515,23 +1531,15 @@ describe("AgentSession loop", () => {
       expect(secondClient.calls[0]).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ role: "user", content: expect.stringContaining("[当前会话摘要]") }),
       ]));
-      const summaryIndex = secondClient.calls[0].findIndex((message) => (
-        message.role === "assistant"
-        && typeof message.content === "string"
-        && message.content.includes('<session_memory_summary data-kind="derived-summary" role="internal">')
-      ));
-      const currentUserIndex = secondClient.calls[0].findIndex((message) => (
-        message.role === "user" && message.content === "继续"
-      ));
-      expect(summaryIndex).toBeGreaterThan(0);
-      expect(summaryIndex).toBe(currentUserIndex - 1);
-      expect(secondClient.calls[0][summaryIndex].content).toContain("以历史原文为准");
+      expect(JSON.stringify(secondClient.calls[0])).not.toContain("session_memory_summary");
+      expect(secondClient.systemPrompts[0]).toContain("以历史原文为准");
       expect(secondClient.systemPrompts[0]).toBe(firstClient.systemPrompts[0]);
       const snapshot = JSON.parse(readFileSync(resolve(sessionDir(summaryWorkspace, "summary-session"), "context-snapshot.json"), "utf8"));
       expect(snapshot.contextSummaries).toEqual([
-        { title: "会话摘要", content: secondClient.calls[0][summaryIndex].content },
+        { title: "会话摘要", content: expect.stringContaining("session_memory_summary") },
       ]);
-      expect(snapshot.messages[summaryIndex].content).toBe(snapshot.contextSummaries[0].content);
+      expect(snapshot.systemPrompt).toContain(snapshot.contextSummaries[0].content);
+      expect(JSON.stringify(snapshot.messages)).not.toContain("session_memory_summary");
     } finally {
       await firstManager.destroy();
       await secondManager.destroy();
@@ -1625,14 +1633,10 @@ describe("AgentSession loop", () => {
       ]);
 
       expect(client.calls[1]).toEqual(expect.arrayContaining([expect.objectContaining({ role: "user", content: "继续" })]));
-      const summaryMessage = client.calls[1].find((message) => (
-        message.role === "assistant"
-        && typeof message.content === "string"
-        && message.content.includes('<session_memory_summary data-kind="derived-summary" role="internal">')
-      ));
-      expect(summaryMessage?.content).toContain("外部写入的会话摘要");
-      expect(summaryMessage?.content).toContain('"type":"legacy_summary"');
-      expect(client.systemPrompts[1]).toBe(client.systemPrompts[0]);
+      expect(JSON.stringify(client.calls[1])).not.toContain("session_memory_summary");
+      expect(client.systemPrompts[1]).toContain("外部写入的会话摘要");
+      expect(client.systemPrompts[1]).toContain('"type":"legacy_summary"');
+      expect(client.systemPrompts[0]).not.toContain("外部写入的会话摘要");
     } finally {
       await summaryRefreshManager.destroy();
       removeTempWorkspace(summaryRefreshWorkspace);
@@ -1688,19 +1692,13 @@ describe("AgentSession loop", () => {
           role: "assistant",
           content: [{ type: "text", text: "最近回答 B" }],
         }),
-        expect.objectContaining({
-          role: "assistant",
-          content: expect.stringContaining('<session_memory_summary data-kind="derived-summary" role="internal">'),
-        }),
         expect.objectContaining({ role: "user", content: "当前问题" }),
       ]);
       expect(client.calls[0]).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ content: "陈旧 pending 用户消息" }),
       ]));
-      const summaryMessage = client.calls[0][client.calls[0].length - 2];
-      expect(summaryMessage.content).toContain("已有会话摘要");
-      expect(summaryMessage.content).toContain("迁移自旧版自由文本摘要");
-      expect(client.systemPrompts[0]).not.toContain("已有会话摘要");
+      expect(client.systemPrompts[0]).toContain("已有会话摘要");
+      expect(client.systemPrompts[0]).toContain("迁移自旧版自由文本摘要");
     } finally {
       await summaryRecentManager.destroy();
       removeTempWorkspace(summaryRecentWorkspace);
@@ -1925,17 +1923,8 @@ describe("AgentSession loop", () => {
         expect.objectContaining({ role: "user", content: "recent user raw" }),
         expect.objectContaining({ role: "user", content: "current user raw" }),
       ]));
-      const summaryIndex = client.calls[0].findIndex((message) => (
-        message.role === "assistant"
-        && typeof message.content === "string"
-        && message.content.includes('<session_memory_summary data-kind="derived-summary" role="internal">')
-      ));
-      const currentUserIndex = client.calls[0].findIndex((message) => (
-        message.role === "user" && message.content === "current user raw"
-      ));
-      expect(summaryIndex).toBe(currentUserIndex - 1);
-      expect(client.calls[0][summaryIndex].content).toContain("已有滚动摘要");
-      expect(client.systemPrompts[0]).not.toContain("已有滚动摘要");
+      expect(JSON.stringify(client.calls[0])).not.toContain("session_memory_summary");
+      expect(client.systemPrompts[0]).toContain("已有滚动摘要");
     } finally {
       await summaryCompressManager.destroy();
       removeTempWorkspace(summaryCompressWorkspace);
@@ -2082,7 +2071,7 @@ describe("AgentSession loop", () => {
       const restored = new SummaryModelClient([{ text: "restored", toolCalls: [] }]);
       await collect(new AgentSession("tool-summary", workspace, secondManager, {}, restored).chat("continue"));
       expect(restored.completeCalls).toHaveLength(0);
-      expect(JSON.stringify(restored.calls[0])).toContain("持久化摘要");
+      expect(restored.systemPrompts[0]).toContain("持久化摘要");
       expect(JSON.stringify(restored.calls[0])).toContain("new task");
     } finally {
       await firstManager.destroy();
@@ -2221,6 +2210,7 @@ describe("AgentSession loop", () => {
     ]);
     expect(session.getMessages().at(-1)).toEqual({
       role: "assistant",
+      _source: "runtime_notice",
       _turnId: expect.any(String),
       _messageId: expect.any(String),
       _sequence: expect.any(Number),
@@ -2274,6 +2264,8 @@ describe("AgentSession loop", () => {
       ]));
 
       await collect(session.chat("继续"));
+      expect(client.systemPrompts[1]).toContain("达到最大迭代次数");
+      expect(JSON.stringify(client.calls[1])).not.toContain("达到最大迭代次数");
       expect(client.calls[1]).toEqual(expect.arrayContaining([
         expect.objectContaining({ role: "user", content: "需要完整保留的原始任务" }),
         expect.objectContaining({

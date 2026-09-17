@@ -18,6 +18,8 @@ web/node_modules/
 workspace/gateway.pid
 workspace/plugins/
 workspace/models/
+workspace/project-tmp/
+workspace/tool-output/
 __pycache__/
 *.tsbuildinfo
 coverage/

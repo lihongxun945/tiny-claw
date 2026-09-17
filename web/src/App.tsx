@@ -228,7 +228,7 @@ export default function App() {
         case "snapshot":
           currentRun = d.run as typeof currentRun;
           turnId = typeof d.turnId === "string" ? d.turnId : turnId;
-          approvalId = typeof d.approvalId === "string" ? d.approvalId : undefined;
+          approvalId = d.textMode === "full-turn" ? undefined : typeof d.approvalId === "string" ? d.approvalId : undefined;
           fullText = typeof d.text === "string" ? d.text : "";
           toolCalls.splice(0, toolCalls.length, ...((d.toolCalls as ToolCallInfo[]) ?? []));
           updateSessionState(sourceSessionId, (state) => ({
@@ -260,16 +260,20 @@ export default function App() {
           fullText += (d.text as string) ?? "";
           updateSessionState(sourceSessionId, (state) => ({ ...state, streamingText: fullText, streamingStatus: "" }));
           break;
-        case "tool_call":
-          toolCalls.push({
+        case "tool_call": {
+          const call: ToolCallInfo = {
             id: typeof d.tool_call_id === "string" ? d.tool_call_id : undefined,
             name: (d.name as string) ?? "",
             input: (d.input as Record<string, unknown>) ?? {},
             startedAt: typeof d.startedAt === "number" ? d.startedAt : undefined,
             status: "running",
-          });
+          };
+          const index = call.id ? toolCalls.findIndex(item => item.id === call.id) : -1;
+          if (index < 0) toolCalls.push(call);
+          else toolCalls[index] = call;
           updateSessionState(sourceSessionId, (state) => ({ ...state, streamingToolCalls: [...toolCalls], streamingStatus: "" }));
           break;
+        }
         case "tool_result": {
           const toolCallId = typeof d.tool_call_id === "string" ? d.tool_call_id : undefined;
           const name = (d.name as string) ?? "";

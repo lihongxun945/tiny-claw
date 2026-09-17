@@ -9,6 +9,7 @@ import type {
   ImageBlock,
 } from "../types.js";
 import type { ModelClient, ModelClientOptions, ModelDebugEvent, ModelDebugPhase, CompleteOptions } from "./types.js";
+import { ReasoningProtocolError } from "./types.js";
 import { sanitizeToolMessageChains } from "../message-sanitizer.js";
 import { repairModelRequest } from "./request-repair.js";
 import { readImageBlockData } from "../attachments.js";
@@ -241,6 +242,17 @@ export class OpenAIChatClient implements ModelClient {
         appliedRepairs,
       });
       if (!repaired) {
+        if (response.status === 400 && errorText.includes("reasoning_content")) {
+          throw new ReasoningProtocolError(`API 请求失败 (${response.status}): ${errorText}`, {
+            requestId,
+            messages: (body.messages as OpenAIMessage[]).map((message, index) => ({
+              index, role: message.role,
+              reasoningPresent: message.reasoning_content !== undefined,
+              reasoningLength: message.reasoning_content?.length,
+              toolCallIds: message.tool_calls?.map(call => call.id) ?? [],
+            })),
+          });
+        }
         throw new Error(`API 请求失败 (${response.status}): ${errorText}`);
       }
 

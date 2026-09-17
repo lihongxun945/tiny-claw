@@ -94,7 +94,7 @@ describe("Gateway HTTP API", () => {
       await json(`${gateway.apiUrl}/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ apiUrl: `http://127.0.0.1:${port}/v1`, modelProvider: "openai-chat", autoMemory: { enabled: false }, sessionSummary: { enabled: false } }) });
       const call = { type: "tool_use" as const, id: "ask-http", name: "ask_user", input: { question: "Which?", type: "single_choice", options: [{ id: "a", label: "A" }] } };
       await appendSessionMessage(workspacePath, "question-http", { role: "user", content: "start", _turnId: "question-turn" });
-      await appendSessionMessage(workspacePath, "question-http", { role: "assistant", content: [call], _turnId: "question-turn" });
+      await appendSessionMessage(workspacePath, "question-http", { role: "assistant", content: [{ type: "text", text: "before question" }, call], _turnId: "question-turn" });
       startRun(workspacePath, "question-http", "question-turn", "normal");
       updateRun(workspacePath, "question-http", "question-turn", { state: "waiting_user", suspension: { id: "question-http-id", kind: "user_input", payload: { ...call.input, maxAnswerChars: 12000 }, status: "pending", toolCall: call, skippedToolCalls: [], iteration: 1 } });
       const history = await json(`${gateway.webUrl}/history/sessions/question-http/messages`);
@@ -109,6 +109,10 @@ describe("Gateway HTTP API", () => {
       expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
       const texts = await Promise.all(responses.map((response) => response.text()));
       expect(texts.find((text) => text.includes("event: done"))).toContain("answer received");
+      const stream = texts.find(text => text.includes("event: done"))!;
+      const payloads = stream.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+      expect(payloads.find(item => item.textMode === "full-turn")).toMatchObject({ turnId: "question-turn", text: "before question\n" });
+      expect(payloads.some(item => item.text === "before question\nanswer received")).toBe(true);
       const final = await json(`${gateway.webUrl}/history/sessions/question-http/messages`);
       expect(JSON.stringify(final.body)).toContain("selectedOptions");
     } finally { await new Promise<void>((resolve) => model.close(() => resolve())); }

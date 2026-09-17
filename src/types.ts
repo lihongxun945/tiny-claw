@@ -34,6 +34,8 @@ export interface ImageBlock {
 export type ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock;
 
 export interface Message {
+  /** Application-generated status, displayed in history but not replayed as model output. */
+  _source?: "runtime_notice";
   _reasoningContent?: string;
   role: "user" | "assistant";
   content: string | ContentBlock[];
