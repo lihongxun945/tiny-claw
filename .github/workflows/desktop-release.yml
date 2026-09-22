@@ -226,15 +226,30 @@ jobs:
         run: |
           $installer = (Get-ChildItem release/*-windows-x64-setup.exe).FullName
           $installPath = Join-Path $env:RUNNER_TEMP 'tiny-claw install'
-          $result = Start-Process -FilePath $installer -ArgumentList "/S /D=$installPath" -Wait -PassThru
+          $result = Start-Process -FilePath $installer -ArgumentList "/S /currentuser /D=`"$installPath`"" -Wait -PassThru
           if ($result.ExitCode -ne 0) { throw "Installer failed: $($result.ExitCode)" }
-          if (!(Test-Path "$installPath/tiny-claw.exe")) { throw 'Installed application missing' }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $entries = @(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' |
+            Where-Object { $_.DisplayName -eq 'tiny-claw' -and $_.DisplayVersion -eq $version })
+          Write-Host "Requested installation directory: $installPath"
+          $entries | Select-Object DisplayName, DisplayVersion, InstallLocation, UninstallString | Format-List
+          if ($entries.Count -ne 1) { throw "Expected one current-user installation, found $($entries.Count)" }
+          $actualPath = (Get-ItemProperty "HKCU:\Software\$($entries[0].PSChildName)").InstallLocation
+          Write-Host "Registered installation directory: $actualPath"
+          if (!$actualPath) { throw 'Installation registry entry has no InstallLocation' }
+          Get-ChildItem -LiteralPath $actualPath | Select-Object Name, Length | Format-Table
           try {
+            if ([IO.Path]::GetFullPath($actualPath).TrimEnd('\') -ne [IO.Path]::GetFullPath($installPath).TrimEnd('\')) {
+              throw "Installation directory mismatch: expected '$installPath', actual '$actualPath'"
+            }
+            if (!(Test-Path "$installPath/tiny-claw.exe")) { throw 'Installed application missing' }
             npm run desktop:smoke -- "$installPath"
             if ($LASTEXITCODE -ne 0) { throw 'Installed application smoke test failed' }
           } finally {
-            $uninstaller = (Get-ChildItem "$installPath/Uninstall*.exe").FullName
-            Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait
+            $uninstaller = (Get-ChildItem "$actualPath/Uninstall*.exe").FullName
+            $removed = Start-Process -FilePath $uninstaller -ArgumentList "/S /currentuser _?=$actualPath" -Wait -PassThru
+            if ($removed.ExitCode -ne 0) { throw "Uninstaller failed: $($removed.ExitCode)" }
+            if (Test-Path "$actualPath/tiny-claw.exe") { throw 'Uninstaller did not remove the application' }
           }
       - name: Generate Windows checksum
         run: node scripts/release-checksums.mjs windows

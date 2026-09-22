@@ -39,5 +39,12 @@ describe("desktop release", () => {
     expect(workflow.match(/run: npm run test:all/g)).toHaveLength(2);
     expect(workflow).toContain("run: npm run desktop:smoke");
     expect(workflow).toContain('npm run desktop:smoke -- "$installPath"');
+    expect(workflow).toContain('/S /currentuser /D=`"$installPath`"');
+    expect(workflow).toContain("$_.DisplayVersion -eq $version");
+    expect(workflow).toContain('HKCU:\\Software\\$($entries[0].PSChildName)');
+    expect(workflow).toContain("Registered installation directory:");
+    expect(workflow).toContain("Installation directory mismatch:");
+    expect(workflow).toContain("/S /currentuser _?=$actualPath");
+    expect(workflow).toContain("Uninstaller did not remove the application");
   });
 });
