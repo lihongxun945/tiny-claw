@@ -41,6 +41,7 @@ describe("desktop release", () => {
     expect(workflow).toContain('npm run desktop:smoke -- "$installPath"');
     expect(workflow).toContain('/S /currentuser /D=`"$installPath`"');
     expect(workflow).toContain("$_.DisplayVersion -eq $version");
+    expect(workflow).toContain('$_.DisplayName -eq "tiny-claw $version"');
     expect(workflow).toContain('HKCU:\\Software\\$($entries[0].PSChildName)');
     expect(workflow).toContain("Registered installation directory:");
     expect(workflow).toContain("Installation directory mismatch:");

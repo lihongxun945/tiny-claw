@@ -230,7 +230,7 @@ jobs:
           if ($result.ExitCode -ne 0) { throw "Installer failed: $($result.ExitCode)" }
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $entries = @(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' |
-            Where-Object { $_.DisplayName -eq 'tiny-claw' -and $_.DisplayVersion -eq $version })
+            Where-Object { $_.DisplayName -eq "tiny-claw $version" -and $_.DisplayVersion -eq $version })
           Write-Host "Requested installation directory: $installPath"
           $entries | Select-Object DisplayName, DisplayVersion, InstallLocation, UninstallString | Format-List
           if ($entries.Count -ne 1) { throw "Expected one current-user installation, found $($entries.Count)" }
