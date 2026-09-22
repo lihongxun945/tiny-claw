@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { downloadLocalModel } from "../../src/model/local-store.js";
-import { LocalLlamaClient } from "../../src/model/local.js";
+import { disposeLocalModels, LocalLlamaClient } from "../../src/model/local.js";
 import { LOCAL_MODELS } from "../../src/model/local-catalog.js";
 import type { Config } from "../../src/types.js";
 
@@ -12,7 +12,10 @@ let workspacePath = "";
 
 describe.skipIf(!enabled)("local model catalog smoke test", () => {
   beforeAll(() => { workspacePath = mkdtempSync(join(tmpdir(), "tiny-claw-qwen-smoke-")); });
-  afterAll(() => rmSync(workspacePath, { recursive: true, force: true }));
+  afterAll(async () => {
+    await disposeLocalModels();
+    rmSync(workspacePath, { recursive: true, force: true });
+  });
 
   it("resolves every catalog model without authentication", async () => {
     const { createModelDownloader } = await import("node-llama-cpp");

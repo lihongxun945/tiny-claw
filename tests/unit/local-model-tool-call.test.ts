@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelDebugEvent } from "../../src/model/types.js";
 import type { Config, ToolDefinition } from "../../src/types.js";
 
@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   promptError: null as Error | null,
   disposeSession: vi.fn(),
   disposeContext: vi.fn(),
+  disposeModel: vi.fn(),
+  loadModel: vi.fn(),
 }));
 
 vi.mock("../../src/model/local-store.js", () => ({
@@ -37,12 +39,13 @@ vi.mock("node-llama-cpp", () => {
 
   return {
     getLlama: async () => ({
-      loadModel: async () => ({
+      loadModel: mocks.loadModel.mockImplementation(async () => ({
+        dispose: mocks.disposeModel,
         createContext: async () => ({
           getSequence: () => ({}),
           dispose: mocks.disposeContext,
         }),
-      }),
+      })),
     }),
     LlamaChatSession,
     defineChatSessionFunction: (definition: unknown) => definition,
@@ -85,6 +88,74 @@ describe("LocalLlamaClient tool calls", () => {
     mocks.promptError = null;
     mocks.disposeSession.mockClear();
     mocks.disposeContext.mockClear();
+    mocks.disposeModel.mockReset();
+    mocks.loadModel.mockClear();
+  });
+
+  afterEach(async () => {
+    const { disposeLocalModels } = await import("../../src/model/local.js");
+    await disposeLocalModels();
+  });
+
+  it.each([false, true])("awaits context disposal before settling a request (failure=%s)", async (fail) => {
+    const { LocalLlamaClient } = await import("../../src/model/local.js");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.disposeContext.mockReturnValueOnce(gate);
+    if (fail) mocks.promptError = new Error("inference failed");
+    let settled = false;
+    const request = new LocalLlamaClient(config).complete([{ role: "user", content: "hello" }])
+      .then(() => { settled = true; }, () => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(mocks.disposeContext).toHaveBeenCalledOnce());
+      expect(mocks.disposeSession).toHaveBeenCalledOnce();
+      expect(settled).toBe(false);
+    } finally {
+      release();
+      await request;
+    }
+    expect(settled).toBe(true);
+  });
+
+  it("awaits model disposal, clears the cache and reloads on the next request", async () => {
+    const { LocalLlamaClient, disposeLocalModels } = await import("../../src/model/local.js");
+    const client = new LocalLlamaClient(config);
+    await client.complete([{ role: "user", content: "hello" }]);
+    await client.complete([{ role: "user", content: "again" }]);
+    expect(mocks.loadModel).toHaveBeenCalledOnce();
+    let release!: () => void;
+    mocks.disposeModel.mockReturnValueOnce(new Promise<void>((resolve) => { release = resolve; }));
+    let disposed = false;
+    const cleanup = disposeLocalModels().then(() => { disposed = true; });
+    try {
+      await vi.waitFor(() => expect(mocks.disposeModel).toHaveBeenCalledOnce());
+      expect(disposed).toBe(false);
+    } finally {
+      release();
+      await cleanup;
+    }
+    await disposeLocalModels();
+    expect(mocks.disposeModel).toHaveBeenCalledOnce();
+    await client.complete([{ role: "user", content: "reload" }]);
+    expect(mocks.loadModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports model disposal errors and allows cleanup to be retried", async () => {
+    const { LocalLlamaClient, disposeLocalModels } = await import("../../src/model/local.js");
+    await new LocalLlamaClient(config).complete([{ role: "user", content: "hello" }]);
+    mocks.disposeModel.mockRejectedValueOnce(new Error("dispose failed"));
+    await expect(disposeLocalModels()).rejects.toThrow("dispose failed");
+    await disposeLocalModels();
+    expect(mocks.disposeModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache failed model loads", async () => {
+    const { LocalLlamaClient } = await import("../../src/model/local.js");
+    mocks.loadModel.mockRejectedValueOnce(new Error("load failed"));
+    const client = new LocalLlamaClient(config);
+    await expect(client.complete([{ role: "user", content: "hello" }])).rejects.toThrow("load failed");
+    await expect(client.complete([{ role: "user", content: "retry" }])).resolves.toBe("本地模型回复");
+    expect(mocks.loadModel).toHaveBeenCalledTimes(2);
   });
 
   it("stops generation at the tool call instead of treating a placeholder as its result", async () => {

@@ -6,6 +6,15 @@ import { getLocalContextSize } from "./local-catalog.js";
 
 const loadedModels = new Map<string, Promise<LlamaModel>>();
 
+// Call only after local inference has stopped, before removing model files.
+export async function disposeLocalModels(): Promise<void> {
+  for (const [path, pending] of loadedModels) {
+    const model = await pending;
+    await model.dispose();
+    loadedModels.delete(path);
+  }
+}
+
 class LocalToolCallBoundary extends Error {
   constructor() {
     super("Local model tool call captured");
@@ -33,6 +42,9 @@ async function loadModel(path: string) {
     pending = import("node-llama-cpp").then(async ({ getLlama }) => {
       const llama = await getLlama({ gpu: "auto" });
       return llama.loadModel({ modelPath: path });
+    }).catch((error) => {
+      loadedModels.delete(path);
+      throw error;
     });
     loadedModels.set(path, pending);
   }
@@ -144,8 +156,11 @@ export class LocalLlamaClient implements ModelClient {
         this.debugLog(requestId, mode, "parsed_response", response, modelId);
         return response;
       } finally {
-        session.dispose();
-        context.dispose();
+        try {
+          session.dispose();
+        } finally {
+          await context.dispose();
+        }
       }
     } catch (error) {
       this.debugLog(requestId, mode, "error", {
