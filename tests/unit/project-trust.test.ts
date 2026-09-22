@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig } from "../../src/config.js";
 import { isTrustedProject, projectTempDirectory, setProjectTrust } from "../../src/security/project-trust.js";
@@ -38,7 +38,9 @@ describe("explicit project trust", () => {
       const result = await createBashTool(workspace, () => config).execute({ command: 'echo hello > "$TMPDIR/test.log"; echo "$TMPDIR"' }, {
         rootPath: root, config, restrictToRoot: true, sessionContext: { mode: "project", project: { root, name: "test" } },
       });
-      expect(JSON.parse(result).stdout.trim()).toBe(realpathSync(temp));
+      expect(JSON.parse(result).exitCode).toBe(0);
+      expect(JSON.parse(result).stdout.trim()).not.toBe("");
+      expect(readFileSync(resolve(temp, "test.log"), "utf8").trim()).toBe("hello");
       symlinkSync(other, resolve(temp, "escape"), "junction");
       expect(await createBashTool(workspace, () => config).execute({ command: 'echo hello > "$TMPDIR/escape/out"' }, {
         rootPath: root, config, sessionContext: { mode: "project", project: { root, name: "test" } },
@@ -46,7 +48,7 @@ describe("explicit project trust", () => {
     } finally { removeTempWorkspace(workspace); removeTempWorkspace(root); removeTempWorkspace(other); }
   });
   it.each([
-    { trustedProjects: ["relative"] }, { trustedProjects: "all" },
+    { trustedProjects: ["relative"] }, { trustedProjects: ["C:relative"] }, { trustedProjects: [""] }, { trustedProjects: "all" },
     { background: { maxRunning: 0 } }, { background: { timeoutSeconds: -1 } },
   ])("validates execution configuration: %j", (security) => {
     const root = createTempWorkspace({ security });

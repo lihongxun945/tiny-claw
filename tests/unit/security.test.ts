@@ -144,8 +144,8 @@ describe("security boundary", () => {
       workspacePath,
       config,
       toolName: "bash",
-      args: { command: `echo unsafe > ${resolve(workspacePath, "..", "external.txt")}` },
-      command: `echo unsafe > ${resolve(workspacePath, "..", "external.txt")}`,
+      args: { command: `echo unsafe > "${resolve(workspacePath, "..", "external.txt").replace(/\\/g, "/")}"` },
+      command: `echo unsafe > "${resolve(workspacePath, "..", "external.txt").replace(/\\/g, "/")}"`,
       cwd: workspacePath,
     });
     expect(externalShellWrite.allowed).toBe(false);

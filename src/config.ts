@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { LOCAL_MODELS } from "./model/local-catalog.js";
 import { loadIdentity } from "./workspace/workspace.js";
 import type { Config, ModelProfile, ModelProvider } from "./types.js";
@@ -441,7 +441,7 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertOptionalNumber(security.background.maxLogChars, "security.background.maxLogChars", { min: 1000, max: 1000000, integer: true });
   }
   if (security?.trustedProjects !== undefined) {
-    if (!Array.isArray(security.trustedProjects) || security.trustedProjects.some((path) => typeof path !== "string" || !path.startsWith("/"))) {
+    if (!Array.isArray(security.trustedProjects) || security.trustedProjects.some((path) => typeof path !== "string" || !isAbsolute(path))) {
       throw new Error("配置字段 security.trustedProjects 必须是项目绝对路径数组");
     }
   }

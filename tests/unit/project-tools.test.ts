@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { devNull, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { loadConfig } from "../../src/config.js";
 import { applySessionConfig } from "../../src/project.js";
@@ -12,7 +12,8 @@ import { ToolRegistry } from "../../src/tools/registry.js";
 import type { ToolExecutionContext } from "../../src/types.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
-process.env.GIT_CONFIG_GLOBAL = devNull;
+import { isolateGitConfig } from "../helpers/git-config.js";
+isolateGitConfig();
 
 describe("project development tools", () => {
   const paths: string[] = [];

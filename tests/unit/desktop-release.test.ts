@@ -31,7 +31,7 @@ describe("desktop release", () => {
         to: "loading-logo.png",
       }),
     ]));
-    expect(workflow).toContain("permissions:\n  contents: write");
+    expect(workflow.replace(/\r\n/g, "\n")).toContain("permissions:\n  contents: write");
     expect(workflow).toContain("GH_TOKEN: ${{ github.token }}");
     expect(workflow).toContain('gh release create "${GITHUB_REF_NAME}"');
     expect(workflow).toContain("needs: [macos, windows]");

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, writeFileSync } from "node:fs";
+import { basename, relative, sep } from "node:path";
 import {
   deleteSessionState,
   loadSessionState,
@@ -26,8 +27,8 @@ describe("session-state persistence", () => {
 
       const path = sessionStatePath(workspacePath, sessionId);
       expect(path).not.toContain(sessionId);
-      expect(path).toContain("/sessions/");
-      expect(path.endsWith("/state.json")).toBe(true);
+      expect(relative(workspacePath, path).split(sep)[0]).toBe("sessions");
+      expect(basename(path)).toBe("state.json");
       expect(existsSync(path)).toBe(true);
       expect(loadSessionState(workspacePath, sessionId)).toMatchObject({
         version: saved.version,
