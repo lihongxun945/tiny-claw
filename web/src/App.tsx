@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import type { Attachment, ContextTokenUsage, ExecutionMode, Message, PermissionMode, SessionPlan, ToolCallInfo, Session } from "./types.js";
-import { streamChat, streamApprovalResume, fetchConfig, fetchHistoryMessages, fetchHistorySessions, fetchSessionPlans, fetchSessionPlanState, cancelSession, uploadImage, createSession, updateConfig, updateSessionExecutionMode } from "./lib/api.js";
+import type { Attachment, ContextTokenUsage, ExecutionMode, Message, PermissionMode, SessionPlan, ToolCallInfo, Session, ModelInfo } from "./types.js";
+import { streamChat, streamApprovalResume, fetchConfig, fetchHistoryMessages, fetchHistorySessions, fetchSessionPlans, fetchSessionPlanState, cancelSession, uploadImage, createSession, updateConfig, updateSessionExecutionMode, fetchModels, updateSessionModel } from "./lib/api.js";
 import { mergeApprovalResume } from "./lib/message-merge.js";
 import { streamSessionEvents, streamPost } from "./lib/sse-client.js";
 import UserQuestion from "./components/UserQuestion.js";
@@ -91,6 +91,9 @@ export default function App() {
   const [projectName, setProjectName] = useState<string | null>(null);
   const [projectStatusRefreshKey, setProjectStatusRefreshKey] = useState(0);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("normal");
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [currentModelId, setCurrentModelId] = useState<string | null>(null);
+  const [modelError, setModelError] = useState("");
   const [globalPermissionMode, setGlobalPermissionMode] = useState<PermissionMode>("auto");
   const [projectPermissionMode, setProjectPermissionMode] = useState<PermissionMode>("auto");
   const [permissionSaving, setPermissionSaving] = useState(false);
@@ -102,6 +105,7 @@ export default function App() {
   const lastProjectSessionRef = useRef<string | null>(null);
   const abortControllersRef = useRef(new Map<string, AbortController>());
   const sessionModesRef = useRef(new Map<string, ExecutionMode>());
+  const sessionModelsRef = useRef(new Map<string, string>());
   const backendBusyRef = useRef(new Map<string, boolean>());
   const backendApprovalRef = useRef(new Map<string, boolean>());
   const planRequestsRef = useRef(new Map<string, number>());
@@ -119,7 +123,27 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    void ensureNotificationPermission();
+    void fetchModels().then(({ models: list, defaultModelId }) => {
+      setModels(list);
+      setCurrentModelId((previous) => previous ?? defaultModelId ?? null);
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    // 权限请求必须由用户手势触发（Chrome 会静默拒绝非手势请求），
+    // 因此改为在首次用户交互时请求一次，之后移除监听。
+    const options: AddEventListenerOptions = { capture: true };
+    function requestOnce() {
+      window.removeEventListener("pointerdown", requestOnce, options);
+      window.removeEventListener("keydown", requestOnce, options);
+      void ensureNotificationPermission();
+    }
+    window.addEventListener("pointerdown", requestOnce, options);
+    window.addEventListener("keydown", requestOnce, options);
+    return () => {
+      window.removeEventListener("pointerdown", requestOnce, options);
+      window.removeEventListener("keydown", requestOnce, options);
+    };
   }, []);
 
   useEffect(() => {
@@ -170,8 +194,13 @@ export default function App() {
 
   const handleSessionsLoaded = useCallback((sessions: Session[]) => {
     sessionModesRef.current = new Map(sessions.map((item) => [item.id, item.executionMode ?? "normal"]));
+    sessionModelsRef.current = new Map(sessions
+      .filter((item) => item.currentModelId)
+      .map((item) => [item.id, item.currentModelId as string]));
     const nextBusy = new Map(sessions.map((item) => [item.id, item.busy === true]));
     const activeId = activeSessionRef.current;
+    const activeSession = sessions.find((item) => item.id === activeId);
+    if (activeSession?.currentModelId) setCurrentModelId(activeSession.currentModelId);
     const activeWasBusy = activeId ? backendBusyRef.current.get(activeId) === true : false;
     const activeIsBusy = activeId ? nextBusy.get(activeId) === true : false;
     const approvalEnded = activeId && backendApprovalRef.current.get(activeId) === true
@@ -740,6 +769,8 @@ export default function App() {
     setActiveSessionId(id);
     sessionModesRef.current.set(id, session.executionMode ?? "normal");
     setExecutionMode(session.executionMode ?? "normal");
+    if (session.currentModelId) sessionModelsRef.current.set(id, session.currentModelId);
+    setCurrentModelId(session.currentModelId ?? null);
     updateSessionState(id, (state) => ({ ...state, backendBusy: session.busy === true }));
     if (sessionStates[id]?.loaded) return;
     try {
@@ -760,6 +791,19 @@ export default function App() {
       setExecutionMode(previous);
     });
   }, [activeSessionId, executionMode]);
+
+  const handleModelChange = useCallback((modelId: string) => {
+    const previous = currentModelId;
+    setModelError("");
+    setCurrentModelId(modelId);
+    if (!activeSessionId) return;
+    sessionModelsRef.current.set(activeSessionId, modelId);
+    void updateSessionModel(activeSessionId, modelId).catch((error) => {
+      if (previous) sessionModelsRef.current.set(activeSessionId, previous);
+      setCurrentModelId(previous);
+      setModelError(error instanceof Error ? error.message : "切换模型失败");
+    });
+  }, [activeSessionId, currentModelId]);
 
   const handlePermissionModeChange = useCallback(async (scope: "global" | "project", mode: PermissionMode) => {
     if (permissionSaving) return;
@@ -930,6 +974,10 @@ export default function App() {
               permissionError={permissionError}
               activeSessionId={activeSessionId}
               contextUsage={activeState.contextUsage}
+              models={models}
+              currentModelId={currentModelId}
+              onModelChange={handleModelChange}
+              modelError={modelError}
             />
           </>
         )}
@@ -972,6 +1020,10 @@ export default function App() {
             permissionSaving={permissionSaving}
             permissionError={permissionError}
             contextUsage={activeState.contextUsage}
+            models={models}
+            currentModelId={currentModelId}
+            onModelChange={handleModelChange}
+            modelError={modelError}
           />
         )}
         {view === "memory" && <MemoryManager />}

@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { Settings } from "lucide-react";
-import type { ContextTokenUsage, ExecutionMode, Message, PermissionMode, ToolCallInfo, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionPlan } from "../types.js";
+import type { ContextTokenUsage, ExecutionMode, Message, PermissionMode, ToolCallInfo, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionPlan, ModelInfo } from "../types.js";
 import { fetchConfig, fetchProjectDiff, fetchProjectInfo, fetchProjectStatus, projectSettings } from "../lib/api.js";
 import ChatView from "./ChatView.js";
 import ChatInput from "./ChatInput.js";
@@ -45,6 +45,10 @@ interface Props {
   permissionSaving: boolean;
   permissionError: string;
   contextUsage?: ContextTokenUsage;
+  models: ModelInfo[];
+  currentModelId?: string | null;
+  onModelChange: (modelId: string) => void;
+  modelError?: string;
 }
 
 export default function ProjectView({
@@ -85,6 +89,10 @@ export default function ProjectView({
   permissionSaving,
   permissionError,
   contextUsage,
+  models,
+  currentModelId,
+  onModelChange,
+  modelError,
 }: Props) {
   const [pathInput, setPathInput] = useState(projectRoot ?? "");
   const [settings, setSettings] = useState<{ root: string; trusted: boolean; creating: boolean } | null>(null);
@@ -437,6 +445,10 @@ export default function ProjectView({
             permissionError={permissionError}
             activeSessionId={activeSessionId}
             contextUsage={contextUsage}
+            models={models}
+            currentModelId={currentModelId}
+            onModelChange={onModelChange}
+            modelError={modelError}
           />
         </>
       )}

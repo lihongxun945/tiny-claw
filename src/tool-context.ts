@@ -2,6 +2,7 @@ import type { Config, Message } from "./types.js";
 import { estimateTextTokens, estimateTokens } from "./estimate-tokens.js";
 
 export interface ToolContextOptions {
+  historyResultMaxChars: number;
   maxResultTokens: number;
   readMaxTokens: number;
   searchSnippetChars: number;
@@ -10,6 +11,7 @@ export interface ToolContextOptions {
   searchMaxResponseBytes: number;
 }
 export const TOOL_CONTEXT_DEFAULTS: ToolContextOptions = {
+  historyResultMaxChars: 500,
   maxResultTokens: 8000, readMaxTokens: 4000, searchSnippetChars: 1500,
   safetyMargin: 0.05, summaryRetries: 1, searchMaxResponseBytes: 8 * 1024 * 1024,
 };
@@ -81,7 +83,8 @@ export function boundedToolResult(content: string, toolCallId: string, maxTokens
 }
 
 /** Build a model-only projection; persisted messages and control responses remain unchanged. */
-export function projectToolMessages(messages: Message[], config: Config, tokenBudget = Infinity, protectLatest = false): Message[] {
+export function projectToolMessages(messages: Message[], config: Config, tokenBudget = Infinity, protectLatest = false,
+  limits?: Record<string, number>, turnStartIndex = 0): Message[] {
   const options = toolContextOptions(config);
   const results: Array<{ block: { content: string }; original: string; id: string; latest: boolean }> = [];
   let lastAssistant = -1;
@@ -89,8 +92,16 @@ export function projectToolMessages(messages: Message[], config: Config, tokenBu
   const projected = messages.map((message, index) => typeof message.content === "string" ? message : ({ ...message,
     content: message.content.map(block => {
       if (block.type !== "tool_result" || isControlResult(block.content)) return block;
-      const copy = { ...block, content: boundedToolResult(block.content, block.tool_use_id, 0, options.searchSnippetChars) };
-      results.push({ block: copy, original: block.content, id: block.tool_use_id, latest: index > lastAssistant });
+      const existing = parse(block.content);
+      const isPreview = existing?.truncated === true && object(existing.contentRef)
+        && existing.contentRef.toolCallId === block.tool_use_id && typeof existing.preview === "string";
+      const original = index < turnStartIndex && block.content.length > options.historyResultMaxChars
+        ? JSON.stringify({ truncated: true, originalChars: isPreview ? existing.originalChars : block.content.length,
+          contentRef: { toolCallId: block.tool_use_id },
+          preview: (isPreview ? existing.preview as string : block.content).slice(0, options.historyResultMaxChars) })
+        : block.content;
+      const copy = { ...block, content: boundedToolResult(original, block.tool_use_id, 0, options.searchSnippetChars) };
+      results.push({ block: copy, original, id: block.tool_use_id, latest: index > lastAssistant });
       return copy;
     }),
   }));
@@ -99,7 +110,8 @@ export function projectToolMessages(messages: Message[], config: Config, tokenBu
   for (const result of results.reverse()) {
     const previousCost = estimateTextTokens(result.block.content);
     const available = Math.max(0, remaining + previousCost);
-    const budget = Math.min(options.maxResultTokens, protectLatest && result.latest
+    const limit = limits && Object.hasOwn(limits, result.id) ? limits[result.id] : Infinity;
+    const budget = Math.min(options.maxResultTokens, limit, protectLatest && result.latest
       ? Math.max(options.readMaxTokens, available) : available);
     result.block.content = boundedToolResult(result.original, result.id, budget, options.searchSnippetChars);
     remaining -= estimateTextTokens(result.block.content) - previousCost;

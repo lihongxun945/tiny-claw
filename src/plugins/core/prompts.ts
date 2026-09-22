@@ -36,7 +36,6 @@ export const corePromptsPlugin: Plugin = {
         if (prompt === "") {
           const skills = listAvailableSkills(workspacePath, _ctx.sessionContext);
           const skillsText = skills.map((s) => `- ${formatSkillName(s)}: ${s.description}`).join("\n");
-          const currentDate = new Date().toISOString().slice(0, 10);
           const searchGuidance = buildSearchGuidance(_ctx.config.searchProvider);
 
           let result = template
@@ -44,7 +43,6 @@ export const corePromptsPlugin: Plugin = {
             .replace(/\{\{memories}}/g, "")
             .replace(/\{\{profile}}/g, "")
             .replace(/\{\{skills}}/g, skillsText)
-            .replace(/\{\{current_date}}/g, currentDate)
             .replace(/\{\{search_guidance}}/g, searchGuidance)
             .replace(/\{\{(?!tools}})[^}]+}}/g, "");
 

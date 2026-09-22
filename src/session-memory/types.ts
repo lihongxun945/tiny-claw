@@ -53,6 +53,9 @@ export interface SummaryDelta {
 }
 
 export interface PersistedSessionSummary {
+  /** Immutable independent history batches; absent on legacy checkpoints. */
+  batches?: SummaryBatch[];
+  projection?: { selectedBatchIds: string[]; toolResultLimits: Record<string, number>; budget: number };
   version: typeof SESSION_SUMMARY_VERSION;
   sessionId: string;
   revision: number;
@@ -60,6 +63,14 @@ export interface PersistedSessionSummary {
   deltas: SummaryDelta[];
   summarizedThroughSequence: number;
   updatedAt: string;
+}
+
+export interface SummaryBatch {
+  id: string;
+  fromSequence: number;
+  throughSequence: number;
+  text: string;
+  createdAt: string;
 }
 
 export interface SummaryItemDraft {

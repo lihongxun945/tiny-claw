@@ -165,6 +165,26 @@ describe("structured session summary engine", () => {
     expect(delta.operations).toHaveLength(1);
   });
 
+  it("never sends tool result bodies to the summary model", async () => {
+    const source: Message[] = [
+      { role: "assistant", _messageId: "m1", _sequence: 1, content: [{ type: "tool_use", id: "call-original", name: "read", input: {} }] },
+      { role: "user", _messageId: "m2", _sequence: 2, content: [{ type: "tool_result", tool_use_id: "call-original", content: "SECRET_OUTPUT".repeat(10000) }] },
+      { role: "assistant", _messageId: "m3", _sequence: 3, content: "Confirmed conclusion" },
+    ];
+    const before = structuredClone(source);
+    const client = { complete: async (input: Message[]) => {
+      const prompt = String(input[0].content);
+      expect(prompt).not.toContain("SECRET_OUTPUT");
+      expect(prompt).toContain("call-original");
+      expect(prompt).toContain("Confirmed conclusion");
+      return JSON.stringify({ operations: [] });
+    } } as unknown as ModelClient;
+    const engine = createSessionSummaryEngine({ limits, maxOutputTokens: 512, maxInputChars: 4000 });
+    const delta = await engine.createDelta(client, "session", emptySessionSummary("session"), source);
+    expect(delta.throughSequence).toBe(3);
+    expect(source).toEqual(before);
+  });
+
   it("bounds summary requests and only covers the prefix actually sent", async () => {
     let requestTokens = 0;
     let calls = 0;
@@ -214,7 +234,7 @@ describe("structured session summary engine", () => {
     expect(requests).toHaveLength(3);
   });
 
-  it("never commits a partial historical turn when its tool result exceeds the extraction budget", async () => {
+  it("covers complete exchanges without charging tool bodies to the extraction budget", async () => {
     let calls = 0;
     const client = { complete: async (input: Message[]) => {
       calls++;
@@ -231,10 +251,9 @@ describe("structured session summary engine", () => {
     const engine = createSessionSummaryEngine({ limits, maxOutputTokens: 512, maxInputChars: 4000 });
     const initial = emptySessionSummary("session");
     const delta = await engine.createDelta(client, "session", initial, source);
-    expect(delta.throughSequence).toBe(2);
+    expect(delta.throughSequence).toBe(5);
     const current = engine.applyDelta(initial, delta);
-    await expect(engine.createDelta(client, "session", current, source.slice(2))).rejects.toThrow("保留原文");
-    expect(current.summarizedThroughSequence).toBe(2);
+    expect(current.summarizedThroughSequence).toBe(5);
     expect(calls).toBe(1);
   });
 

@@ -49,6 +49,8 @@ export interface Message {
 
 // === Config ===
 
+export type ModelProvider = "anthropic-messages" | "openai-chat" | "chatgpt" | "local-llama";
+
 export interface Config {
   remoteModel?: RemoteModelConfig;
   localModel?: LocalModelConfig;
@@ -56,9 +58,14 @@ export interface Config {
   apiKey: string;
   model: string;
   modelProvider?: string;
+  /** 多模型配置；缺省时从顶层 apiUrl/apiKey/model 等字段推断一个（兼容旧配置） */
+  models?: ModelProfile[];
+  /** 新会话默认模型 ID；缺省时取 models 第一个 */
+  defaultModelId?: string;
   maxTokens: number;
   maxContextTokens: number;
   contextCompressionThreshold: number;
+  contextCompressionTargetRatio?: number;
   bashTerminationGraceMs: number;
   bashMaxOutputChars?: number;
   fileReadMaxChars?: number;
@@ -83,6 +90,7 @@ export interface Config {
   /** 项目开发模式配置 */
   project?: ProjectConfig;
   plan?: PlanConfig;
+  progress?: { enabled?: boolean; silenceMs?: number; toolCalls?: number };
   notifications?: NotificationsConfig;
   workspacePath: string;
   systemPrompt: string;
@@ -158,6 +166,26 @@ export interface LocalModelConfig {
   contextSize?: number;
 }
 
+export interface ModelProfile {
+  /** 稳定唯一标识，用于会话切换与 defaultModelId 引用 */
+  id: string;
+  /** 展示名称，缺省用 id */
+  name?: string;
+  provider: ModelProvider;
+  /** 远程模型名（provider 非 local-llama 时使用） */
+  model?: string;
+  /** 远程 API URL（provider 非 local-llama 时使用） */
+  apiUrl?: string;
+  /** 远程 API Key（provider 非 local-llama 时使用） */
+  apiKey?: string;
+  /** 本地模型 ID（provider 为 local-llama 时使用） */
+  localModelId?: LocalModelId;
+  /** 本地模型上下文大小（provider 为 local-llama 时使用） */
+  contextSize?: number;
+  /** 覆盖全局 maxTokens（可选） */
+  maxTokens?: number;
+}
+
 export interface SubAgentConfig {
   allowedTools?: string[];
   disabledTools?: string[];
@@ -166,6 +194,11 @@ export interface SubAgentConfig {
 }
 
 export interface SessionSummaryConfig {
+  maxBatchesPerCompression?: number;
+  maxCompressionDurationMs?: number;
+  recentBatchCount?: number;
+  maxBatchTokens?: number;
+  maxBudgetRatio?: number;
   enabled?: boolean;
   persistent?: boolean;
   /** 摘要输入（本次新增上下文）字符上限（默认 40000） */

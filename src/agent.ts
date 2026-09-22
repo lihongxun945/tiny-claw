@@ -1,10 +1,10 @@
-import { ensureConfigFile, loadConfig } from "./config.js";
-import { createModelClient, type ModelClient } from "./model/index.js";
+import { applyModelProfileToConfig, ensureConfigFile, loadConfig, resolveModelProfile } from "./config.js";
+import { createModelClientFromProfile, type ModelClient } from "./model/index.js";
 import { MessageHistory } from "./history.js";
 import { PluginManager } from "./plugin-manager.js";
 import { ensureWorkspace } from "./workspace/workspace.js";
-import { appendHistory } from "./workspace/logger.js";
-import { sanitizeToolMessageChains, validateToolMessageChains } from "./message-sanitizer.js";
+import { appendHistory, appendLog } from "./workspace/logger.js";
+import { sanitizeToolMessageChains, validateToolMessageChains, toolChainMetadata } from "./message-sanitizer.js";
 import { readSessionMessages } from "./session-store.js";
 import {
   attachApprovalContinuation,
@@ -14,7 +14,7 @@ import {
   type PendingApprovalContinuation,
 } from "./tools/approval.js";
 import { applySessionConfig } from "./project.js";
-import { readSessionMeta } from "./session-store.js";
+import { readSessionMeta, updateSessionModelId } from "./session-store.js";
 import type { AgentActor, ChatResponse, Config, ContentBlock, Message, ToolUseBlock, ToolResultBlock, SessionContext, ExecutionMode } from "./types.js";
 import { randomUUID } from "node:crypto";
 import { calculateMessageTokenBudget, calculateHardMessageTokenBudget } from "./context-budget.js";
@@ -89,14 +89,22 @@ function loadPersistedSessionMessages(
     }
   }
   if (pendingIndex < 0) return { messages: sanitizeToolMessageChains(messages) };
-  const previous = sanitizeToolMessageChains(messages.slice(0, pendingIndex));
-  return { messages: [...previous, messages[pendingIndex]], currentTurnStart: previous.length };
+  const turnId = messages[pendingIndex]._turnId;
+  let turnStart = pendingIndex;
+  if (turnId) {
+    while (turnStart > 0 && messages[turnStart - 1]._turnId === turnId) turnStart--;
+  }
+  const previous = sanitizeToolMessageChains(messages.slice(0, turnStart));
+  // Keep completed sibling results as well as the suspended invocation.
+  return { messages: [...previous, ...messages.slice(turnStart)], currentTurnStart: previous.length };
 }
 
 export class AgentSession {
   readonly id: string;
   private config: Config;
+  private baseConfig: Config;
   private client: ModelClient;
+  private currentModelId: string;
   private history: MessageHistory;
   private pluginManager: PluginManager;
   private systemPrompt: string;
@@ -108,6 +116,28 @@ export class AgentSession {
 
   getMessages(): Message[] {
     return this.history.getRecentMessages(Infinity);
+  }
+
+  getCurrentModelId(): string {
+    return this.currentModelId;
+  }
+
+  getCurrentModel(): { id: string; name?: string; provider: string } {
+    const profile = resolveModelProfile(this.config, this.currentModelId);
+    return { id: profile.id, name: profile.name, provider: profile.provider };
+  }
+
+  switchModel(modelId: string): { id: string; name?: string } {
+    const profile = resolveModelProfile(this.baseConfig, modelId);
+    this.currentModelId = profile.id;
+    this.config = applyModelProfileToConfig(this.baseConfig, profile);
+    this.client = createModelClientFromProfile(profile, this.config, {
+      sessionId: this.id,
+      reportDebug: (event) => this.pluginManager.callOnModelDebug(event),
+    });
+    this.pluginManager.setRuntimeDeps(this.config, this.client, this.history, this.id, this.sessionContext);
+    updateSessionModelId(this.workspacePath, this.id, profile.id);
+    return { id: profile.id, name: profile.name };
   }
 
   isBusy(): boolean {
@@ -267,15 +297,19 @@ export class AgentSession {
   ) {
     this.id = id;
     this.workspacePath = workspacePath;
-    this.sessionContext = sessionContext ?? readSessionMeta(workspacePath, id)?.context ?? { mode: "chat" };
+    const sessionMeta = readSessionMeta(workspacePath, id);
+    this.sessionContext = sessionContext ?? sessionMeta?.context ?? { mode: "chat" };
     ensureWorkspace(workspacePath);
     ensureConfigFile(workspacePath);
 
     const config = applySessionConfig({ ...loadConfig(workspacePath), ...configOverrides }, this.sessionContext);
 
-    this.config = config;
+    this.baseConfig = config;
+    const initialProfile = resolveModelProfile(config, sessionMeta?.currentModelId ?? config.defaultModelId);
+    this.currentModelId = initialProfile.id;
+    this.config = applyModelProfileToConfig(config, initialProfile);
     this.pluginManager = pluginManager;
-    this.client = client ?? createModelClient(this.config, {
+    this.client = client ?? createModelClientFromProfile(initialProfile, this.config, {
       sessionId: id,
       reportDebug: (event) => this.pluginManager.callOnModelDebug(event),
     });
@@ -523,6 +557,7 @@ export class AgentSession {
       const hookPromise = this.pluginManager.callOnBeforeModelCall(
         {
           messages: context,
+          baseSystemPrompt: turnPrompt,
           turnStartIndex: turnStartIdx,
           messageTokenBudget,
           hardMessageTokenBudget,
@@ -570,6 +605,10 @@ export class AgentSession {
       }
       const toolChainError = validateToolMessageChains(modelMessages);
       if (toolChainError) {
+        appendLog(this.workspacePath, "ERROR", `工具链校验失败 ${JSON.stringify({
+          turnId: this.pluginManager.getTurnId(this.id), iteration: agentIteration, reason: toolChainError,
+          before: toolChainMetadata(context), after: toolChainMetadata(modelMessages),
+        })}`, this.id);
         const error = new Error(`上下文压缩产生了无效的工具消息链：${toolChainError}`);
         throw error;
       }

@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createDefaultConfig, ensureConfigFile, loadConfig, stripDeprecatedConfigFields, validateConfig } from "./config.js";
+import { createDefaultConfig, ensureConfigFile, loadConfig, maskConfigSecrets, normalizeConfigForApi, restoreMaskedSecrets, stripDeprecatedConfigFields, validateConfig } from "./config.js";
 import { AgentSession, type AgentEvent } from "./agent.js";
 import { displayToolResult } from "./tool-context.js";
 import { PluginManager } from "./plugin-manager.js";
@@ -32,6 +32,7 @@ import {
 } from "./tools/approval.js";
 import { createSessionMeta, deleteStoredSession, listSessionMetas, readSessionMessages, readSessionMeta, updateSessionExecutionMode } from "./session-store.js";
 import type { RegisteredRoute, RouteContext } from "./plugins/types.js";
+import { matchRoutePath } from "./plugins/route-matcher.js";
 import { ensureWorkspace } from "./workspace/workspace.js";
 import { attachmentLimits, attachmentToImageBlock, readAttachment } from "./attachments.js";
 import type { ImageBlock, Message } from "./types.js";
@@ -361,45 +362,6 @@ function sendJSON(res: ServerResponse, status: number, data: unknown): void {
   res.end(body);
 }
 
-const CONFIG_SECRET_KEY = /(key|secret|token|password)$/i;
-
-function maskConfigSecrets(value: unknown, key = ""): unknown {
-  if (typeof value === "string") {
-    return CONFIG_SECRET_KEY.test(key) && value ? `${value.slice(0, 4)}***` : value;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => maskConfigSecrets(item));
-  }
-  if (value && typeof value === "object") {
-    const masked: Record<string, unknown> = {};
-    for (const [childKey, childValue] of Object.entries(value)) {
-      masked[childKey] = maskConfigSecrets(childValue, childKey);
-    }
-    return masked;
-  }
-  return value;
-}
-
-function restoreMaskedSecrets(value: unknown, existing: unknown, key = ""): unknown {
-  if (typeof value === "string") {
-    if (CONFIG_SECRET_KEY.test(key) && value.endsWith("***")) return existing;
-    return value;
-  }
-  if (Array.isArray(value)) {
-    const existingItems = Array.isArray(existing) ? existing : [];
-    return value.map((item, index) => restoreMaskedSecrets(item, existingItems[index]));
-  }
-  if (value && typeof value === "object") {
-    const existingRecord = existing && typeof existing === "object" ? existing as Record<string, unknown> : {};
-    const restored: Record<string, unknown> = {};
-    for (const [childKey, childValue] of Object.entries(value)) {
-      restored[childKey] = restoreMaskedSecrets(childValue, existingRecord[childKey], childKey);
-    }
-    return restored;
-  }
-  return value;
-}
-
 function writeJSONAtomic(path: string, value: unknown): void {
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
@@ -613,6 +575,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     // 构建 RouteContext
     const routeCtx: RouteContext = {
       url,
+      params: {},
       readBody: () => readBody(req),
       sendJSON: (status, data) => sendJSON(res, status, data),
       resumeTool: async (sessionId, requestId, result) => {
@@ -628,9 +591,10 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     // 插件路由（优先匹配）
     const allRoutes = pm.getRoutes();
     for (const route of allRoutes) {
-      if (req.method === route.method && url.pathname === route.path) {
+      const params = matchRoutePath(route.path, url.pathname);
+      if (req.method === route.method && params) {
         try {
-          await route.handler(req, res, routeCtx);
+          await route.handler(req, res, { ...routeCtx, params });
         } catch (err) {
           if (!res.headersSent) {
             sendJSON(res, 500, { error: err instanceof Error ? err.message : String(err) });
@@ -761,6 +725,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
           id: s.id,
           lastActivity: s.lastActivity,
           busy: s.isBusy(),
+          currentModelId: s.getCurrentModelId(),
         }));
       sendJSON(res, 200, { sessions: list });
       return;
@@ -1100,8 +1065,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         return;
       }
       const raw = stripDeprecatedConfigFields(JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>);
-      raw.modelProvider ??= "anthropic-messages";
-      sendJSON(res, 200, { config: maskConfigSecrets(raw), defaults: createDefaultConfig() });
+      sendJSON(res, 200, { config: maskConfigSecrets(normalizeConfigForApi(raw)), defaults: createDefaultConfig() });
       return;
     }
 
@@ -1212,18 +1176,25 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     if (req.method === "PUT" && url.pathname === "/config") {
       try {
         const configPath = resolve(workspacePath, "config.json");
-        const existing = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf-8")) : {};
+        const existingRaw = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown> : {};
+        const existing = normalizeConfigForApi(existingRaw);
         const updates = restoreMaskedSecrets(JSON.parse(await readBody(req)), existing) as Record<string, unknown>;
-        const merged = stripDeprecatedConfigFields({ ...existing, ...updates });
-        validateConfig(merged);
-        writeJSONAtomic(configPath, merged);
-        pm.setPluginConfigs((merged.plugins as Record<string, Record<string, unknown>> | undefined) ?? {});
+        const merged = stripDeprecatedConfigFields({ ...existingRaw, ...updates });
+        const normalized = normalizeConfigForApi(merged);
+        // models 数组为唯一权威：落盘不再保存 legacy 扁平字段，读取时由 loadConfig 从 models 派生
+        const toPersist: Record<string, unknown> = { ...normalized };
+        for (const key of ["apiUrl", "apiKey", "model", "modelProvider", "remoteModel", "localModel"]) {
+          delete toPersist[key];
+        }
+        validateConfig(toPersist);
+        writeJSONAtomic(configPath, toPersist);
+        pm.setPluginConfigs((toPersist.plugins as Record<string, Record<string, unknown>> | undefined) ?? {});
         for (const [sessionId, session] of sessions) {
           if (session.isBusy()) continue;
           sessions.delete(sessionId);
           await pm.clearRuntimeDeps(sessionId);
         }
-        sendJSON(res, 200, { config: maskConfigSecrets(merged) });
+        sendJSON(res, 200, { config: maskConfigSecrets(normalized) });
       } catch (err) {
         sendJSON(res, 400, { error: `更新配置失败: ${err instanceof Error ? err.message : String(err)}` });
       }
@@ -1232,14 +1203,14 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 
     // GET /history/sessions — 从 session 元数据 + 活跃会话合并
     if (req.method === "GET" && url.pathname === "/history/sessions") {
-      const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string; context: SessionContext; executionMode: ExecutionMode; busy?: boolean; attention?: "approval" | "input" }>();
+      const sessionMap = new Map<string, { id: string; lastActivity: number; preview: string; context: SessionContext; executionMode: ExecutionMode; currentModelId?: string; busy?: boolean; attention?: "approval" | "input" }>();
 
       for (const meta of listSessionMetas(workspacePath)) {
         if (isSubAgentSessionId(meta.id) || meta.archived) continue;
         const active = sessions.get(meta.id);
         const awaitingApproval = active?.hasPendingApproval() ?? listSessionApprovalContinuations(workspacePath, meta.id).length > 0;
         const run = listRuns(workspacePath, meta.id).at(-1);
-        sessionMap.set(meta.id, { id: meta.id, lastActivity: meta.lastActivity, preview: meta.preview, context: meta.context, executionMode: meta.preferences.executionMode, busy: run ? run.state === "running" : active?.isBusy() ?? false, attention: awaitingApproval ? "approval" : run?.state === "waiting_user" && run.suspension?.status === "pending" ? "input" : undefined });
+        sessionMap.set(meta.id, { id: meta.id, lastActivity: meta.lastActivity, preview: meta.preview, context: meta.context, executionMode: meta.preferences.executionMode, currentModelId: active?.getCurrentModelId() ?? meta.currentModelId, busy: run ? run.state === "running" : active?.isBusy() ?? false, attention: awaitingApproval ? "approval" : run?.state === "waiting_user" && run.suspension?.status === "pending" ? "input" : undefined });
       }
 
       // 合并活跃会话（新创建的但还未写入历史文件的）
@@ -1247,7 +1218,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         if (isSubAgentSessionId(id)) continue;
         if (!sessionMap.has(id)) {
           const meta = readSessionMeta(workspacePath, id);
-          sessionMap.set(id, { id, lastActivity: session.lastActivity, preview: "", context: meta?.context ?? { mode: "chat" }, executionMode: meta?.preferences.executionMode ?? "normal", busy: session.isBusy(), attention: session.hasPendingApproval() ? "approval" : undefined });
+          sessionMap.set(id, { id, lastActivity: session.lastActivity, preview: "", context: meta?.context ?? { mode: "chat" }, executionMode: meta?.preferences.executionMode ?? "normal", currentModelId: session.getCurrentModelId(), busy: session.isBusy(), attention: session.hasPendingApproval() ? "approval" : undefined });
         }
       }
 
@@ -1281,7 +1252,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
       const url = new URL(req.url ?? "/", `http://localhost:${webPort}`);
 
       // 代理 API 请求到 gateway
-      if (pm.getRoutes().some((route) => route.path === url.pathname && route.method === req.method) || url.pathname === "/chat" || url.pathname === "/plan" || url.pathname === "/context" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname.startsWith("/projects/") || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/plugins" || url.pathname.startsWith("/plugins/") || url.pathname === "/memory" || url.pathname === "/profile" || url.pathname === "/profile/get" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname === "/local-models" || url.pathname === "/local-models/download" || url.pathname === "/models/test" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
+      if (pm.getRoutes().some((route) => route.method === req.method && matchRoutePath(route.path, url.pathname) !== null) || url.pathname === "/chat" || url.pathname === "/plan" || url.pathname === "/context" || url.pathname === "/uploads" || url.pathname === "/sessions" || url.pathname.startsWith("/projects/") || url.pathname === "/commands" || url.pathname === "/approvals" || url.pathname === "/logs" || url.pathname === "/config" || url.pathname === "/plugins" || url.pathname.startsWith("/plugins/") || url.pathname === "/memory" || url.pathname === "/profile" || url.pathname === "/profile/get" || url.pathname === "/debug/model-calls" || url.pathname === "/history/sessions" || url.pathname === "/local-models" || url.pathname === "/local-models/download" || url.pathname === "/models" || url.pathname === "/models/test" || url.pathname.match(/^\/(sessions|approvals|logs|history\/sessions|memory)\/[^/]+/)) {
         let proxyIsSSE = false;
         try {
           const hasRequestBody = req.method !== "GET" && req.method !== "HEAD"

@@ -2,6 +2,7 @@ import type { Plugin } from "../types.js";
 import { projectToolMessages, toolContextOptions } from "../../tool-context.js";
 import { estimateTextTokens } from "../../estimate-tokens.js";
 import { readSessionMessages } from "../../session-store.js";
+import { buildModelContext } from "../../model-context.js";
 
 export const coreToolContextPlugin: Plugin = {
   name: "core-tool-context",
@@ -21,8 +22,12 @@ export const coreToolContextPlugin: Plugin = {
     ctx.registerHooks({
       onBeforeModelCall(hook, request) {
         toolContextOptions(hook.config);
+        const base = request.baseSystemPrompt ?? "";
+        const rendered = buildModelContext(base, request.messages, request.derivedContext, request.systemPromptSuffix);
+        const overhead = estimateTextTokens(rendered.systemPrompt) - estimateTextTokens(base);
         return { ...request, messages: projectToolMessages(request.messages, hook.config,
-          request.hardMessageTokenBudget === undefined ? Infinity : request.hardMessageTokenBudget - estimateTextTokens(request.derivedContext ?? ""), true) };
+          request.hardMessageTokenBudget === undefined ? Infinity : request.hardMessageTokenBudget - overhead, false,
+          undefined, request.turnStartIndex) };
       },
     });
   },

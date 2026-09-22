@@ -514,6 +514,9 @@ describe("PluginManager hook lifecycle", () => {
       "stream_event",
       "parsed_response",
     ]);
+    expect(JSON.parse(readFileSync(`${path}.meta`, "utf-8"))).toEqual(expect.objectContaining({
+      requestId, status: "success", eventCount: 3,
+    }));
 
     const route = manager.getRoutes().find((item) => item.path === "/debug/model-calls");
     expect(route).toBeDefined();

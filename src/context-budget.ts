@@ -18,13 +18,11 @@ export function calculateMessageTokenBudget(
   systemPrompt: string,
   tools: ToolDefinition[],
 ): number {
-  const maxContextTokens = getEffectiveMaxContextTokens(config);
-  const thresholdBudget = Math.floor(maxContextTokens * config.contextCompressionThreshold);
-  const fixedTokens = estimateTextTokens(systemPrompt) + estimateTextTokens(JSON.stringify(tools));
-  const hardInputBudget = Math.floor(maxContextTokens * (1 - toolContextOptions(config).safetyMargin)) - fixedTokens - config.maxTokens;
-  return Math.max(0, Math.min(thresholdBudget - fixedTokens, hardInputBudget));
+  return Math.floor(calculateHardMessageTokenBudget(config, systemPrompt, tools) * config.contextCompressionThreshold);
 }
 
 export function calculateHardMessageTokenBudget(config: Config, systemPrompt: string, tools: ToolDefinition[]): number {
-  return calculateMessageTokenBudget({ ...config, contextCompressionThreshold: 1 }, systemPrompt, tools);
+  const max = getEffectiveMaxContextTokens(config);
+  const fixed = estimateTextTokens(systemPrompt) + estimateTextTokens(JSON.stringify(tools));
+  return Math.max(0, Math.floor(max * (1 - toolContextOptions(config).safetyMargin)) - fixed - config.maxTokens);
 }

@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { readdir, readFile, writeFile, link, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import type { ModelDebugEvent } from "../../model/types.js";
 import type { Plugin } from "../types.js";
 
@@ -14,6 +16,11 @@ export interface ModelCallTrace {
   durationMs?: number;
   status: "running" | "success" | "error";
   events: Array<Pick<ModelDebugEvent, "timestamp" | "phase" | "data">>;
+}
+
+type ModelCallSummary = Omit<ModelCallTrace, "events"> & { eventCount: number };
+function summarize({ events, ...trace }: ModelCallTrace): ModelCallSummary {
+  return { ...trace, eventCount: events.length };
 }
 
 function traceRoot(workspacePath: string): string {
@@ -102,20 +109,38 @@ function persistEvents(workspacePath: string, events: ModelDebugEvent[]): void {
   const temporaryPath = `${path}.${process.pid}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(trace, null, 2)}\n`, "utf-8");
   renameSync(temporaryPath, path);
+  const indexPath = `${path}.meta`;
+  writeFileSync(`${indexPath}.${process.pid}.tmp`, JSON.stringify(summarize(trace)), "utf-8");
+  renameSync(`${indexPath}.${process.pid}.tmp`, indexPath);
 }
 
-function listTraces(workspacePath: string, sessionId?: string): ModelCallTrace[] {
+async function listTraces(workspacePath: string, sessionId?: string): Promise<ModelCallSummary[]> {
   const root = traceRoot(workspacePath);
   if (!existsSync(root)) return [];
-  const traces: ModelCallTrace[] = [];
-  for (const date of readdirSync(root).sort().reverse()) {
+  const traces: ModelCallSummary[] = [];
+  for (const date of (await readdir(root, { withFileTypes: true })).filter(entry => entry.isDirectory()).map(entry => entry.name).sort().reverse()) {
     const dir = resolve(root, date);
-    for (const file of readdirSync(dir).filter((name) => name.endsWith(".json"))) {
-      const trace = readTrace(resolve(dir, file));
-      if (trace && (!sessionId || trace.sessionId === sessionId)) traces.push(trace);
+    for (const file of (await readdir(dir)).filter((name) => name.endsWith(".json"))) {
+      const path = resolve(dir, file);
+      try {
+        let summary: ModelCallSummary;
+        try { summary = JSON.parse(await readFile(`${path}.meta`, "utf-8")) as ModelCallSummary; }
+        catch {
+          // Legacy traces are migrated one at a time without synchronous bulk I/O.
+          summary = summarize(JSON.parse(await readFile(path, "utf-8")) as ModelCallTrace);
+          if (summary.status !== "running") {
+            const temporary = `${path}.${process.pid}.${randomUUID()}.meta.tmp`;
+            await writeFile(temporary, JSON.stringify(summary), "utf-8");
+            try { await link(temporary, `${path}.meta`); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+            finally { await unlink(temporary); }
+          }
+        }
+        if (!sessionId || summary.sessionId === sessionId) traces.push(summary);
+      } catch { /* Ignore incomplete or corrupt trace files. */ }
     }
   }
-  return traces.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  return traces.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.requestId.localeCompare(a.requestId));
 }
 
 export const coreDebugPlugin: Plugin = {
@@ -144,17 +169,30 @@ export const coreDebugPlugin: Plugin = {
         const requestId = routeCtx.url.searchParams.get("id");
         if (requestId) {
           const path = findTracePath(ctx.workspacePath, requestId);
-          const trace = path ? readTrace(path) : undefined;
+          const trace = path ? await readFile(path, "utf-8").then(value => JSON.parse(value) as ModelCallTrace).catch(() => undefined) : undefined;
+          if (trace && routeCtx.url.searchParams.get("view") === "display") {
+            const request = trace.events.find(event => event.phase === "request");
+            const reversed = [...trace.events].reverse();
+            const response = reversed.find(event => event.phase === "parsed_response")
+              ?? reversed.find(event => event.phase === "response") ?? reversed.find(event => event.phase === "error");
+            trace.events = [...(request ? [request] : []), ...(response ? [response] : [])];
+          }
           routeCtx.sendJSON(trace ? 200 : 404, trace ? { trace } : { error: "模型调用记录不存在" });
           return;
         }
 
         const sessionId = routeCtx.url.searchParams.get("session_id") ?? undefined;
-        const traces = listTraces(ctx.workspacePath, sessionId).map(({ events, ...trace }) => ({
-          ...trace,
-          eventCount: events.length,
-        }));
-        routeCtx.sendJSON(200, { traces });
+        const page = Number(routeCtx.url.searchParams.get("page") ?? 1);
+        const pageSize = Number(routeCtx.url.searchParams.get("page_size") ?? 20);
+        if (!Number.isSafeInteger(page) || page < 1 || ![20, 50, 100].includes(pageSize)) {
+          routeCtx.sendJSON(400, { error: "page 必须为正整数，page_size 必须为 20、50 或 100" });
+          return;
+        }
+        const traces = await listTraces(ctx.workspacePath, sessionId);
+        const total = traces.length;
+        const currentPage = Math.min(page, Math.max(1, Math.ceil(total / pageSize)));
+        routeCtx.sendJSON(200, { traces: traces.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+          page: currentPage, pageSize, total });
       },
     });
   },

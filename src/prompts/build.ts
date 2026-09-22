@@ -33,15 +33,12 @@ export function buildSystemPrompt(workspacePath: string, tools: ToolDefinition[]
 
   const toolsText = tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
 
-  const currentDate = new Date().toISOString().slice(0, 10);
-
   return template
     .replace(/\{\{identity}}/g, identity)
     .replace(/\{\{memories}}/g, "")
     .replace(/\{\{profile}}/g, "")
     .replace(/\{\{skills}}/g, skillsText)
     .replace(/\{\{tools}}/g, toolsText)
-    .replace(/\{\{current_date}}/g, currentDate)
     .replace(/\{\{search_guidance}}/g, buildSearchGuidance(searchProvider))
     .replace(/\{\{[^}]+}}/g, "");
 }

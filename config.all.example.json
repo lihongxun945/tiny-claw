@@ -1,19 +1,28 @@
 {
-  "$comment": "完整配置示例。复制到 workspace/config.json 后按需修改；入门推荐使用 config.simple.example.json",
-  "remoteModel": { "enabled": true },
-  "localModel": {
-    "enabled": false,
-    "modelId": "qwen3.5-4b-q4",
-    "contextSize": 32768
-  },
-  "apiUrl": "https://ark.cn-beijing.volces.com/api/coding",
-  "apiKey": "YOUR_API_KEY",
-  "model": "deepseek-v4-flash",
-  "modelProvider": "anthropic-messages",
+  "$comment": "完整配置示例。复制到 workspace/config.json 后按需修改；入门推荐使用 config.simple.example.json。models 数组是模型配置的唯一权威，defaultModelId 指定默认模型；顶层 remoteModel/localModel/apiUrl/apiKey/model 均为派生视图，保存时会自动移除，无需手工配置。",
+  "models": [
+    {
+      "id": "remote",
+      "name": "远程模型",
+      "provider": "anthropic-messages",
+      "model": "deepseek-v4-flash",
+      "apiUrl": "https://ark.cn-beijing.volces.com/api/coding",
+      "apiKey": "YOUR_API_KEY"
+    },
+    {
+      "id": "local",
+      "name": "本地模型",
+      "provider": "local-llama",
+      "localModelId": "qwen3.5-4b-q4",
+      "contextSize": 32768
+    }
+  ],
+  "defaultModelId": "remote",
   "maxTokens": 16384,
   "emptyResponseRetries": 1,
   "maxContextTokens": 128000,
-  "contextCompressionThreshold": 0.7,
+  "contextCompressionThreshold": 0.8,
+  "contextCompressionTargetRatio": 0.2,
   "bashTerminationGraceMs": 1000,
   "bashMaxOutputChars": 10000,
   "fileReadMaxChars": 20000,
@@ -28,6 +37,11 @@
     "maxSourcesPerOperation": 8,
     "checkpointDeltaThreshold": 20,
     "checkpointMaxChars": 50000,
+    "recentBatchCount": 5,
+    "maxBatchesPerCompression": 3,
+    "maxCompressionDurationMs": 120000,
+    "maxBatchTokens": 1500,
+    "maxBudgetRatio": 0.1,
     "recallMaxResults": 20,
     "recallMaxOutputChars": 20000,
     "recallMaxQueryChars": 500
@@ -146,6 +160,11 @@
     "enabled": true,
     "reasons": ["approval_required", "waiting_user", "completed", "iteration_limit"]
   },
+  "progress": {
+    "enabled": true,
+    "silenceMs": 60000,
+    "toolCalls": 5
+  },
   "searchProvider": "duckduckgo",
   "ollamaApiKey": "YOUR_OLLAMA_API_KEY",
   "searxngUrl": "http://localhost:8080",
@@ -164,6 +183,7 @@
   "plugins": {
     "core-tool-context": {
       "maxResultTokens": 8000,
+      "historyResultMaxChars": 500,
       "readMaxTokens": 4000,
       "searchSnippetChars": 1500,
       "safetyMargin": 0.05,

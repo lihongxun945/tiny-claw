@@ -99,6 +99,9 @@ export async function updateSessionSummary(
       revision: current.revision + 1,
       updatedAt: new Date().toISOString(),
     };
+    if (current.batches === undefined && persisted.batches !== undefined && current.summarizedThroughSequence > 0) {
+      await writeJsonAtomic(sessionSummaryArchivePath(workspacePath, sessionId, current.revision), current);
+    }
     await writeSummaryAtomic(workspacePath, persisted);
     return persisted;
   });

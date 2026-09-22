@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createDefaultConfig, ensureConfigFile, loadConfig, stripDeprecatedConfigFields, validateConfig } from "../../src/config.js";
+import { createDefaultConfig, ensureConfigFile, loadConfig, normalizeConfigForApi, resolveModelProfile, restoreMaskedSecrets, stripDeprecatedConfigFields, validateConfig } from "../../src/config.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
 describe("loadConfig", () => {
@@ -24,10 +24,11 @@ describe("loadConfig", () => {
       model: "test-model",
       modelProvider: "anthropic-messages",
       remoteModel: { enabled: true },
-      localModel: { enabled: false, modelId: "qwen3.5-4b-q4", contextSize: 32768 },
+      localModel: { enabled: false },
       maxTokens: 16384,
       maxContextTokens: 128000,
-      contextCompressionThreshold: 0.7,
+      contextCompressionThreshold: 0.8,
+      contextCompressionTargetRatio: 0.2,
       maxAgentIterations: 1000,
       searchProvider: "duckduckgo",
       workspacePath,
@@ -84,47 +85,35 @@ describe("loadConfig", () => {
 
     const raw = JSON.parse(readFileSync(configPath, "utf-8"));
     expect(raw).toMatchObject({
-      apiUrl: "https://api.deepseek.com",
-      apiKey: "",
-      model: "deepseek-chat",
+      models: [
+        { id: "deepseek", name: "DeepSeek", provider: "openai-chat", model: "deepseek-chat", apiUrl: "https://api.deepseek.com", apiKey: "" },
+      ],
+      defaultModelId: "deepseek",
       searchProvider: "duckduckgo",
       enabledPlugins: [],
       plugins: {},
       security: { mode: "auto", gateway: { sseHeartbeatIntervalMs: 15000 } },
-      remoteModel: { enabled: true },
-      localModel: { enabled: false, modelId: "qwen3.5-4b-q4", contextSize: 32768 },
     });
     expect(() => validateConfig(raw)).not.toThrow();
   });
 
-  it("allows an empty API key while keeping the field required", () => {
+  it("allows an empty API key in model profiles", () => {
     expect(() => validateConfig(createDefaultConfig())).not.toThrow();
-    expect(() => validateConfig({ ...createDefaultConfig(), apiKey: undefined })).toThrow("配置字段 apiKey 必须是字符串");
+    expect(() => validateConfig({
+      models: [{ id: "m", provider: "openai-chat", model: "gpt-4o", apiUrl: "https://api.openai.com/v1", apiKey: "" }],
+    })).not.toThrow();
   });
 
-  it("supports local-only mode and rejects disabling every model", () => {
-    expect(() => validateConfig({
-      ...createDefaultConfig(),
-      remoteModel: { enabled: false },
-      localModel: { enabled: true, modelId: "qwen3.5-0.8b-q4", contextSize: 2048 },
-    })).not.toThrow();
-    expect(() => validateConfig({
-      ...createDefaultConfig(),
-      localModel: { enabled: true, modelId: "gemma-4-e4b-it-q4", contextSize: 8192 },
-    })).not.toThrow();
-    expect(() => validateConfig({
-      ...createDefaultConfig(),
-      localModel: { enabled: true, modelId: "qwen3.5-35b-a3b-q4", contextSize: 32768 },
-    })).not.toThrow();
-    expect(() => validateConfig({
-      ...createDefaultConfig(),
-      localModel: { enabled: true, modelId: "gemma-4-31b-it-q4", contextSize: 262144 },
-    })).not.toThrow();
-    expect(() => validateConfig({
-      ...createDefaultConfig(),
-      remoteModel: { enabled: false },
-      localModel: { enabled: false },
-    })).toThrow("远程模型和本地模型至少需要启用一个");
+  it("supports local-only mode and rejects an empty model list", () => {
+    const localOnly = (localModelId: string, contextSize: number) => ({
+      models: [{ id: "local", name: "本地模型", provider: "local-llama", localModelId, contextSize }],
+      defaultModelId: "local",
+    });
+    expect(() => validateConfig(localOnly("qwen3.5-0.8b-q4", 2048))).not.toThrow();
+    expect(() => validateConfig(localOnly("gemma-4-e4b-it-q4", 8192))).not.toThrow();
+    expect(() => validateConfig(localOnly("qwen3.5-35b-a3b-q4", 32768))).not.toThrow();
+    expect(() => validateConfig(localOnly("gemma-4-31b-it-q4", 262144))).not.toThrow();
+    expect(() => validateConfig({ models: [] })).toThrow("至少需要配置一个模型");
   });
 
   it("loads provider-specific search configuration", () => {
@@ -234,5 +223,123 @@ describe("loadConfig", () => {
     const workspacePath = createTempWorkspace({ notifications: { enabled: false, reasons: ["completed"] } });
     workspaces.push(workspacePath);
     expect(loadConfig(workspacePath).notifications).toEqual({ enabled: false, reasons: ["completed"] });
+  });
+});
+
+describe("multi-model configuration", () => {
+  const workspaces: string[] = [];
+
+  afterEach(() => {
+    for (const workspacePath of workspaces.splice(0)) {
+      removeTempWorkspace(workspacePath);
+    }
+  });
+
+  it("loads explicit models and resolves the default profile", () => {
+    const workspacePath = createTempWorkspace({
+      models: [
+        { id: "fast", name: "Fast", provider: "openai-chat", model: "gpt-4o-mini", apiUrl: "https://api.openai.com/v1", apiKey: "k" },
+        { id: "local", name: "Local", provider: "local-llama", localModelId: "qwen3.5-4b-q4", contextSize: 32768 },
+      ],
+      defaultModelId: "local",
+    });
+    workspaces.push(workspacePath);
+
+    const config = loadConfig(workspacePath);
+    expect(config.models?.map((model) => model.id)).toEqual(["fast", "local"]);
+    expect(config.defaultModelId).toBe("local");
+    expect(resolveModelProfile(config)).toMatchObject({ id: "local", provider: "local-llama" });
+    expect(resolveModelProfile(config, "fast")).toMatchObject({ id: "fast" });
+    expect(() => resolveModelProfile(config, "missing")).toThrow("模型 missing 不存在");
+  });
+
+  it("normalizes legacy remote/local fields into model profiles", () => {
+    const workspacePath = createTempWorkspace({
+      remoteModel: { enabled: true },
+      localModel: { enabled: true, modelId: "qwen3.5-4b-q4", contextSize: 32768 },
+    });
+    workspaces.push(workspacePath);
+
+    const config = loadConfig(workspacePath);
+    expect(config.models?.map((model) => model.id)).toEqual(["remote", "local"]);
+    expect(config.models?.[0]).toMatchObject({ provider: "anthropic-messages", model: "test-model" });
+  });
+
+  it("rejects duplicate model ids", () => {
+    const workspacePath = createTempWorkspace({
+      models: [
+        { id: "dup", provider: "openai-chat", model: "m", apiUrl: "u" },
+        { id: "dup", provider: "openai-chat", model: "m2", apiUrl: "u2" },
+      ],
+    });
+    workspaces.push(workspacePath);
+    expect(() => loadConfig(workspacePath)).toThrow("id 重复");
+  });
+
+  it("rejects a defaultModelId that is not in models", () => {
+    const workspacePath = createTempWorkspace({
+      models: [{ id: "a", provider: "openai-chat", model: "m", apiUrl: "u" }],
+      defaultModelId: "b",
+    });
+    workspaces.push(workspacePath);
+    expect(() => loadConfig(workspacePath)).toThrow("defaultModelId 不在 models 中");
+  });
+
+  it("rejects unsupported providers and missing remote fields", () => {
+    const badProvider = createTempWorkspace({ models: [{ id: "x", provider: "nope", model: "m", apiUrl: "u" }] });
+    workspaces.push(badProvider);
+    expect(() => loadConfig(badProvider)).toThrow("provider 不受支持");
+
+    const missing = createTempWorkspace({ models: [{ id: "x", provider: "openai-chat" }] });
+    workspaces.push(missing);
+    expect(() => loadConfig(missing)).toThrow("models[0].model");
+  });
+
+  it("rejects unknown local model ids", () => {
+    const workspacePath = createTempWorkspace({ models: [{ id: "l", provider: "local-llama", localModelId: "nope" }] });
+    workspaces.push(workspacePath);
+    expect(() => loadConfig(workspacePath)).toThrow("localModelId 不受支持");
+  });
+
+  it("normalizeConfigForApi derives legacy fields from the default model profile", () => {
+    const normalized = normalizeConfigForApi({
+      apiUrl: "https://api.openai.com/v1",
+      apiKey: "sk-legacy",
+      model: "gpt-4o",
+      modelProvider: "openai-chat",
+      remoteModel: { enabled: true },
+      localModel: { enabled: true, modelId: "qwen3.5-4b-q4", contextSize: 32768 },
+      defaultModelId: "local",
+      debug: { enabled: false },
+    });
+    expect((normalized.models as Array<{ id: string }>).map((model) => model.id)).toEqual(["remote", "local"]);
+    // 默认模型为 local：扁平字段从 local 派生，忽略 legacy 原值
+    expect(normalized).toMatchObject({
+      apiUrl: "",
+      apiKey: "",
+      model: "",
+      modelProvider: "local-llama",
+      remoteModel: { enabled: false },
+      localModel: { enabled: true, modelId: "qwen3.5-4b-q4", contextSize: 32768 },
+    });
+    expect(normalized.defaultModelId).toBe("local");
+    expect(normalized.debug).toEqual({ enabled: false });
+  });
+
+  it("restoreMaskedSecrets restores masked apiKeys by id instead of index", () => {
+    const existing = {
+      models: [
+        { id: "a", apiKey: "sk-aaa-full" },
+        { id: "b", apiKey: "sk-bbb-full" },
+      ],
+    };
+    const masked = {
+      models: [
+        { id: "b", apiKey: "sk-b***" },
+        { id: "a", apiKey: "sk-a***" },
+      ],
+    };
+    const restored = restoreMaskedSecrets(masked, existing) as { models: Array<{ id: string; apiKey: string }> };
+    expect(restored.models.map((model) => model.apiKey)).toEqual(["sk-bbb-full", "sk-aaa-full"]);
   });
 });

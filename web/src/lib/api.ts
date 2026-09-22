@@ -1,4 +1,4 @@
-import type { Session, Message, MemoryRecord, ProfileRecord, ApprovalRequest, ChatCommand, Attachment, ModelCallSummary, ModelCallTrace, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionContext, SessionPlan, ExecutionMode, PluginSnapshot, PluginConfigView, ContextSnapshot } from "../types.js";
+import type { Session, Message, MemoryRecord, ProfileRecord, ApprovalRequest, ChatCommand, Attachment, ModelCallSummary, ModelCallTrace, ProjectInfo, ProjectGitStatus, ProjectDiff, SessionContext, SessionPlan, ExecutionMode, PluginSnapshot, PluginConfigView, ContextSnapshot, ModelInfo } from "../types.js";
 
 export { streamChat, streamApprovalResume, streamSessionEvents } from "./sse-client.js";
 
@@ -114,15 +114,15 @@ export async function fetchLog(date: string, tail = 200): Promise<{ date: string
   return res.json();
 }
 
-export async function fetchModelCalls(sessionId?: string): Promise<ModelCallSummary[]> {
-  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
-  const res = await fetch(`/debug/model-calls${query}`);
-  const data = await parseJSON<{ traces: ModelCallSummary[] }>(res);
-  return data.traces ?? [];
+export async function fetchModelCalls(sessionId?: string, page = 1, pageSize = 20, signal?: AbortSignal): Promise<{ traces: ModelCallSummary[]; page: number; pageSize: number; total: number }> {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+  if (sessionId) query.set("session_id", sessionId);
+  const res = await fetch(`/debug/model-calls?${query}`, { signal });
+  return parseJSON(res);
 }
 
-export async function fetchModelCall(requestId: string): Promise<ModelCallTrace> {
-  const res = await fetch(`/debug/model-calls?id=${encodeURIComponent(requestId)}`);
+export async function fetchModelCall(requestId: string, signal?: AbortSignal): Promise<ModelCallTrace> {
+  const res = await fetch(`/debug/model-calls?id=${encodeURIComponent(requestId)}&view=display`, { signal });
   const data = await parseJSON<{ trace: ModelCallTrace }>(res);
   return data.trace;
 }
@@ -179,11 +179,11 @@ export async function downloadLocalModel(modelId: string): Promise<void> {
   await parseJSON(res);
 }
 
-export async function testModel(target: "remote" | "local", config: Record<string, unknown>): Promise<{ elapsedMs: number; text: string }> {
+export async function testModel(target: "remote" | "local", config: Record<string, unknown>, modelId?: string): Promise<{ elapsedMs: number; text: string }> {
   const res = await fetch("/models/test", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ target, config }),
+    body: JSON.stringify({ target, config, modelId }),
   });
   return parseJSON(res);
 }
@@ -320,4 +320,18 @@ export async function updateSessionExecutionMode(id: string, executionMode: Exec
     body: JSON.stringify({ executionMode }),
   });
   await parseJSON(res);
+}
+
+export async function fetchModels(): Promise<{ models: ModelInfo[]; defaultModelId?: string }> {
+  const data = await parseJSON<{ models: ModelInfo[]; defaultModelId?: string }>(await fetch("/models"));
+  return { models: data.models ?? [], defaultModelId: data.defaultModelId };
+}
+
+export async function updateSessionModel(id: string, modelId: string): Promise<{ id: string; name?: string }> {
+  const res = await fetch(`/sessions/${encodeURIComponent(id)}/model`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ modelId }),
+  });
+  return parseJSON<{ id: string; name?: string }>(res);
 }

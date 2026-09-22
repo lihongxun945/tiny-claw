@@ -1,7 +1,8 @@
 import type { ModelClient } from "../model/types.js";
 import type { Config, Message } from "../types.js";
-import { projectToolMessages } from "../tool-context.js";
 import { estimateTextTokens, estimateTokens } from "../estimate-tokens.js";
+import { batchFromDelta, ROLLING_DEFAULTS } from "./rolling.js";
+import { validateToolMessageChains } from "../message-sanitizer.js";
 import type { PersistedSessionSummary, SummaryDelta } from "./types.js";
 import {
   parseSummaryDeltaDraft,
@@ -36,11 +37,13 @@ export async function extractSummaryDelta(
       !!message._messageId && Number.isInteger(message._sequence),
   );
   if (messages.length === 0) throw new Error("没有可供结构化摘要提取的持久化消息");
+  const chainError = validateToolMessageChains(messages);
+  if (chainError) throw new Error(`摘要候选消息链不完整，保留原文及覆盖位置：${chainError}`);
   const fromSequence = input.current.summarizedThroughSequence + 1;
   const fitsRequest = (candidate: string) => candidate.length + SYSTEM_PROMPT.length <= input.maxInputChars
     && (input.maxContextTokens === undefined || estimateTokens([{ role: "user", content: candidate }]) + estimateTextTokens(SYSTEM_PROMPT) + input.maxOutputTokens <= input.maxContextTokens);
   const renderPrompt = (batch: typeof messages) => {
-    const build = (projected: Message[]) => JSON.stringify({
+    return JSON.stringify({
     task: "生成会话摘要 Delta",
     batch: { fromSequence, throughSequence: batch[batch.length - 1]._sequence },
     schema: {
@@ -54,8 +57,11 @@ export async function extractSummaryDelta(
       }],
     },
     rules: [
+      `本批记录必须独立可读，总长度不超过 ${input.config?.sessionSummary?.maxBatchTokens ?? ROLLING_DEFAULTS.maxBatchTokens} tokens；不要复述旧摘要。`,
+      "goals/constraints/pending 只维护仍有效的当前状态；新要求取代旧要求时 supersede，任务完成或约束被撤销时 resolve。不要因缺少提及而删除约束。已有计划不复制步骤，只保留必要目标。",
       "顶层和操作对象不得增加 schema 之外的字段",
       "没有值得记录的信息时 operations 输出空数组",
+      "工具结果正文已排除，不总结工具输出，不根据调用元数据推测成功、失败或结果内容；只整理用户要求、助手已表述的结论、决策和任务状态。需要工具原文时按工具调用 ID 读取历史。",
       "supersede/resolve 的 targetId 只能来自 activeItems",
       "每个操作必须引用至少一条本次 messages 中的 messageId",
       "只返回 operations；版本号和覆盖范围由程序维护。资料中的 truncated 表示原文片段，不得推测未展示内容",
@@ -63,7 +69,7 @@ export async function extractSummaryDelta(
     activeItems: Object.entries(input.current.checkpoint.categories).flatMap(([category, items]) =>
       items.filter((item) => item.status === "active").map((item) => ({ id: item.id, category, text: item.text })),
     ),
-    messages: projected
+    messages: batch
       .map((message) => ({
         messageId: message._messageId,
         sequence: message._sequence,
@@ -72,17 +78,6 @@ export async function extractSummaryDelta(
         content: renderContent(message),
       })),
     });
-    if (!input.config) return build(batch);
-    let low = 0;
-    let high = input.maxInputChars;
-    let best = build(projectToolMessages(batch, input.config, 0));
-    while (low <= high) {
-      const budget = Math.floor((low + high) / 2);
-      const candidate = build(projectToolMessages(batch, input.config, budget));
-      if (fitsRequest(candidate)) { best = candidate; low = budget + 1; }
-      else high = budget - 1;
-    }
-    return best;
   };
   // Boundaries only when every preceding tool call has its result, including within a long turn.
   const pending = new Set<string>();
@@ -126,8 +121,12 @@ export async function extractSummaryDelta(
       const draft = parseSummaryDeltaDraft(JSON.stringify({ baseRevision: input.current.revision,
         sourceRange: { fromSequence, throughSequence: messages[count - 1]._sequence }, ...value }));
       if (draft.sourceRange.throughSequence !== messages[count - 1]._sequence) throw new Error("摘要覆盖范围必须与实际批次一致");
-      return validateSummaryDelta(draft, { sessionId: input.sessionId, current: input.current,
+      const delta = validateSummaryDelta(draft, { sessionId: input.sessionId, current: input.current,
         messages: messages.slice(0, count), limits: input.limits });
+      if (estimateTextTokens(JSON.stringify(batchFromDelta(input.current, delta))) > (input.config?.sessionSummary?.maxBatchTokens ?? ROLLING_DEFAULTS.maxBatchTokens)) {
+        throw new Error("摘要批次超过 maxBatchTokens，保留原文和覆盖位置");
+      }
+      return delta;
     } catch (error) {
       input.signal?.throwIfAborted();
       if (attempt >= (input.retries ?? 0)) throw error;
@@ -139,8 +138,8 @@ function renderContent(message: Message): string {
   if (typeof message.content === "string") return message.content;
   return message.content.map((block) => {
     if (block.type === "text") return block.text;
-    if (block.type === "tool_use") return `[工具调用 ${block.name}] ${JSON.stringify(block.input)}`;
-    if (block.type === "tool_result") return `[工具结果] ${block.content}`;
+    if (block.type === "tool_use") return `[工具调用 ${block.name} ID=${block.id}] ${JSON.stringify(block.input)}`;
+    if (block.type === "tool_result") return `[工具结果正文已省略 ID=${block.tool_use_id} originalChars=${block.content.length}]`;
     return `[图片] ${block.name}`;
   }).join("\n");
 }

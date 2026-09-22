@@ -145,7 +145,6 @@ function buildSubAgentPrompt(
     task: task.task.trim(),
     context: task.context?.trim() ?? "",
     allowed_tools: allowedTools.join(", "),
-    current_date: new Date().toISOString().slice(0, 10),
   };
 
   return template.replace(/\{\{([^}]+)}}/g, (_, key: string) => values[key.trim()] ?? "");

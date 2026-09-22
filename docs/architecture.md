@@ -67,6 +67,7 @@ src/
 │   │   ├── auto-memory.ts # 自动记忆插件（每 10 轮批量整理长期记忆）
 │   │   ├── plan.ts # 计划执行模式（工具、状态机、恢复 API）
 │   │   ├── attachments.ts # 图片上传路由与 session 附件存储
+│   │   ├── models.ts # 模型列表与会话切换 API（GET /models、PUT /sessions/:id/model）
 │   │   └── logger.ts # 日志插件（通过钩子记录所有事件）
 │   └── feishu/       # 飞书插件（平台适配器）
 │       ├── index.ts  # 插件入口
@@ -223,6 +224,14 @@ Approval 仍关联具体工具、参数和 continuation。批准或拒绝在原 
 
 ### 展示与历史
 
+重建等待审批或用户确认的会话时，保留待执行调用所在轮次的完整持久化消息后缀，包括同批已经执行完成的工具结果；恢复只执行待授权调用，不重放已完成调用。摘要插件使用当前运行时消息投影，不逐条从磁盘替换当前消息，以免重新引入已被清理的孤立调用；历史部分仍从持久化记录读取。
+
+会话摘要投影按完整工具交换保留或移除消息：助手的工具调用及其全部连续结果视为一个整体，旧 Checkpoint 落在交换内部时保留整组。当前片段首条仅在确实是用户问题（不含工具结果）时特殊保留，审批恢复后以助手调用开头的片段不再留下已被摘要覆盖的孤立调用。最终模型请求仍做严格工具链校验；失败日志记录轮次、迭代及投影前后消息的序号、角色、块类型和工具 ID，不记录正文、参数或结果，也不补造结果或重放工具。
+
+主请求与摘要抽取共享已结束历史的协议投影：缺少结果的历史工具调用转成包含原始调用 ID 和参数的文字说明，明确不能推断执行结果；同组已有结果的调用仍保留协议配对。原始消息日志不变。Run 为 running、waiting_approval 或 waiting_user 的调用保持原样，不视为已结束历史。摘要抽取在分批前校验整段候选消息链，结构不完整时保留覆盖位置并报告链路错误，避免孤立调用阻塞所有分批边界后被误报为输入预算不足。
+
+`core-progress` 通过提示词钩子要求复杂任务说明行动意图及关键发现。按 sessionId/turnId 隔离记录最近正文响应时间及随后工具调用数；默认 60 秒或 5 次工具调用后，在下一次请求消息末尾附加临时进展提醒，不修改固定系统提示词或持久化历史，不阻断工具、不额外调用模型。正文响应和提醒均重置计数以节流；暂停、结束、错误时清理，恢复后重新计时，不把等待审批时间算作沉默。配置为 progress.enabled/silenceMs/toolCalls。仅实际模型正文沿现有消息历史和 SSE 快照保存；单次模型请求期间不会伪造进度或插入提醒。
+
 旧消息未保存正文提示时，历史 API 可从该轮 Run 的中断、取消或等待原因生成只读补充，不修改原始历史。旧计划缺失目标也能展示，不要求先修复才能执行工具。
 
 计划面板只提供辅助详情，默认折叠。进度来自 update_plan，真实运行和审批状态来自独立记录。正文由模型说明关键进展与用户问题，计划插件不再用暂停工具控制运行，也不自动追加完成结论。
@@ -255,7 +264,7 @@ OpenAI-compatible 流响应的 reasoning_content 作为协议元数据合并到 
 
 ### 工具结果与上下文预算
 
-core-tool-context 通过 onBeforeModelCall 提供模型侧工具结果投影，纯函数位于 tool-context.ts。完整结果仍由 Agent 原有路径写入 messages.jsonl，工具执行、审批和暂停不受投影影响；不再建立第二份工具原文存储。小结果原样保留，大结果转换为合法 JSON，包含截取标记及 contentRef.toolCallId。搜索结果保留标题、URL、resultIndex 和有界 snippet；普通结果保留退出码、错误和预览。审批与待回答控制结果不裁剪。最终投影按实际成本从最新结果向旧结果分配预算，不平均切分；旧结果至少保留原文引用。最新交互为每个结果保留 readMaxTokens 的阅读预算（不超过 maxResultTokens），避免历史增多导致分页退化到几个字符。摘要插件先按正常单条预算检查压缩阈值并压缩已完成交互；仍无法容纳最新阅读结果时，由最终硬预算检查报告失败，不静默缩成无效片段。分页结果再次缩小时同步更新 nextOffset，避免跳过原文。模型请求投影不回写 MessageHistory，内存和持久化历史均保留原文；摘要插件通过持久化覆盖序号重建后续请求。
+core-tool-context 通过 onBeforeModelCall 提供模型侧工具结果投影，纯函数位于 tool-context.ts。完整结果仍由 Agent 原有路径写入 messages.jsonl，工具执行、审批和暂停不受投影影响。小结果原样保留，大结果转换为合法 JSON，包含截取标记及 contentRef.toolCallId。搜索结果保留标题、URL、resultIndex 和有界 snippet；普通结果保留退出码、错误和预览。审批与待回答控制结果不裁剪。最终投影计入完整动态提示词包装，从最新结果向旧结果分配共享预算，不以每条最低额度突破上限；旧结果至少保留原文引用。readMaxTokens 控制回查读取额度，实际发送仍受共享预算限制。分页结果再次缩小时同步更新 nextOffset，避免跳过原文。模型请求投影不回写 MessageHistory，内存和持久化历史均保留原文；摘要插件通过持久化覆盖序号与结果额度重建后续请求。
 
 session_history_recall 在当前会话内按 tool_call_id 定位原文，可指定 result_index、字符 offset 或 query，返回有界片段及 nextOffset。原文不可跨会话读取。GET /tool-result 为用户提供附件形式的原文下载；Gateway 历史与实时流使用同一展示投影，不把全文直接渲染到页面。这是展示副本，不替代 Agent 内部原始结果或落盘内容。
 
@@ -274,21 +283,24 @@ session-summary 使用同一投影构造抽取请求；输入大小按最终序�
 
 仓库提供两个配置示例：`config.simple.example.json` 是推荐入门配置，`config.all.example.json` 是完整配置参考。实际运行时只读取 `workspace/config.json`。
 
-CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensureConfigFile()`，AgentSession 仍保留幂等兜底：配置文件不存在时生成完整默认配置，已存在时绝不覆盖。远程模型与本地模型可分别启用，同时启用时模型工厂固定优先选择远程模型；仅启用本地模型时不要求 API Key。本地模型目录、显式后台下载、字节级进度和独立连通性测试由 `core-local-models` 插件提供，GGUF 文件及清单保存在 `workspace/models/`。目录覆盖 Qwen3.5 与 Gemma 4 的不同参数规模，WebUI 通过插件路由动态读取，不维护独立的硬编码型号列表。选择本地模型不会触发下载，只有调用下载路由后才开始。每个本地模型在目录中声明建议内存、推荐上下文与模型上限，运行时和摘要插件使用同一个实际上下文值，防止压缩逻辑按远程模型窗口计算而让本地推理溢出。配置 API 保存后会释放空闲会话，使模型与上下文配置在下一次消息时重新加载。
+CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensureConfigFile()`，AgentSession 仍保留幂等兜底：配置文件不存在时生成完整默认配置，已存在时绝不覆盖。模型配置以 `models` 数组为唯一权威：每个 Profile 独立配置 provider、model/apiUrl/apiKey 或 localModelId/contextSize，`defaultModelId` 指定默认模型。旧字段 `apiUrl`/`apiKey`/`model`/`modelProvider`/`remoteModel`/`localModel` 仅在加载时作为单模型输入被归一化迁移成 `remote`/`local` Profile，保存时移除这些扁平字段、不再落盘；GET /config 响应中仍从 `models` 派生出这些扁平字段作为视图，供前端与旧调用方读取。会话可通过 `AgentSession.switchModel` 随时切换模型，`currentModelId` 持久化到 `sessions/<session>/meta.json`，重启后按该值恢复。模型的 HTTP API 由 `core-models` 插件承载：`GET /models` 返回脱敏后的模型列表与 `defaultModelId`，`PUT /sessions/:id/model` 校验并切换会话模型，二者均通过动态路由参数（`:id`）接入插件路由匹配。仅启用本地模型时不要求 API Key。本地模型目录、显式后台下载、字节级进度和独立连通性测试由 `core-local-models` 插件提供，GGUF 文件及清单保存在 `workspace/models/`。目录覆盖 Qwen3.5 与 Gemma 4 的不同参数规模，WebUI 通过插件路由动态读取，不维护独立的硬编码型号列表。选择本地模型不会触发下载，只有调用下载路由后才开始。每个本地模型在目录中声明建议内存、推荐上下文与模型上限，运行时和摘要插件使用同一个实际上下文值，防止压缩逻辑按远程模型窗口计算而让本地推理溢出。配置 API 保存后会释放空闲会话，使模型与上下文配置在下一次消息时重新加载。
 
 本地模型适配器在模型首次输出工具调用时立即终止当前次生成，只把工具调用交回 Agent Loop；它不会向模型注入占位工具结果。工具实际执行并返回真实结果后，Agent Loop 才开始下一次模型调用，确保等待审批期间不会生成基于虚假结果的回答。
 
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
-| apiUrl | API 基础地址 | 必填 |
-| remoteModel | 远程模型启用状态 | enabled=true |
-| localModel | Qwen/Gemma 本地模型、上下文与启用状态 | enabled=false, modelId=qwen3.5-4b-q4, contextSize=32768 |
-| apiKey | API 密钥 | 必填 |
-| model | 模型标识 | 必填 |
-| modelProvider | 模型协议适配器 | anthropic-messages |
+| apiUrl | API 基础地址（派生视图，保存时不落盘） | 由 models[0] 派生；旧格式输入时必填 |
+| remoteModel | 远程模型启用状态（派生视图） | enabled=true |
+| localModel | Qwen/Gemma 本地模型、上下文与启用状态（派生视图） | enabled=false, modelId=qwen3.5-4b-q4, contextSize=32768 |
+| apiKey | API 密钥（派生视图，保存时不落盘） | 由 models[0] 派生；旧格式输入时必填 |
+| model | 模型标识（派生视图，保存时不落盘） | 由 models[0] 派生；旧格式输入时必填 |
+| modelProvider | 模型协议适配器（派生视图） | anthropic-messages |
+| models | 多模型 Profile 数组（唯一权威，含远程与本地模型） | createDefaultConfig 生成 deepseek（openai-chat） |
+| defaultModelId | 默认使用的模型 ID | models[0].id |
 | maxTokens | 单次响应最大 token | 16384 |
 | maxContextTokens | 上下文最大 token 估计 | 128000 |
-| contextCompressionThreshold | 压缩触发阈值（占比） | 0.7 |
+| contextCompressionThreshold | 可用预算的压缩触发比例 | 0.8 |
+| contextCompressionTargetRatio | 可用预算的压缩目标比例，严格小于触发比例 | 0.2 |
 | maxAgentIterations | Agent Loop 最大迭代次数；达到上限时明确提示，显式配置 0 表示不限 | 1000 |
 | emptyResponseRetries | 模型成功返回空文本且无工具调用时的重试次数 | 1 |
 | sessionSummary | Token 触发的持久化摘要配置 | enabled=true, persistent=true；旧 turnThreshold/recentTurns 不再生效 |
@@ -326,7 +338,6 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 | `{{memories}}` | 长期记忆内容 |
 | `{{skills}}` | 可用技能列表 |
 | `{{tools}}` | 内置工具列表（名称 + 描述） |
-| `{{current_date}}` | 当前日期（如 2026-05-22） |
 
 未匹配的占位符替换为空字符串。
 
@@ -341,7 +352,6 @@ CLI 和 Gateway 入口会在加载插件前初始化 workspace 并调用 `ensure
 | `{{task}}` | 当前子任务描述 |
 | `{{context}}` | 子任务补充上下文 |
 | `{{allowed_tools}}` | 当前 sub-agent 可用工具列表 |
-| `{{current_date}}` | 当前日期（如 2026-05-22） |
 
 ### subAgent 配置
 
@@ -556,6 +566,8 @@ OpenAI Chat 兼容实现会将内部消息格式转换为 `system/user/assistant
 
 模型调用页面只展示“请求原文”和“最终回复”：最终回复优先使用 `parsed_response`，缺失时回退到 `response` 或 `error`。`stream_event` 和 `repair` 仍保留在 trace 文件中供底层排查，但不在页面中逐条展示。
 
+列表接口支持 `page`（从 1 开始）、`page_size`（20/50/100，默认 20）及 `session_id`，按 startedAt 与 requestId 倒序返回轻量 traces、page、pageSize、total。每个 trace 旁原子保存 `.json.meta` 索引，不含 events；列表异步读取索引，旧记录缺少索引时逐条异步读取并补建，损坏记录跳过，迁移不覆盖并发写入的新索引。首次索引建立仍可能较慢。详情通过 ID 按需加载，WebUI 使用 `view=display` 仅传输请求和最终响应；省略该参数仍可取得完整 trace。前端翻页替换列表而非追加，筛选和页大小变更回到第一页，列表与详情请求取消旧请求并检查取消状态，防止迟到响应覆盖新选择。
+
 远程模型与 `local-llama` 本地模型统一通过 `onModelDebug` 生命周期写入调用记录。本地模型记录请求参数、消息、工具定义、最终解析结果和错误，不记录逐 Token 流事件；记录携带实际模型 ID 和 session ID，可与远程模型调用一起筛选和查看。
 
 - `request`：发送给模型的原始请求体
@@ -578,13 +590,23 @@ Agent 向插件提供全部未压缩历史和当前轮消息，不按 historyWin
 
 摘要覆盖已验证的完整交互前缀，包括历史轮次及当前轮较早的已完成工具交互，成功落盘后推进覆盖序号；最新用户需求和最新交互保留，不另设 recentTurns。关闭摘要时不生成临时摘要、不按轮数丢弃历史，工具结果预算保护仍生效，硬预算不足时明确报错。取消和失败保留原文及已提交的摘要批次。原始 messages.jsonl 不被摘要改写。
 
-摘要请求将提示词、已有条目、元数据和消息投影一起计入 maxInputChars，同时预留 maxOutputTokens 并检查模型上下文上限；二分选择能容纳的完整交互前缀，工具调用和结果不能拆开。大工具结果采用带原文引用的预算内片段，用户文本不固定截取；仍无法容纳时失败，不推进覆盖序号。所有主模型调用继续执行最终硬预算和工具链合法性检查。
+摘要请求将提示词、已有条目、元数据和消息投影一起计入 maxInputChars，同时预留 maxOutputTokens 并检查模型上下文上限；二分选择能容纳的完整交互前缀，工具调用和结果不能拆开。工具结果正文（包括预览和控制结果正文）完全排除出摘要输入，仅保留调用 ID 与原始长度；调用名称和参数保留在调用元数据中。模型只整理用户要求、助手结论、决策和任务状态，不推测工具结果。用户文本不固定截取；仍无法容纳时失败，不推进覆盖序号。所有主模型调用继续执行最终硬预算和工具链合法性检查。
+
+主请求的工具输出只做确定性截断，不做模型摘要。根据 turnStartIndex 区分当前轮与历史轮，审批恢复沿用原轮边界。历史结果按 plugins.core-tool-context.historyResultMaxChars（默认 500，正整数）保留前缀，附带 truncated、originalChars 和 contentRef.toolCallId；当前轮沿用单条和共享 Token 预算，新结果优先。审批及用户确认控制消息不截断。请求投影保留工具协议配对，不修改磁盘原文；摘要覆盖旧消息组后仍可按调用 ID 读取原结果。
 
 工具边界控制单次输出：fileReadMaxChars 默认 20000，超限明确提示按行读取；bashMaxOutputChars 默认 10000，分别限制 stdout/stderr 尾部，超限标记 truncated 并提供 workspace/tool-output/<uuid>.log 完整日志。file_read 仅对该内部日志目录中的 UUID 日志提供受根目录校验的跨项目只读访问。项目搜索保留原有字符及结果数限制。历史层不对工具实际返回内容二次截断。
 
 ### 会话结构化摘要与原文召回
 
-`core-session-summary` 在模型请求前达到 Token 预算时读取已持久化的历史轮次，生成严格 JSON Delta；低占用时不按轮数生成。校验器要求 revision 与连续 sequence 范围正确，且每个操作只能引用本批真实 `messageId`；代码随后补全来源序号和 turnId、生成确定性 ID，并用纯 Reducer 执行 add/supersede/resolve。成功提交后才推进覆盖序号，后续只提取未覆盖消息。摘要请求也检查模型输入和输出预算，超预算的多消息输入分批提取；单条无法容纳时失败而不推进该批覆盖序号。达到 Delta 数量或存储字符阈值时，旧 revision 先归档，再固化新 Checkpoint。
+滚动摘要使用独立 SummaryBatch（ID、消息覆盖范围、文本、时间），任务状态只保留 active goals/constraints/pending。Delta 仍作为一次更新的校验协议，但先将目标引用解析成独立批次文本，事实与过程不再累计进入任务 Checkpoint。批次、任务状态、覆盖序号在同一原子提交中更新。旧 Checkpoint 纯本地转换：保留覆盖位置和有效任务条目，其余 active 条目作为带来源范围的 legacy 批次保存；先备份旧 revision，再原子切换，不回放已覆盖历史，不调用模型迁移。
+
+集中压缩由 maxBatchesPerCompression（默认 3）和 maxCompressionDurationMs（默认 120000）限制。每批调用前以剩余总时间创建取消信号，并以 Promise race 防止不响应信号的适配器阻塞；迟到结果不提交。用户取消仍传播为取消，而预算耗尽转为保留原文的工具投影兜底，最终硬预算检查保持生效。每批报告批次、覆盖位置、剩余条数和已用时，成功批次即时原子提交，后续请求只处理未覆盖部分。
+
+预算统一为扣除固定提示词、工具定义、输出预留和安全空间后的可用容量，高水位默认 80%，低水位默认 20%；完整动态包装及运行资料均参与计数。正常追加阶段不改写摘要投影。集中整理时依次处理完整历史/本轮较旧交互，选择最近 N 批独立摘要（默认 5），并受 maxBudgetRatio（默认 0.1）约束；单批 maxBatchTokens 默认 1500，生成后校验，超限有限重试。不能达到低水位时从旧工具结果回收正文额度，保留原文引用，最新结果优先但不以每条最低额度突破共享硬预算。
+
+projection 持久化选中批次 ID 与工具结果 Token 上限，旧原文不因淘汰摘要或服务重启重新注入；批次正文不可变。摘要数据和原文仍保留在磁盘供追溯。只在达到低水位时上报达标，必要内容超过目标但符合硬预算时继续，否则最终请求校验拒绝发送。配置加载和设置保存共同校验 `0 < target < trigger < 1`。存储 compact 仅用于归档 Delta，不做摘要再摘要；归档阈值不包含累积的独立批次，避免批次增多后每次都触发归档。
+
+`core-session-summary` 在模型请求前达到高水位时读取持久化历史，生成严格 JSON Delta；低占用时不按轮数生成。校验器要求 revision 与连续 sequence 范围正确，且每个操作只能引用本批真实 `messageId`；程序补全来源、生成确定性 ID，以纯 Reducer 更新任务状态，同时生成独立历史批次。成功提交后才推进覆盖序号，后续只提取未覆盖消息。摘要请求检查输入字符和模型 Token 预算，按完整交互分批；单批无法容纳或摘要超长时不推进该批覆盖序号。达到 Delta 数量或 Checkpoint 字符阈值时先归档旧 revision，再固化 Checkpoint。
 
 模型调用时，摘要被序列化为带 `data-kind="derived-summary"` 和 `role="internal"` 的临时派生上下文。`model-context.ts` 在请求投影阶段将其追加到 System Prompt 的历史资料区，明确它不是新指令，不再使用 `assistant` 角色冒充模型输出，避免思考模式要求 `reasoning_content` 时拒绝请求。带 `_source: runtime_notice` 的程序提示持久化供 UI 展示，但请求投影将它们移入运行资料区；不根据文本猜测旧消息来源。真实模型消息和思考字段不改写，摘要不写入原始历史，工具调用和结果之间不插入合成消息。预算计算涵盖资料及其边界提示，上下文快照仍单列摘要并反映实际 System Prompt；动态资料变化可能影响前缀缓存。未被摘要覆盖的原文全部保留；旧版自由文本摘要只在首次读取时迁移，并带 legacy_summary 来源。旧摘要缺少覆盖时间时不推测覆盖范围，保留历史原文。
 
@@ -698,7 +720,7 @@ Sub-agent 默认只允许 `web_search`、`web_fetch`、`file_read`、`memory_lis
 
 **Prompt 模板：**
 
-Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prompt。默认模板为 `src/prompts/sub_agent.md`，可用 `workspace/sub_agent_prompt.md` 覆盖。模板支持 `{{task}}`、`{{context}}`、`{{allowed_tools}}`、`{{current_date}}`。
+Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prompt。默认模板为 `src/prompts/sub_agent.md`，可用 `workspace/sub_agent_prompt.md` 覆盖。模板支持 `{{task}}`、`{{context}}`、`{{allowed_tools}}`。
 
 **隔离边界：**
 
@@ -730,7 +752,7 @@ Sub-agent 使用独立任务提示词模板，不复用主 agent 的 system prom
 
 采用单文件模板方案，支持用户自定义覆盖。`src/prompts/default.md` 是默认模板，使用 `{{placeholder}}` 占位符语法。用户可在 `workspace/system_prompt.md` 放置自定义模板覆盖默认值。
 
-模板加载逻辑：优先检查 `workspace/system_prompt.md`，存在则使用用户模板，否则使用 `src/prompts/default.md`。运行时将模板占位符替换为 identity、skills、current_date 等基础内容；`{{tools}}` 保留到 `onBuildTurnPrompt`，按当前会话、执行模式和计划阶段动态生成，无此占位符的自定义模板则追加当前工具清单。HookContext 查询工具时同样经过阶段过滤，避免缓存的系统提示词暴露完整工具列表。Profile 与向量召回内容由各自插件通过 `onBuildTurnPrompt` 动态追加，确保写入后下一次模型调用即可生效。
+模板加载逻辑：优先检查 `workspace/system_prompt.md`，存在则使用用户模板，否则使用 `src/prompts/default.md`。运行时将模板占位符替换为 identity、skills 等基础内容（不自动注入当前日期）；`{{tools}}` 保留到 `onBuildTurnPrompt`，按当前会话、执行模式和计划阶段动态生成，无此占位符的自定义模板则追加当前工具清单。HookContext 查询工具时同样经过阶段过滤，避免缓存的系统提示词暴露完整工具列表。Profile 与向量召回内容由各自插件通过 `onBuildTurnPrompt` 动态追加，确保写入后下一次模型调用即可生效。
 
 Agent 对同批工具逐个重新查询当前允许的工具集合。前一个状态更新成功后，后续调用按最新状态校验；更新失败不开放执行工具，完成或暂停步骤后也立即收回执行能力。已开放工具仍须通过执行前插件校验与权限审批。越界调用不执行，持久化配对结果并返回 `status: "blocked"`；`reason` 区分 unregistered_tool 与 currently_unavailable，后者可在条件满足后重试，`availableTools` 给出当前列表，不表示整轮禁用。WebUI 单独显示“已拦截”，不计入成功或失败。
 
@@ -942,7 +964,7 @@ interface PluginManifest {
 - 委托 PluginHost 管理 Manifest 校验、依赖顺序、故障隔离与插件级资源
 - 提供 `setRuntimeDeps()` 在 AgentSession 创建后注入 `Config` 和 `ModelClient`
 
-**路由注册表：** Gateway 启动时通过 PluginManager 加载插件，插件通过 `registerRoute()` 注册路由。请求匹配时插件路由优先于核心路由。
+**路由注册表：** Gateway 启动时通过 PluginManager 加载插件，插件通过 `registerRoute()` 注册路由。请求匹配时插件路由优先于核心路由。路由 `path` 支持 `:param` 动态路径段（如 `/sessions/:id/model`），由 `src/plugins/route-matcher.ts` 的 `matchRoutePath()` 纯函数匹配，匹配到的参数以原始 segment 形式写入 `RouteContext.params`，由 handler 自行 `decodeURIComponent`；Web 静态服务器代理判断同样复用该匹配器，使插件新增的动态路由无需在代理白名单中单独登记。
 
 **入口文件变化：**
 

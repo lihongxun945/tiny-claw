@@ -66,7 +66,7 @@ describe("Gateway HTTP API", () => {
 
   it("serves canonical defaults and removes obsolete settings on save without changing legacy protocol", async () => {
     const initial = await json(`${gateway.apiUrl}/config`);
-    expect(initial.body.defaults).toMatchObject({ maxTokens: 16384, searchProvider: "duckduckgo", modelProvider: "openai-chat" });
+    expect(initial.body.defaults).toMatchObject({ maxTokens: 16384, searchProvider: "duckduckgo", models: [{ id: "deepseek", provider: "openai-chat" }], defaultModelId: "deepseek" });
     expect(initial.body.config.modelProvider).toBe("anthropic-messages");
     const saved = await json(`${gateway.apiUrl}/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({
       ...initial.body.config, contextCompressionMaxChars: -1, historyWindowSize: 0,
@@ -139,7 +139,10 @@ describe("Gateway HTTP API", () => {
       const config = await json(`${gateway.apiUrl}/config`);
       await json(`${gateway.apiUrl}/config`, {
         method: "PUT", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...config.body.config, apiUrl: `http://127.0.0.1:${address.port}`, modelProvider: "openai-chat" }),
+        body: JSON.stringify({
+          ...config.body.config,
+          models: (config.body.config.models as Array<Record<string, unknown>>).map((item) => ({ ...item, provider: "openai-chat", apiUrl: `http://127.0.0.1:${address.port}` })),
+        }),
       });
       const created = await json(`${gateway.apiUrl}/sessions`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: "chat" }),
@@ -202,7 +205,7 @@ describe("Gateway HTTP API", () => {
 
     const disk = JSON.parse(readFileSync(resolve(workspacePath, "config.json"), "utf-8"));
     expect(disk).toMatchObject({
-      apiKey: "test-api-key",
+      models: [{ id: "remote", apiKey: "test-api-key" }],
       ollamaApiKey: "ollama-secret",
       plugins: {
         demo: {
@@ -452,6 +455,38 @@ describe("Gateway HTTP API", () => {
       body: JSON.stringify({ executionMode: "invalid" }),
     });
     expect(invalid).toEqual({ status: 400, body: { error: "executionMode 仅支持 normal 或 plan" } });
+  });
+
+  it("lists models and switches a session model", async () => {
+    const modelsResponse = await json(`${gateway.apiUrl}/models`);
+    expect(modelsResponse.status).toBe(200);
+    expect(modelsResponse.body.models).toContainEqual(expect.objectContaining({ id: "remote", provider: "anthropic-messages" }));
+    expect(modelsResponse.body.defaultModelId).toBe("remote");
+
+    const created = await json(`${gateway.apiUrl}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "chat" }),
+    });
+    const sessionId = created.body.session.id as string;
+
+    const switched = await json(`${gateway.apiUrl}/sessions/${sessionId}/model`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ modelId: "remote" }),
+    });
+    expect(switched).toEqual({ status: 200, body: { id: "remote", name: "远程模型" } });
+
+    const sessions = await json(`${gateway.apiUrl}/history/sessions`);
+    expect(sessions.body.sessions).toContainEqual(expect.objectContaining({ id: sessionId, currentModelId: "remote" }));
+    expect(readSessionMeta(workspacePath, sessionId)?.currentModelId).toBe("remote");
+
+    const missing = await json(`${gateway.apiUrl}/sessions/${sessionId}/model`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ modelId: "nope" }),
+    });
+    expect(missing).toEqual({ status: 404, body: { error: "模型 nope 不存在" } });
   });
 
   it("reloads an idle session after model configuration changes", async () => {

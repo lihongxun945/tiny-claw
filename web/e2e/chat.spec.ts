@@ -512,7 +512,7 @@ test("shows structured model request data in the debug log view", async ({ page 
   await page.route("**/logs", async (route) => {
     await route.fulfill({ json: { files: [] } });
   });
-  await page.route("**/debug/model-calls?id=request-1", async (route) => {
+  await page.route("**/debug/model-calls?id=request-1&view=display", async (route) => {
     await route.fulfill({
       json: {
         trace: {
@@ -542,9 +542,10 @@ test("shows structured model request data in the debug log view", async ({ page 
       },
     });
   });
-  await page.route("**/debug/model-calls", async (route) => {
+  await page.route("**/debug/model-calls?page=*&page_size=*", async (route) => {
     await route.fulfill({
       json: {
+        page: 1, pageSize: 20, total: 1,
         traces: [{
           requestId: "request-1",
           sessionId: "session-1",

@@ -12,6 +12,7 @@ import { coreChatCommandsPlugin } from "./chat-commands.js";
 import { coreAttachmentsPlugin } from "./attachments.js";
 import { coreDebugPlugin } from "./debug.js";
 import { coreLocalModelsPlugin } from "./local-models.js";
+import { coreModelsPlugin } from "./models.js";
 import { coreProjectPlugin } from "./project.js";
 import { coreProjectToolsPlugin } from "./project-tools.js";
 import { corePlanPlugin } from "./plan.js";
@@ -21,6 +22,7 @@ import { coreProfileMemoryPlugin } from "./profile-memory.js";
 import { coreContextInspectorPlugin } from "./context-inspector.js";
 import { coreToolContextPlugin } from "./tool-context.js";
 import { coreNotificationsPlugin } from "./notifications.js";
+import { coreProgressPlugin } from "./progress.js";
 
 export const corePlugins: Plugin[] = [
   coreChatCommandsPlugin,
@@ -28,6 +30,7 @@ export const corePlugins: Plugin[] = [
   coreDebugPlugin,
   coreContextInspectorPlugin,
   coreLocalModelsPlugin,
+  coreModelsPlugin,
   coreToolsPlugin,
   coreBackgroundPlugin,
   coreProfileMemoryPlugin,
@@ -39,6 +42,7 @@ export const corePlugins: Plugin[] = [
   corePlanPlugin,
   coreUserInputPlugin,
   coreHistoryPlugin,
+  coreProgressPlugin,
   coreSessionSummaryPlugin,
   coreToolContextPlugin,
   coreSessionRecallPlugin,

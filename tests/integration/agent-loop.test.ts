@@ -152,6 +152,23 @@ describe("AgentSession loop", () => {
     removeTempWorkspace(workspacePath);
   });
 
+  it("reminds silent tool loops without persisting reminders or changing the system prefix", async () => {
+    registerTool(manager, { name: "progress_probe", description: "read", effect: "read", inputSchema: { type: "object", properties: {} }, execute: async () => "ok" });
+    const client = new FakeModelClient([
+      ...Array.from({ length: 5 }, (_, i): ChatResponse => ({ text: "", toolCalls: [{ type: "tool_use", id: `p${i}`, name: "progress_probe", input: {} }] })),
+      { text: "已完成检查，结论如下。", toolCalls: [] },
+    ]);
+    const session = new AgentSession("progress-loop", workspacePath, manager, {}, client);
+    const events = await collect(session.chat("检查项目"));
+    expect(client.calls).toHaveLength(6);
+    expect(client.calls[5].messages.at(-1)?.content).toContain("执行进展提醒");
+    expect(client.calls[5].systemPrompt).toBe(client.calls[0].systemPrompt);
+    expect(events).toContainEqual({ type: "text_delta", text: "已完成检查，结论如下。" });
+    const saved = JSON.stringify(readSessionMessages(workspacePath, "progress-loop"));
+    expect(saved).toContain("已完成检查");
+    expect(saved).not.toContain("执行进展提醒");
+  });
+
   it("streams a direct model response and completes", async () => {
     const client = new FakeModelClient([{ text: "hello", toolCalls: [] }]);
     const session = new AgentSession("direct", workspacePath, manager, {}, client);
@@ -1295,7 +1312,7 @@ describe("AgentSession loop", () => {
     expect(gatedTool).toHaveBeenCalledTimes(1);
   });
 
-  it("restores a persisted approval in a new AgentSession", async () => {
+  it.each(["approve", "reject"])("restores completed sibling results before %s in a new AgentSession", async action => {
     const config = loadConfig(workspacePath);
     config.sessionSummary.enabled = true;
     config.security = { ...config.security, mode: "ask" };
@@ -1311,10 +1328,15 @@ describe("AgentSession loop", () => {
       return permission.allowed ? "restored-result" : permission.result;
     });
     registerTool(manager, { name: "durable_tool", description: "durable", inputSchema: { type: "object" }, execute });
+    const completed = vi.fn(async () => "already-completed-result");
+    registerTool(manager, { name: "completed_tool", description: "read", inputSchema: { type: "object" }, execute: completed });
     const firstClient = new FakeModelClient([{
       text: "等待审批",
       reasoningContent: "durable protocol metadata",
-      toolCalls: [{ type: "tool_use", id: "durable-call", name: "durable_tool", input: { value: 1 } }],
+      toolCalls: [
+        { type: "tool_use", id: "completed-call", name: "completed_tool", input: {} },
+        { type: "tool_use", id: "durable-call", name: "durable_tool", input: { value: 1 } },
+      ],
     }]);
     const firstSession = new AgentSession("durable-approval", workspacePath, manager, {}, firstClient);
     saveSessionState(workspacePath, { sessionId: firstSession.id, summary: "重启恢复摘要", pendingMessages: [], turnsSinceSummary: 0 });
@@ -1333,15 +1355,18 @@ describe("AgentSession loop", () => {
         && message.content.some(block => block.type === "tool_use" && block.id === "durable-call"))?._reasoningContent)
         .toBe("durable protocol metadata");
       expect(JSON.stringify(messages)).toContain('"tool_use_id":"durable-call"');
-      expect(JSON.stringify(messages)).toContain('"content":"restored-result"');
+      expect(JSON.stringify(messages)).toContain(action === "approve" ? "restored-result" : "用户拒绝执行");
+      expect(JSON.stringify(messages)).toContain("already-completed-result");
+      expect(messages.filter(message => Array.isArray(message.content) && message.content.some(block => block.type === "tool_result" && block.tool_use_id === "completed-call"))).toHaveLength(1);
       return { text: "恢复完成", toolCalls: [] };
     }]);
-    expect(approveRequest(workspacePath, approval.id)?.status).toBe("approved");
+    if (action === "approve") expect(approveRequest(workspacePath, approval.id)?.status).toBe("approved");
     const restoredSession = new AgentSession("durable-approval", workspacePath, restoredManager, {}, restoredClient);
-    expect((await collect(restoredSession.resumeApproval(approval.id))).at(-1)).toEqual({
+    expect((await collect(action === "approve" ? restoredSession.resumeApproval(approval.id) : restoredSession.rejectApproval(approval.id))).at(-1)).toEqual({
       type: "done", text: "恢复完成", reason: "completed",
     });
-    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledTimes(action === "approve" ? 2 : 1);
+    expect(completed).toHaveBeenCalledTimes(1);
     expect(listSessionApprovalContinuations(workspacePath, firstSession.id)).toEqual([]);
     await restoredManager.destroy();
   });
@@ -1434,7 +1459,7 @@ describe("AgentSession loop", () => {
   });
 
   it.each([false, true])("keeps the run busy until synchronous compression settles (failure=%s)", async (fails) => {
-    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.1, sessionSummary: { enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 } });
+    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.1, contextCompressionTargetRatio: 0.05, sessionSummary: { maxBudgetRatio: 0.025, enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 } });
     const pm = new PluginManager(workspace);
     let release!: () => void;
     const waiting = new Promise<void>((resolve) => { release = resolve; });
@@ -1478,7 +1503,7 @@ describe("AgentSession loop", () => {
   });
 
   it("cancels synchronous summary without committing it and unlocks the session", async () => {
-    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.1, sessionSummary: { enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 } });
+    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.1, contextCompressionTargetRatio: 0.05, sessionSummary: { maxBudgetRatio: 0.025, enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 } });
     const pm = new PluginManager(workspace);
     let pending: Promise<AgentEvent[]> | undefined;
     let session: AgentSession | undefined;
@@ -1512,7 +1537,8 @@ describe("AgentSession loop", () => {
     const summaryWorkspace = createTempWorkspace({
       autoMemory: { enabled: false },
       contextCompressionThreshold: 0.1,
-      sessionSummary: { enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 },
+      contextCompressionTargetRatio: 0.05,
+      sessionSummary: { maxBudgetRatio: 0.025, enabled: true, persistent: true, turnThreshold: 1, recentTurns: 1 },
     });
     const firstManager = new PluginManager(summaryWorkspace);
     const secondManager = new PluginManager(summaryWorkspace);
@@ -1524,7 +1550,8 @@ describe("AgentSession loop", () => {
 
       expect(await collect(firstSession.chat("记住这个目标"))).toEqual([
         { type: "status", stage: "session_summary", state: "started", message: "正在进行上下文压缩...", beforeTokens: expect.any(Number) },
-        { type: "status", stage: "session_summary", state: "completed", message: "上下文压缩完成", beforeTokens: expect.any(Number), afterTokens: expect.any(Number) },
+        { type: "status", stage: "session_summary", state: "started", message: expect.stringContaining("正在压缩第 1/3 批"), beforeTokens: expect.any(Number) },
+        { type: "status", stage: "session_summary", state: "completed", message: "上下文压缩达标", beforeTokens: expect.any(Number), afterTokens: expect.any(Number) },
         { type: "text_delta", text: "第一轮完成" },
         { type: "done", text: "第一轮完成", reason: "completed" },
       ]);
@@ -1588,7 +1615,7 @@ describe("AgentSession loop", () => {
   });
 
   it("only extracts uncovered history after restarting a compressed session", async () => {
-    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.1, sessionSummary: { enabled: true, recentTurns: 0 } });
+    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.1, contextCompressionTargetRatio: 0.05, sessionSummary: { maxBudgetRatio: 0.025, enabled: true, recentTurns: 0 } });
     const first = new PluginManager(workspace);
     const second = new PluginManager(workspace);
     try {
@@ -2066,13 +2093,13 @@ describe("AgentSession loop", () => {
   });
 
   it("summarizes historical tools at the token threshold and preserves the original on disk and restart", async () => {
-    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.1, sessionSummary: { enabled: true } });
+    const workspace = createTempWorkspace({ autoMemory: { enabled: false }, contextCompressionThreshold: 0.05, contextCompressionTargetRatio: 0.025, sessionSummary: { maxBudgetRatio: 0.01, enabled: true } });
     const firstManager = new PluginManager(workspace);
     const secondManager = new PluginManager(workspace);
     try {
       await firstManager.loadCorePlugins();
       const source = [
-        { role: "user" as const, content: "old task" },
+        { role: "user" as const, content: "old task".repeat(3000) },
         { role: "assistant" as const, content: [{ type: "tool_use" as const, id: "old-tool", name: "bash", input: { command: "test" } }] },
         { role: "user" as const, content: [{ type: "tool_result" as const, tool_use_id: "old-tool", content: "历史工具结果".repeat(3500) }] },
         { role: "assistant" as const, content: "finished" },
@@ -2083,7 +2110,7 @@ describe("AgentSession loop", () => {
       expect(client.completeCalls).toHaveLength(1);
       const request = JSON.parse(String(client.completeCalls[0][0].content));
       expect(request.batch.throughSequence).toBe(4);
-      expect(request.messages[2].content).toContain("contentRef");
+      expect(request.messages[2].content).toContain("工具结果正文已省略 ID=old-tool");
       expect(request.messages[2].content).not.toContain("历史工具结果".repeat(3500));
       expect(JSON.stringify(client.calls[0])).not.toContain("old-tool");
       expect(JSON.stringify(readSessionMessages(workspace, "tool-summary"))).toContain("old-tool");

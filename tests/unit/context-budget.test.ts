@@ -27,7 +27,7 @@ describe("calculateMessageTokenBudget", () => {
   it("applies the trigger to the full input, not just message tokens", () => {
     const prompt = "system".repeat(100);
     expect(calculateMessageTokenBudget(config(), prompt, [])).toBe(
-      7000 - estimateTextTokens(prompt) - estimateTextTokens("[]"),
+      Math.floor((8500 - estimateTextTokens(prompt) - estimateTextTokens("[]")) * 0.7),
     );
   });
   it("reserves system prompt, tools, and output space", () => {

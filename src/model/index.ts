@@ -1,4 +1,4 @@
-import type { Config } from "../types.js";
+import type { Config, ModelProfile } from "../types.js";
 import type { ModelClient, ModelClientOptions, ModelProvider } from "./types.js";
 import { AnthropicMessagesClient } from "./anthropic.js";
 import { OpenAIChatClient } from "./openai.js";
@@ -20,6 +20,25 @@ export function createModelClient(config: Config, options: ModelClientOptions = 
     default:
       throw new Error(`不支持的模型协议: ${provider}`);
   }
+}
+
+export function createModelClientFromProfile(
+  profile: ModelProfile,
+  config: Config,
+  options: ModelClientOptions = {},
+): ModelClient {
+  return createModelClient({
+    ...config,
+    apiUrl: profile.apiUrl ?? config.apiUrl,
+    apiKey: profile.apiKey ?? config.apiKey,
+    model: profile.model ?? config.model,
+    modelProvider: profile.provider,
+    remoteModel: { enabled: profile.provider !== "local-llama" },
+    localModel: profile.provider === "local-llama"
+      ? { enabled: true, modelId: profile.localModelId, contextSize: profile.contextSize }
+      : { enabled: false },
+    maxTokens: profile.maxTokens ?? config.maxTokens,
+  }, options);
 }
 
 export type { ModelClient, ModelClientOptions, ModelDebugEvent, ModelDebugPhase, ModelProvider } from "./types.js";

@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("uses server defaults without writing untouched defaults or obsolete fields", async ({ page }) => {
   let saved: Record<string, unknown> = {};
-  const config = { apiUrl: "https://example.com", apiKey: "", model: "custom", modelProvider: "anthropic-messages", remoteModel: { enabled: true }, customExtension: { keep: true } };
+  const config = { models: [{ id: "remote", apiUrl: "https://example.com", apiKey: "", model: "custom", provider: "anthropic-messages" }], defaultModelId: "remote", customExtension: { keep: true } };
   await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [] } }));
   await page.route("**/config", (route) => {
     if (route.request().method() === "PUT") {
@@ -13,18 +13,18 @@ test("uses server defaults without writing untouched defaults or obsolete fields
   });
   await page.goto("/");
   await page.getByRole("button", { name: "配置" }).click();
-  await expect(page.getByLabel("单次回复 Token", { exact: true })).toHaveValue("24576");
+  await expect(page.getByLabel("单次回复 Token", { exact: true }).last()).toHaveValue("24576");
   await expect(page.getByLabel("搜索引擎", { exact: true })).toHaveValue("duckduckgo");
   await expect(page.getByLabel("压缩摘要字符上限", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("历史窗口轮数", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("摘要字符上限", { exact: true })).toHaveCount(0);
-  await page.getByRole("textbox", { name: /^API Key/ }).fill("changed");
+  await page.getByLabel("API Key", { exact: true }).fill("changed");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByText(/配置已保存/)).toBeVisible();
   expect(saved).not.toHaveProperty("subAgent");
   expect(saved).not.toHaveProperty("maxTokens");
   expect(saved.customExtension).toEqual({ keep: true });
-  expect(saved.modelProvider).toBe("anthropic-messages");
+  expect(saved.models).toEqual([expect.objectContaining({ provider: "anthropic-messages", apiKey: "changed" })]);
 });
 
 test("shows a retry action when local model status cannot be loaded", async ({ page }) => {
@@ -38,6 +38,7 @@ test("shows a retry action when local model status cannot be loaded", async ({ p
 
   await page.goto("/");
   await page.getByRole("button", { name: "配置" }).click();
+  await page.getByRole("switch", { name: "启用本地模型" }).check();
   await expect(page.getByText("模型状态加载失败")).toBeVisible();
   await expect(page.getByText("模型服务暂时不可用")).toBeVisible();
   await expect(page.getByRole("button", { name: "重新加载" })).toBeVisible();
@@ -70,14 +71,12 @@ test("configures and tests remote, Qwen, and Gemma local models", async ({ page 
     await route.fulfill({ json: { ok: true, elapsedMs: 12, text: "OK" } });
   });
   await page.route("**/config", async (route) => route.fulfill({ json: { config: {
-    remoteModel: { enabled: true },
-    localModel: { enabled: false, modelId: "qwen3.5-4b-q4", contextSize: 32768 },
-    apiUrl: "https://example.com/api", apiKey: "test***", model: "test-model",
+    models: [{ id: "remote", provider: "openai-chat", apiUrl: "https://example.com/api", apiKey: "test***", model: "test-model" }], defaultModelId: "remote",
   } } }));
 
   await page.goto("/");
   await page.getByRole("button", { name: "配置" }).click();
-  await expect(page.getByRole("switch", { name: "启用远程模型" })).toBeChecked();
+  await expect(page.getByLabel("API Key", { exact: true })).toHaveValue("test***");
   await expect(page.getByRole("heading", { name: "远程模型" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "本地模型" })).toBeVisible();
   await page.getByRole("switch", { name: "启用本地模型" }).check();
@@ -94,7 +93,7 @@ test("configures and tests remote, Qwen, and Gemma local models", async ({ page 
   expect(downloadRequests).toBe(1);
   localState = "ready";
   await expect(page.getByRole("button", { name: "测试模型" })).toBeVisible({ timeout: 5000 });
-  await page.getByRole("button", { name: "测试连接" }).click();
+  await page.getByRole("button", { name: "测试", exact: true }).click();
   await page.getByRole("button", { name: "测试模型" }).click();
   expect(testedTargets).toEqual(["remote", "local"]);
 });
@@ -111,9 +110,7 @@ test("shows config save errors", async ({ page }) => {
     await route.fulfill({
       json: {
         config: {
-          apiUrl: "https://example.com/api",
-          apiKey: "test***",
-          model: "test-model",
+          models: [{ id: "remote", provider: "openai-chat", apiUrl: "https://example.com/api", apiKey: "test***", model: "test-model" }], defaultModelId: "remote",
         },
       },
     });
@@ -121,7 +118,7 @@ test("shows config save errors", async ({ page }) => {
 
   await page.goto("/");
   await page.getByRole("button", { name: "配置" }).click();
-  await page.getByRole("textbox", { name: /^API Key/ }).fill("new-api-key");
+  await page.getByLabel("API Key", { exact: true }).fill("new-api-key");
   await page.getByRole("button", { name: "保存", exact: true }).click();
 
   await expect(page.getByText("invalid config")).toBeVisible();

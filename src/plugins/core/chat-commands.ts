@@ -139,14 +139,13 @@ function contextLengthText(ctx: ChatCommandContext): string {
   const allTokens = estimateTokens(allMessages);
   const currentTurnTokens = estimateTokens(currentTurnMessages);
   const maxContextTokens = ctx.config.maxContextTokens;
-  const threshold = Math.floor(maxContextTokens * ctx.config.contextCompressionThreshold);
   const percent = maxContextTokens > 0 ? Math.round((windowTokens / maxContextTokens) * 100) : 0;
-  const thresholdPercent = maxContextTokens > 0 ? Math.round((threshold / maxContextTokens) * 100) : 0;
+  const thresholdPercent = Math.round(ctx.config.contextCompressionThreshold * 100);
 
   return [
     "当前上下文长度估算：",
     `- 当前发送窗口：${windowTokens} tokens，${windowMessages.length} 条消息，约 ${percent}% / ${maxContextTokens}`,
-    `- 压缩阈值：${threshold} tokens，约 ${thresholdPercent}%`,
+    `- 压缩阈值：可用预算的 ${thresholdPercent}%，目标 ${Math.round((ctx.config.contextCompressionTargetRatio ?? 0.2) * 100)}%（扣除固定开销、输出预留和安全空间后计算）`,
     `- 当前轮：${currentTurnTokens} tokens，${currentTurnMessages.length} 条消息`,
     `- 会话完整历史：${allTokens} tokens，${allMessages.length} 条消息`,
     "",

@@ -19,6 +19,8 @@ export interface SessionMeta {
   pinned: boolean;
   context: SessionContext;
   preferences: { executionMode: ExecutionMode };
+  /** 当前会话选用的模型 ID（对应 config.models[].id）；缺省表示使用默认模型 */
+  currentModelId?: string;
   lastMessageSequence: number;
 }
 
@@ -185,6 +187,23 @@ export function updateSessionExecutionMode(
   return updated;
 }
 
+export function updateSessionModelId(
+  workspacePath: string,
+  sessionId: string,
+  modelId: string,
+): SessionMeta {
+  const path = resolve(sessionDir(workspacePath, sessionId), "meta.json");
+  const meta = readSessionMetaPath(path);
+  if (!meta) throw new Error("会话不存在");
+  const updated = {
+    ...meta,
+    updatedAt: new Date().toISOString(),
+    currentModelId: modelId,
+  };
+  writeJsonAtomicSync(path, updated);
+  return updated;
+}
+
 async function updateSessionMeta(workspacePath: string, sessionId: string, message: Message): Promise<void> {
   const dir = sessionDir(workspacePath, sessionId);
   const path = resolve(dir, "meta.json");
@@ -203,6 +222,7 @@ async function updateSessionMeta(workspacePath: string, sessionId: string, messa
     pinned: existing?.pinned ?? false,
     context: existing?.context ?? { mode: "chat" },
     preferences: existing?.preferences ?? { executionMode: "normal" },
+    currentModelId: existing?.currentModelId,
     lastMessageSequence: message._sequence ?? existing?.lastMessageSequence ?? 0,
   };
   await writeJsonAtomic(path, meta);
@@ -226,6 +246,9 @@ function readSessionMetaPath(path: string): SessionMeta | undefined {
       preferences: {
         executionMode: parsed.preferences?.executionMode === "plan" ? "plan" : "normal",
       },
+      currentModelId: typeof parsed.currentModelId === "string" && parsed.currentModelId
+        ? parsed.currentModelId
+        : undefined,
       lastMessageSequence: typeof parsed.lastMessageSequence === "number"
         && Number.isInteger(parsed.lastMessageSequence)
         && parsed.lastMessageSequence >= 0

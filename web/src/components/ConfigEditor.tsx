@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { downloadLocalModel, fetchConfigSettings, fetchLocalModels, testModel, updateConfig, type LocalModelStatus } from "../lib/api.js";
+import ModelProfilesEditor from "./ModelProfilesEditor.js";
+import type { ModelProfile } from "../types.js";
 
-type FieldType = "text" | "password" | "number" | "select" | "checkbox" | "list" | "json";
+type FieldType = "text" | "password" | "number" | "percent" | "select" | "checkbox" | "list" | "json";
 
 interface FieldDef {
   key: string;
@@ -57,29 +59,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function readProfiles(value: unknown): ModelProfile[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).map((item) => ({
+    id: String(item.id ?? ""),
+    name: typeof item.name === "string" ? item.name : undefined,
+    provider: (item.provider ?? "anthropic-messages") as ModelProfile["provider"],
+    model: typeof item.model === "string" ? item.model : undefined,
+    apiUrl: typeof item.apiUrl === "string" ? item.apiUrl : undefined,
+    apiKey: typeof item.apiKey === "string" ? item.apiKey : undefined,
+    localModelId: typeof item.localModelId === "string" ? item.localModelId : undefined,
+    contextSize: typeof item.contextSize === "number" ? item.contextSize : undefined,
+    maxTokens: typeof item.maxTokens === "number" ? item.maxTokens : undefined,
+  }));
+}
+
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";
   const gigabytes = bytes / (1024 ** 3);
   if (gigabytes >= 1) return `${gigabytes.toFixed(2)} GB`;
   return `${(bytes / (1024 ** 2)).toFixed(0)} MB`;
 }
-
-const REMOTE_MODEL_FIELDS: FieldDef[] = [
-  { key: "apiUrl", label: "API URL", type: "text", required: true },
-  { key: "apiKey", label: "API Key", type: "password", description: "仅远程模型需要；后端只返回脱敏值。" },
-  { key: "model", label: "模型", type: "text", required: true },
-  { key: "modelProvider", label: "模型协议", type: "select", options: ["anthropic-messages", "openai-chat", "chatgpt"] },
-];
-
-const LOCAL_MODEL_FIELDS: FieldDef[] = [
-  {
-    key: "localModel.modelId",
-    label: "本地模型",
-    type: "select",
-
-  },
-  { key: "localModel.contextSize", label: "本地上下文 Token", type: "number" },
-];
 
 const FIELD_GROUPS: FieldGroup[] = [
   {
@@ -88,7 +88,8 @@ const FIELD_GROUPS: FieldGroup[] = [
       { key: "maxTokens", label: "单次回复 Token", type: "number" },
       { key: "emptyResponseRetries", label: "空响应重试次数", type: "number" },
       { key: "maxContextTokens", label: "上下文 Token 上限", type: "number" },
-      { key: "contextCompressionThreshold", label: "上下文压缩阈值", type: "number" },
+      { key: "contextCompressionThreshold", label: "上下文压缩触发阈值（%）", type: "percent" },
+      { key: "contextCompressionTargetRatio", label: "压缩目标（%，必须小于触发阈值）", type: "percent" },
       { key: "fileReadMaxChars", label: "文件读取输出字符上限", type: "number" },
       { key: "bashMaxOutputChars", label: "命令单路输出字符上限", type: "number" },
       { key: "maxAgentIterations", label: "最大 Agent 迭代", type: "number", description: "达到上限时任务会停止并明确提示；设置为 0 表示不限制。" },
@@ -111,6 +112,11 @@ const FIELD_GROUPS: FieldGroup[] = [
       { key: "sessionSummary.maxSourcesPerOperation", label: "单次变更最大来源数", type: "number" },
       { key: "sessionSummary.checkpointDeltaThreshold", label: "摘要存储整理批次阈值", type: "number" },
       { key: "sessionSummary.checkpointMaxChars", label: "摘要存储整理字符阈值", type: "number" },
+      { key: "sessionSummary.recentBatchCount", label: "最近摘要批次数", type: "number" },
+      { key: "sessionSummary.maxBatchesPerCompression", label: "单次压缩最多批次", type: "number" },
+      { key: "sessionSummary.maxCompressionDurationMs", label: "单次压缩总耗时上限（毫秒）", type: "number" },
+      { key: "sessionSummary.maxBatchTokens", label: "单批摘要 Token 上限", type: "number" },
+      { key: "sessionSummary.maxBudgetRatio", label: "摘要预算（%，不超过压缩目标）", type: "percent" },
       { key: "sessionSummary.recallMaxResults", label: "原文召回条数上限", type: "number" },
       { key: "sessionSummary.recallMaxOutputChars", label: "原文召回输出上限", type: "number" },
       { key: "sessionSummary.recallMaxQueryChars", label: "原文检索词长度上限", type: "number" },
@@ -224,7 +230,7 @@ const FIELD_GROUPS: FieldGroup[] = [
   },
 ];
 
-const DRAFT_FIELDS = [...REMOTE_MODEL_FIELDS, ...LOCAL_MODEL_FIELDS, ...FIELD_GROUPS.flatMap((group) => group.fields)]
+const DRAFT_FIELDS = FIELD_GROUPS.flatMap((group) => group.fields)
   .filter((field) => field.type === "list" || field.type === "json");
 
 function buildDrafts(config: Record<string, unknown>, defaults: Record<string, unknown>): Record<string, string> {
@@ -247,8 +253,8 @@ export default function ConfigEditor() {
   const [localModels, setLocalModels] = useState<LocalModelStatus[]>([]);
   const [localModelsLoading, setLocalModelsLoading] = useState(true);
   const [localModelsError, setLocalModelsError] = useState("");
-  const [testing, setTesting] = useState<"remote" | "local" | null>(null);
-  const [modelMessages, setModelMessages] = useState<Partial<Record<"remote" | "local", { text: string; error: boolean }>>>({});
+  const [testing, setTesting] = useState<string | null>(null);
+  const [modelMessages, setModelMessages] = useState<Partial<Record<string, { text: string; error: boolean }>>>({});
 
   const refreshLocalModels = useCallback(async (showLoading = false) => {
     if (showLoading) setLocalModelsLoading(true);
@@ -287,12 +293,72 @@ export default function ConfigEditor() {
   }, []);
 
   const handleChange = (key: string, value: unknown) => {
+    setEdited((previous) => setValue(previous, key, value));
+  };
+
+  const handleRemoteProfilesChange = (nextRemote: ModelProfile[]) => {
     setEdited((previous) => {
-      const next = setValue(previous, key, value);
-      if (key !== "localModel.modelId") return next;
-      const model = localModels.find((item) => item.id === value);
-      return model ? setValue(next, "localModel.contextSize", model.recommendedContextTokens) : next;
+      const prevModels = readProfiles(getValue(previous, "models"));
+      const local = prevModels.find((profile) => profile.provider === "local-llama");
+      const nextModels = local ? [...nextRemote, local] : nextRemote;
+      let next = setValue(previous, "models", nextModels);
+      const currentDefault = typeof getValue(next, "defaultModelId") === "string" ? String(getValue(next, "defaultModelId")) : "";
+      if (currentDefault && !nextModels.some((profile) => profile.id === currentDefault)) {
+        next = setValue(next, "defaultModelId", undefined);
+      }
+      return next;
     });
+  };
+
+  const handleLocalEnabledChange = (enabled: boolean) => {
+    setEdited((previous) => {
+      const prevModels = readProfiles(getValue(previous, "models"));
+      const remote = prevModels.filter((profile) => profile.provider !== "local-llama");
+      let nextModels: ModelProfile[];
+      if (enabled) {
+        const existing = prevModels.find((profile) => profile.provider === "local-llama");
+        const local: ModelProfile = existing ?? {
+          id: "local",
+          name: "本地模型",
+          provider: "local-llama",
+          localModelId: localModels.find((model) => model.installed)?.id ?? localModels[0]?.id ?? "",
+        };
+        nextModels = [...remote, local];
+      } else {
+        nextModels = remote;
+      }
+      let next = setValue(previous, "models", nextModels);
+      const currentDefault = typeof getValue(next, "defaultModelId") === "string" ? String(getValue(next, "defaultModelId")) : "";
+      if (!enabled && currentDefault === "local") {
+        next = setValue(next, "defaultModelId", undefined);
+      }
+      return next;
+    });
+  };
+
+  const handleLocalModelChange = (modelId: string) => {
+    setEdited((previous) => {
+      const prevModels = readProfiles(getValue(previous, "models"));
+      const model = localModels.find((item) => item.id === modelId);
+      const nextModels = prevModels.map((profile) => profile.provider === "local-llama"
+        ? { ...profile, localModelId: modelId, contextSize: model ? model.recommendedContextTokens : profile.contextSize }
+        : profile);
+      return setValue(previous, "models", nextModels);
+    });
+  };
+
+  const handleLocalContextSizeChange = (value: number) => {
+    setEdited((previous) => {
+      const prevModels = readProfiles(getValue(previous, "models"));
+      const nextModels = prevModels.map((profile) => profile.provider === "local-llama"
+        ? { ...profile, contextSize: value > 0 ? value : undefined }
+        : profile);
+      return setValue(previous, "models", nextModels);
+    });
+  };
+
+  const handleDefaultModelChange = (modelId: string) => {
+    setEdited((previous) => setValue(previous, "defaultModelId", modelId || undefined));
   };
 
   const handleSave = async () => {
@@ -335,14 +401,15 @@ export default function ConfigEditor() {
     setIsError(false);
   };
 
-  const handleTest = async (target: "remote" | "local") => {
-    setTesting(target);
-    setModelMessages((previous) => ({ ...previous, [target]: undefined }));
+  const handleTest = async (target: "remote" | "local", modelId?: string) => {
+    const key = modelId ?? target;
+    setTesting(key);
+    setModelMessages((previous) => ({ ...previous, [key]: undefined }));
     try {
-      const result = await testModel(target, edited);
-      setModelMessages((previous) => ({ ...previous, [target]: { text: `测试成功（${result.elapsedMs}ms）：${result.text}`, error: false } }));
+      const result = await testModel(target, edited, modelId);
+      setModelMessages((previous) => ({ ...previous, [key]: { text: `测试成功（${result.elapsedMs}ms）：${result.text}`, error: false } }));
     } catch (error) {
-      setModelMessages((previous) => ({ ...previous, [target]: { text: error instanceof Error ? error.message : "模型测试失败", error: true } }));
+      setModelMessages((previous) => ({ ...previous, [key]: { text: error instanceof Error ? error.message : "模型测试失败", error: true } }));
     } finally {
       setTesting(null);
     }
@@ -363,10 +430,16 @@ export default function ConfigEditor() {
 
   const hasChanges = JSON.stringify(edited) !== JSON.stringify(config)
     || JSON.stringify(drafts) !== JSON.stringify(savedDrafts);
-  const selectedModelId = String(getValue(edited, "localModel.modelId") ?? getValue(defaults, "localModel.modelId") ?? "");
+  const profiles = readProfiles(getValue(edited, "models"));
+  const remoteProfiles = profiles.filter((profile) => profile.provider !== "local-llama");
+  const localProfile = profiles.find((profile) => profile.provider === "local-llama");
+  const remoteEnabled = remoteProfiles.length > 0;
+  const localEnabled = Boolean(localProfile);
+  const selectedModelId = localProfile?.localModelId ?? "";
   const selectedLocalModel = localModels.find((model) => model.id === selectedModelId);
-  const remoteEnabled = Boolean(getValue(edited, "remoteModel.enabled") ?? getValue(defaults, "remoteModel.enabled") ?? true);
-  const localEnabled = Boolean(getValue(edited, "localModel.enabled") ?? getValue(defaults, "localModel.enabled") ?? false);
+  const defaultModelId = typeof getValue(edited, "defaultModelId") === "string"
+    ? String(getValue(edited, "defaultModelId"))
+    : "";
 
   const renderField = (field: FieldDef) => {
     const value = getValue(edited, field.key) ?? getValue(defaults, field.key);
@@ -374,14 +447,9 @@ export default function ConfigEditor() {
     return (
       <div key={field.key} className={`config-field ${field.type === "json" || field.type === "list" ? "config-field-multiline" : ""}`}>
         <label htmlFor={id}>{field.label}{field.required ? " *" : ""}{field.description && <small>{field.description}</small>}</label>
-        {field.type === "select" && field.key === "localModel.modelId" && <select id={id} value={String(value ?? "")} onChange={(event) => handleChange(field.key, event.target.value)}>
-          {localModels.length === 0 && <option value={String(value ?? "")}>{localModelsLoading ? "正在读取模型目录..." : String(value ?? "")}</option>}
-          {(["Qwen", "Gemma"] as const).map((family) => <optgroup key={family} label={family === "Qwen" ? "Qwen3.5" : "Gemma 4"}>
-            {localModels.filter((model) => model.family === family).map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
-          </optgroup>)}
-        </select>}
-        {field.type === "select" && field.key !== "localModel.modelId" && <select id={id} value={String(value ?? "")} onChange={(event) => handleChange(field.key, event.target.value)}>{field.options?.map((option) => <option key={option} value={option}>{field.optionLabels?.[option] ?? option}</option>)}</select>}
+        {field.type === "select" && <select id={id} value={String(value ?? "")} onChange={(event) => handleChange(field.key, event.target.value)}>{field.options?.map((option) => <option key={option} value={option}>{field.optionLabels?.[option] ?? option}</option>)}</select>}
         {field.type === "number" && <input id={id} type="number" value={Number(value ?? 0)} onChange={(event) => handleChange(field.key, Number(event.target.value))} />}
+        {field.type === "percent" && <input id={id} type="number" min={0} max={100} step="any" value={Number((Number(value ?? 0) * 100).toFixed(8))} onChange={(event) => handleChange(field.key, Number(event.target.value) / 100)} />}
         {field.type === "checkbox" && <input id={id} className="config-checkbox" type="checkbox" checked={Boolean(value)} onChange={(event) => handleChange(field.key, event.target.checked)} />}
         {(field.type === "text" || field.type === "password") && <input id={id} type={field.type} value={String(value ?? "")} autoComplete={field.type === "password" ? "new-password" : undefined} onChange={(event) => handleChange(field.key, event.target.value)} />}
         {(field.type === "list" || field.type === "json") && <textarea id={id} rows={field.type === "json" ? 7 : 4} value={drafts[field.key] ?? ""} spellCheck={false} onChange={(event) => setDrafts((previous) => ({ ...previous, [field.key]: event.target.value }))} />}
@@ -394,28 +462,19 @@ export default function ConfigEditor() {
       <div className="config-intro">
         所有运行配置都保存在当前 workspace 的 config.json。远程和本地模型可独立启用，同时启用时优先使用远程模型。
       </div>
-      {remoteEnabled && localEnabled && <div className="model-priority-note">当前同时启用了两种模型，聊天将优先使用远程模型。</div>}
+      {remoteEnabled && localEnabled && <div className="model-priority-note">当前同时启用了远程与本地模型，聊天将优先使用默认模型。</div>}
       <div className="model-card-grid">
         <section className="config-group model-config-card">
           <div className="model-card-heading">
-            <div><h3>远程模型</h3><p>连接 OpenAI、Anthropic 或兼容服务。</p></div>
-            <label className="model-enable-switch">
-              <span>{remoteEnabled ? "已启用" : "未启用"}</span>
-              <input
-                type="checkbox"
-                role="switch"
-                aria-label="启用远程模型"
-                checked={remoteEnabled}
-                onChange={(event) => handleChange("remoteModel.enabled", event.target.checked)}
-              />
-              <span className="model-switch-track" aria-hidden="true"><span /></span>
-            </label>
+            <div><h3>远程模型</h3><p>配置一个或多个远程模型，可在聊天中切换。</p></div>
           </div>
-          {REMOTE_MODEL_FIELDS.map(renderField)}
-          <div className="model-card-actions">
-            <button type="button" onClick={() => void handleTest("remote")} disabled={testing !== null}>{testing === "remote" ? "测试中..." : "测试连接"}</button>
-            {modelMessages.remote && <span className={`config-message ${modelMessages.remote.error ? "error" : ""}`}>{modelMessages.remote.text}</span>}
-          </div>
+          <ModelProfilesEditor
+            profiles={remoteProfiles}
+            onChange={handleRemoteProfilesChange}
+            testingId={testing}
+            messages={modelMessages}
+            onTest={(profile) => void handleTest("remote", profile.id)}
+          />
         </section>
         <section className="config-group model-config-card">
           <div className="model-card-heading">
@@ -427,46 +486,75 @@ export default function ConfigEditor() {
                 role="switch"
                 aria-label="启用本地模型"
                 checked={localEnabled}
-                onChange={(event) => handleChange("localModel.enabled", event.target.checked)}
+                onChange={(event) => handleLocalEnabledChange(event.target.checked)}
               />
               <span className="model-switch-track" aria-hidden="true"><span /></span>
             </label>
           </div>
-          {LOCAL_MODEL_FIELDS.map(renderField)}
-          <div className="selected-model-status">
-            {localModelsError ? (
-              <div className="model-status-error">
-                <strong>模型状态加载失败</strong>
-                <small>{localModelsError}</small>
-                <button type="button" onClick={() => void refreshLocalModels(true)}>重新加载</button>
+          {localEnabled && (
+            <>
+              <div className="config-field">
+                <label htmlFor="config-local-model">本地模型</label>
+                <select id="config-local-model" value={selectedModelId} onChange={(event) => handleLocalModelChange(event.target.value)}>
+                  {localModels.length === 0 && <option value="">{localModelsLoading ? "正在读取模型目录..." : ""}</option>}
+                  {(["Qwen", "Gemma"] as const).map((family) => (
+                    <optgroup key={family} label={family === "Qwen" ? "Qwen3.5" : "Gemma 4"}>
+                      {localModels.filter((model) => model.family === family).map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
               </div>
-            ) : (
-              <div className="selected-model-summary"><div><strong>{selectedLocalModel?.name ?? (localModelsLoading ? "正在读取模型状态..." : "未找到所选模型")}</strong><small>{selectedLocalModel ? `${selectedLocalModel.family} · ${selectedLocalModel.size} · ${selectedLocalModel.license}` : ""}</small>{selectedLocalModel && <small>{selectedLocalModel.description}</small>}{selectedLocalModel && <small>建议至少 {selectedLocalModel.recommendedMemoryGb} GB 内存；推荐上下文 {selectedLocalModel.recommendedContextTokens.toLocaleString()}，模型上限 {selectedLocalModel.maxContextTokens.toLocaleString()} tokens</small>}</div></div>
-            )}
-            {!localModelsError && selectedLocalModel?.status === "downloading" ? (
-              <div className="model-download-progress">
-                <div className="download-progress-label"><span>正在下载</span><strong>{Math.round(selectedLocalModel.progress * 100)}%</strong></div>
-                <progress max={1} value={selectedLocalModel.progress} aria-label="模型下载进度" />
-                <small>{formatBytes(selectedLocalModel.downloadedBytes)} / {selectedLocalModel.totalBytes > 0 ? formatBytes(selectedLocalModel.totalBytes) : "计算中"}</small>
+              <div className="config-field">
+                <label htmlFor="config-local-context">本地上下文 Token</label>
+                <input id="config-local-context" type="number" value={Number(localProfile?.contextSize ?? 0)} onChange={(event) => handleLocalContextSizeChange(Number(event.target.value))} />
               </div>
-            ) : !localModelsError && selectedLocalModel?.installed ? (
-              <div className="model-installed-state">已安装，可以使用和测试。</div>
-            ) : !localModelsError && !localModelsLoading ? (
-              <div className="model-not-installed">选择模型不会自动下载。点击“下载并安装”后才会开始下载。</div>
-            ) : null}
-            {!localModelsError && localEnabled && selectedLocalModel && !selectedLocalModel.installed && selectedLocalModel.status !== "downloading" && <div className="model-warning">当前启用的本地模型尚未安装，下载完成前无法使用。</div>}
-            {selectedLocalModel?.error && <div className="config-message error">下载失败：{selectedLocalModel.error}</div>}
-          </div>
-          <div className="model-card-actions">
-            {selectedLocalModel?.installed ? (
-              <button type="button" onClick={() => void handleTest("local")} disabled={testing !== null}>{testing === "local" ? "测试中..." : "测试模型"}</button>
-            ) : (
-              <button type="button" className="primary" onClick={() => void handleDownload(selectedModelId)} disabled={!selectedLocalModel || selectedLocalModel.status === "downloading"}>{selectedLocalModel?.status === "downloading" ? "正在下载..." : selectedLocalModel?.status === "error" ? "重新下载" : "下载并安装"}</button>
-            )}
-            {modelMessages.local && selectedLocalModel?.status !== "downloading" && <span className={`config-message ${modelMessages.local.error ? "error" : ""}`}>{modelMessages.local.text}</span>}
-          </div>
+              <div className="selected-model-status">
+                {localModelsError ? (
+                  <div className="model-status-error">
+                    <strong>模型状态加载失败</strong>
+                    <small>{localModelsError}</small>
+                    <button type="button" onClick={() => void refreshLocalModels(true)}>重新加载</button>
+                  </div>
+                ) : (
+                  <div className="selected-model-summary"><div><strong>{selectedLocalModel?.name ?? (localModelsLoading ? "正在读取模型状态..." : "未找到所选模型")}</strong><small>{selectedLocalModel ? `${selectedLocalModel.family} · ${selectedLocalModel.size} · ${selectedLocalModel.license}` : ""}</small>{selectedLocalModel && <small>{selectedLocalModel.description}</small>}{selectedLocalModel && <small>建议至少 {selectedLocalModel.recommendedMemoryGb} GB 内存；推荐上下文 {selectedLocalModel.recommendedContextTokens.toLocaleString()}，模型上限 {selectedLocalModel.maxContextTokens.toLocaleString()} tokens</small>}</div></div>
+                )}
+                {!localModelsError && selectedLocalModel?.status === "downloading" ? (
+                  <div className="model-download-progress">
+                    <div className="download-progress-label"><span>正在下载</span><strong>{Math.round(selectedLocalModel.progress * 100)}%</strong></div>
+                    <progress max={1} value={selectedLocalModel.progress} aria-label="模型下载进度" />
+                    <small>{formatBytes(selectedLocalModel.downloadedBytes)} / {selectedLocalModel.totalBytes > 0 ? formatBytes(selectedLocalModel.totalBytes) : "计算中"}</small>
+                  </div>
+                ) : !localModelsError && selectedLocalModel?.installed ? (
+                  <div className="model-installed-state">已安装，可以使用和测试。</div>
+                ) : !localModelsError && !localModelsLoading ? (
+                  <div className="model-not-installed">选择模型不会自动下载。点击“下载并安装”后才会开始下载。</div>
+                ) : null}
+                {!localModelsError && selectedLocalModel && !selectedLocalModel.installed && selectedLocalModel.status !== "downloading" && <div className="model-warning">当前启用的本地模型尚未安装，下载完成前无法使用。</div>}
+                {selectedLocalModel?.error && <div className="config-message error">下载失败：{selectedLocalModel.error}</div>}
+              </div>
+              <div className="model-card-actions">
+                {selectedLocalModel?.installed ? (
+                  <button type="button" onClick={() => void handleTest("local")} disabled={testing !== null}>{testing === "local" ? "测试中..." : "测试模型"}</button>
+                ) : (
+                  <button type="button" className="primary" onClick={() => void handleDownload(selectedModelId)} disabled={!selectedLocalModel || selectedLocalModel.status === "downloading"}>{selectedLocalModel?.status === "downloading" ? "正在下载..." : selectedLocalModel?.status === "error" ? "重新下载" : "下载并安装"}</button>
+                )}
+                {modelMessages.local && selectedLocalModel?.status !== "downloading" && <span className={`config-message ${modelMessages.local.error ? "error" : ""}`}>{modelMessages.local.text}</span>}
+              </div>
+            </>
+          )}
         </section>
       </div>
+      <section className="config-group">
+        <h3>默认模型</h3>
+        <p className="config-group-description">新会话默认使用的模型；聊天中可随时切换。</p>
+        <div className="config-field">
+          <label htmlFor="config-default-model">默认模型</label>
+          <select id="config-default-model" value={defaultModelId} onChange={(event) => handleDefaultModelChange(event.target.value)}>
+            <option value="">第一个模型</option>
+            {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name ?? profile.id}</option>)}
+          </select>
+        </div>
+      </section>
       {FIELD_GROUPS.map((group) => (
         <section key={group.title} className="config-group">
           <h3>{group.title}</h3>

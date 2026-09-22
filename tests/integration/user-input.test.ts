@@ -19,8 +19,10 @@ describe("user input suspension", () => {
     try {
       await manager.loadCorePlugins();
       const execute = vi.fn(async () => "should not run");
+      const read = vi.fn(async () => "completed before question");
+      (manager as unknown as { createPluginContext: (name: string) => PluginContext }).createPluginContext("test-read").registerTool({ name: "read_first", description: "read", inputSchema: { type: "object" }, execute: read });
       (manager as unknown as { createPluginContext: (name: string) => PluginContext }).createPluginContext("test-user-input").registerTool({ name: "effect", description: "test", inputSchema: { type: "object" }, execute });
-      const client = new FakeModelClient([{ text: "Please choose", toolCalls: [ask, { type: "tool_use", id: "after-ask", name: "effect", input: {} }] }]);
+      const client = new FakeModelClient([{ text: "Please choose", toolCalls: [{ type: "tool_use", id: "before-ask", name: "read_first", input: {} }, ask, { type: "tool_use", id: "after-ask", name: "effect", input: {} }] }]);
       const session = new AgentSession("question-session", workspace, manager, {}, client);
       const events = await collect(session.chat("start", undefined, undefined, "normal", "question-turn"));
       expect(events.at(-1)).toMatchObject({ type: "done", reason: "waiting_user" });
@@ -35,6 +37,7 @@ describe("user input suspension", () => {
       const next = new FakeModelClient([(messages) => {
         expect(validateToolMessageChains(messages)).toBeUndefined();
         expect(JSON.stringify(messages)).toContain("selectedIds");
+        expect(JSON.stringify(messages)).toContain("completed before question");
         return { text: "Continuing with the answer", toolCalls: [] };
       }]);
       const restored = new AgentSession("question-session", workspace, restoredManager, {}, next);
@@ -51,6 +54,7 @@ describe("user input suspension", () => {
       }
       expect((await collect(restored.resumeTool(pending.suspension!.id, "late")))[0]).toMatchObject({ type: "error" });
       expect(execute).not.toHaveBeenCalled();
+      expect(read).toHaveBeenCalledTimes(1);
     } finally { await manager.destroy(); await restoredManager.destroy(); removeTempWorkspace(workspace); }
   });
 });

@@ -1,5 +1,5 @@
-import { loadConfig } from "../../config.js";
-import { createModelClient } from "../../model/index.js";
+import { loadConfig, restoreMaskedSecrets } from "../../config.js";
+import { createModelClientFromProfile } from "../../model/index.js";
 import { downloadLocalModel, listLocalModelStatus } from "../../model/local-store.js";
 import type { Config } from "../../types.js";
 import type { Plugin } from "../types.js";
@@ -44,24 +44,21 @@ export const coreLocalModelsPlugin: Plugin = {
         try {
           const body = parseObject(await routeCtx.readBody());
           const target = body.target === "local" ? "local" : "remote";
-          const draft = body.config && typeof body.config === "object" && !Array.isArray(body.config)
-            ? body.config as Partial<Config>
+          const modelId = typeof body.modelId === "string" && body.modelId.length > 0 ? body.modelId : undefined;
+          const draftRaw = body.config && typeof body.config === "object" && !Array.isArray(body.config)
+            ? body.config as Record<string, unknown>
             : {};
           const base = loadConfig(ctx.workspacePath);
-          if (typeof draft.apiKey === "string" && draft.apiKey.endsWith("***")) draft.apiKey = base.apiKey;
-          const config: Config = {
-            ...base,
-            ...draft,
-            workspacePath: ctx.workspacePath,
-            remoteModel: { enabled: target === "remote" },
-            localModel: {
-              ...base.localModel,
-              ...draft.localModel,
-              enabled: target === "local",
-            },
-            maxTokens: 32,
-          };
-          const text = await createModelClient(config).complete([
+          const restored = restoreMaskedSecrets(draftRaw, base) as Partial<Config>;
+          const config: Config = { ...base, ...restored, workspacePath: ctx.workspacePath, maxTokens: 32 };
+          const models = config.models ?? [];
+          const profile = modelId
+            ? models.find((item) => item.id === modelId)
+            : models.find((item) => target === "local" ? item.provider === "local-llama" : item.provider !== "local-llama");
+          if (!profile) {
+            throw new Error(modelId ? "未找到指定模型" : (target === "local" ? "没有配置本地模型" : "没有配置远程模型"));
+          }
+          const text = await createModelClientFromProfile({ ...profile, maxTokens: 32 }, config).complete([
             { role: "user", content: "这是连通性测试。请只回复 OK。" },
           ]);
           routeCtx.sendJSON(200, { ok: true, elapsedMs: Date.now() - startedAt, text: text.trim().slice(0, 200) });

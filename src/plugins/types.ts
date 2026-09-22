@@ -154,6 +154,8 @@ export interface PreparedModelRequest {
 }
 
 export interface ModelCallContext {
+  /** Stable prompt before dynamic context, used for exact shared budget accounting. */
+  baseSystemPrompt?: string;
   /** Display metadata for summaries already included in the actual request. */
   contextSummaries?: ContextSummarySection[];
   messages: Message[];
@@ -223,6 +225,7 @@ export type RouteHandler = (
 export interface RouteContext {
   resumeTool?: (sessionId: string, requestId: string, result: string) => Promise<void>;
   url: URL;
+  params: Record<string, string>;
   readBody(): Promise<string>;
   sendJSON(status: number, data: unknown): void;
 }

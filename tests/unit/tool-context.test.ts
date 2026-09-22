@@ -5,6 +5,20 @@ import { estimateTextTokens, estimateTokens } from "../../src/estimate-tokens.js
 
 const config = { plugins: {} } as Config;
 describe("tool context budgets", () => {
+  it("caps only historical bodies and keeps the projection stable", () => {
+    const raw: Message[] = ["old", "current"].map(id => ({ role: "user", content: [
+      { type: "tool_result", tool_use_id: id, content: "文".repeat(900) },
+    ] }));
+    const projected = projectToolMessages(raw, config, Infinity, false, undefined, 1);
+    const content = (message: Message) => Array.isArray(message.content) && message.content[0].type === "tool_result" ? message.content[0].content : "";
+    expect(JSON.parse(content(projected[0])).preview).toHaveLength(500);
+    expect(content(projected[1])).toHaveLength(900);
+    expect(content(raw[0])).toHaveLength(900);
+    expect(projectToolMessages(projected, config, Infinity, false, undefined, 1)).toEqual(projected);
+    const custom = { plugins: { "core-tool-context": { historyResultMaxChars: 100 } } } as unknown as Config;
+    expect(JSON.parse(content(projectToolMessages(raw, custom, Infinity, false, undefined, 1)[0])).preview).toHaveLength(100);
+    expect(() => toolContextOptions({ plugins: { "core-tool-context": { historyResultMaxChars: 0 } } } as unknown as Config)).toThrow();
+  });
   it("bounds all three large search results without changing originals or breaking JSON", () => {
     const messages: Message[] = [60000, 285000, 71000].map((size, i) => ({ role: "user", content: [{ type: "tool_result", tool_use_id: `call-${i}`,
       content: JSON.stringify({ results: [{ title: "论文", url: "https://example.com/paper", snippet: "文".repeat(size) }] }) }] }));

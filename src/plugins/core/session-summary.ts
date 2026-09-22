@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Plugin, HookContext, ModelCallContext } from "../types.js";
 import type { Config, Message } from "../../types.js";
-import { sanitizeToolMessageChains } from "../../message-sanitizer.js";
+import { sanitizeToolMessageChains, selectUncoveredMessages } from "../../message-sanitizer.js";
 import { loadSessionState, updateSessionState } from "../../session-state.js";
 import { readSessionMessages } from "../../session-store.js";
 import { estimateTextTokens, estimateTokens } from "../../estimate-tokens.js";
@@ -9,6 +9,9 @@ import { buildModelContext } from "../../model-context.js";
 import { getEffectiveMaxContextTokens } from "../../context-budget.js";
 import { projectToolMessages, toolContextOptions } from "../../tool-context.js";
 import { createSessionSummaryEngine } from "../../session-memory/engine.js";
+import { batchFromDelta, migrateLegacySummary as convertLegacySummary, renderRollingSummary, selectBatchIds, taskOnlySummary } from "../../session-memory/rolling.js";
+import { withinSummaryDeadline } from "../../session-memory/deadline.js";
+import { listRuns } from "../../run-store.js";
 import { compactSummary, shouldCompactSummary } from "../../session-memory/reducer.js";
 import {
   SessionSummaryRevisionConflictError,
@@ -90,12 +93,14 @@ function compactionLimits(config: Config) {
 }
 
 function hasSummaryItems(summary: PersistedSessionSummary): boolean {
+  if (summary.batches?.length) return true;
   return CATEGORY_ORDER.some((category) => summary.checkpoint.categories[category].some(
     (item) => item.status === "active",
   ));
 }
 
 function renderSummary(summary: PersistedSessionSummary): string {
+  if (summary.batches !== undefined) return renderRollingSummary(summary);
   const categories = Object.fromEntries(CATEGORY_ORDER.map((category) => [
     CATEGORY_LABELS[category],
     summary.checkpoint.categories[category]
@@ -254,10 +259,19 @@ export const coreSessionSummaryPlugin: Plugin = {
       hookCtx: HookContext,
       current: PersistedSessionSummary,
       delta: SummaryDelta,
+      budget: number,
     ): Promise<PersistedSessionSummary> {
       const engine = createSessionSummaryEngine(summaryOptions(hookCtx.config));
+      const apply = (latest: PersistedSessionSummary) => {
+        const base = taskOnlySummary(latest);
+        const batch = batchFromDelta(base, delta);
+        const updated = taskOnlySummary(engine.applyDelta(base, delta));
+        const next = { ...updated, batches: [...(latest.batches ?? []), batch] };
+        return { ...next, projection: { selectedBatchIds: selectBatchIds(next, hookCtx.config, budget),
+          toolResultLimits: latest.projection?.toolResultLimits ?? {}, budget } };
+      };
       if (!isPersistent(hookCtx)) {
-        let updated = engine.applyDelta(current, delta);
+        let updated: PersistedSessionSummary = apply(current);
         updated = { ...updated, revision: current.revision + 1, updatedAt: new Date().toISOString() };
         if (shouldCompactSummary(updated, compactionLimits(hookCtx.config))) {
           updated = {
@@ -274,7 +288,7 @@ export const coreSessionSummaryPlugin: Plugin = {
         pluginCtx.workspacePath,
         hookCtx.sessionId,
         current.revision,
-        (latest) => engine.applyDelta(latest, delta),
+        apply,
       );
       if (shouldCompactSummary(updated, compactionLimits(hookCtx.config))) {
         updated = await compactStoredSessionSummary(
@@ -298,51 +312,86 @@ export const coreSessionSummaryPlugin: Plugin = {
         const previous = firstCurrentSequence !== undefined
           ? persisted.filter((message) => (message._sequence ?? 0) < firstCurrentSequence)
           : stripped.messages.slice(0, stripped.turnStartIndex);
-        const rawBySequence = new Map(persisted.map(message => [message._sequence, message]));
-        const rawCurrent = current.map(message => rawBySequence.get(message._sequence) ?? message);
+        // Current messages are a coherent runtime projection. Replacing individual
+        // messages from disk can resurrect calls whose results are not in this projection.
+        const rawCurrent = current;
+        const activeTurns = new Set(listRuns(pluginCtx.workspacePath, hookCtx.sessionId)
+          .filter(run => ["running", "waiting_approval", "waiting_user"].includes(run.state)).map(run => run.turnId));
+        // Only the already-finished prefix may describe missing results. Live calls stay protected.
+        const normalizedPrevious = sanitizeToolMessageChains(previous, message =>
+          message._turnId && activeTurns.has(message._turnId) ? "preserve" : "describe");
+        const hardBudget = modelContext.hardMessageTokenBudget ?? modelContext.messageTokenBudget;
+        const targetBudget = Math.floor(hardBudget * (hookCtx.config.contextCompressionTargetRatio ?? 0.2));
         let lastAssistant = -1;
         rawCurrent.forEach((message, index) => { if (message.role === "assistant") lastAssistant = index; });
         // Keep the latest exchange and user request; earlier complete exchanges may be summarized.
         const eligibleCurrent = lastAssistant > 1 ? rawCurrent.slice(0, lastAssistant) : [];
         const buildContext = (): ModelCallContext => {
           const summaryText = hasSummaryItems(summary) ? renderSummary(summary) : undefined;
-          const readable = sanitizeToolMessageChains(previous.filter((message) => (
-            (message._sequence ?? Number.POSITIVE_INFINITY) > summary.summarizedThroughSequence
-          )));
+          const readable = selectUncoveredMessages(normalizedPrevious, summary.summarizedThroughSequence);
           return {
             ...modelContext,
-            messages: projectToolMessages([...readable, ...rawCurrent.filter((message, index) => index === 0
-              || (message._sequence ?? Infinity) > summary.summarizedThroughSequence)], hookCtx.config),
+            messages: projectToolMessages([...readable, ...selectUncoveredMessages(rawCurrent, summary.summarizedThroughSequence, true)], hookCtx.config,
+              Infinity, false, summary.projection?.toolResultLimits, readable.length),
             derivedContext: summaryText,
             contextSummaries: [...(modelContext.contextSummaries ?? []), ...(summaryText ? [{ title: "会话摘要", content: summaryText }] : [])],
             turnStartIndex: readable.length,
           };
         };
         const tokens = (context: ModelCallContext) => {
-          const projected = buildModelContext("", context.messages, context.derivedContext, context.systemPromptSuffix);
-          return estimateTokens(projected.messages) + estimateTextTokens(projected.systemPrompt);
+          const base = context.baseSystemPrompt ?? "";
+          const projected = buildModelContext(base, context.messages, context.derivedContext, context.systemPromptSuffix);
+          return estimateTokens(projected.messages) + estimateTextTokens(projected.systemPrompt) - estimateTextTokens(base);
         };
         let result = buildContext();
-        if (tokens(result) <= modelContext.messageTokenBudget) return result;
-        const uncovered = [...previous, ...eligibleCurrent].filter((message) => (message._sequence ?? 0) > summary.summarizedThroughSequence);
-        let candidates = uncovered;
-        if (candidates.length === 0) return result;
+        if (tokens(result) < modelContext.messageTokenBudget) return result;
         const fixed = modelContext.fixedInputTokens ?? 0;
         const beforeTokens = tokens(result) + fixed;
+        const startedAt = Date.now();
+        const maxBatches = hookCtx.config.sessionSummary?.maxBatchesPerCompression ?? 3;
+        const maxDurationMs = hookCtx.config.sessionSummary?.maxCompressionDurationMs ?? 120000;
+        let completedBatches = 0;
+        let stoppedReason: string | undefined;
         modelContext.reportStatus?.({ stage: "session_summary", state: "started", message: "正在进行上下文压缩...", beforeTokens });
         try {
           const engine = createSessionSummaryEngine(summaryOptions(hookCtx.config));
-          while (candidates.length > 0) {
-            const delta = await engine.createDelta(hookCtx.client, hookCtx.sessionId, summary, candidates, hookCtx.signal);
+          // Migration is purely structural and preserves the existing coverage watermark.
+          if (summary.batches === undefined) {
+            const old = summary;
+            const rebuilt = convertLegacySummary(old);
             hookCtx.signal?.throwIfAborted();
-            summary = await persistDelta(hookCtx, summary, delta);
+            rebuilt.projection = { selectedBatchIds: selectBatchIds(rebuilt, hookCtx.config, hardBudget),
+              toolResultLimits: old.projection?.toolResultLimits ?? {}, budget: hardBudget };
+            summary = isPersistent(hookCtx)
+              ? await updateSessionSummary(pluginCtx.workspacePath, hookCtx.sessionId, old.revision, () => rebuilt)
+              : rebuilt;
+            if (!isPersistent(hookCtx)) volatile.set(hookCtx.sessionId, summary);
             result = buildContext();
-            if (tokens(result) <= modelContext.messageTokenBudget) break;
+          }
+          const uncovered = selectUncoveredMessages([...normalizedPrevious, ...eligibleCurrent], summary.summarizedThroughSequence);
+          let candidates = uncovered;
+          while (candidates.length > 0 && tokens(result) > targetBudget) {
+            const remainingMs = maxDurationMs - (Date.now() - startedAt);
+            if (completedBatches >= maxBatches || remainingMs <= 0) {
+              stoppedReason = completedBatches >= maxBatches ? "达到单次压缩批次上限" : "达到单次压缩耗时上限";
+              break;
+            }
+            const progress = `正在压缩第 ${completedBatches + 1}/${maxBatches} 批，已覆盖消息 ${summary.summarizedThroughSequence}，剩余 ${candidates.length} 条，已用时 ${Math.floor((Date.now() - startedAt) / 1000)} 秒`;
+            modelContext.reportStatus?.({ stage: "session_summary", state: "started", message: progress, beforeTokens });
+            pluginCtx.log("INFO", progress, hookCtx.sessionId);
+            const delta = await withinSummaryDeadline(signal => engine.createDelta(hookCtx.client, hookCtx.sessionId,
+              taskOnlySummary(summary), candidates, signal), remainingMs, hookCtx.signal);
+            hookCtx.signal?.throwIfAborted();
+            if (delta.throughSequence <= summary.summarizedThroughSequence) throw new Error("摘要未推进覆盖位置");
+            summary = await persistDelta(hookCtx, summary, delta, hardBudget);
+            completedBatches++;
+            result = buildContext();
+            if (tokens(result) <= targetBudget) break;
             candidates = uncovered.filter((message) => (message._sequence ?? 0) > summary.summarizedThroughSequence);
           }
-          modelContext.reportStatus?.({ stage: "session_summary", state: "completed", message: "上下文压缩完成", beforeTokens, afterTokens: tokens(result) + fixed });
         } catch (error) {
           hookCtx.signal?.throwIfAborted();
+          stoppedReason = error instanceof Error ? error.message : String(error);
           modelContext.reportStatus?.({ stage: "session_summary", state: "failed", message: "上下文压缩失败，保留原文并检查请求预算", beforeTokens });
           pluginCtx.log(
             "WARN",
@@ -350,6 +399,29 @@ export const coreSessionSummaryPlugin: Plugin = {
             hookCtx.sessionId,
           );
         }
+        // Even if extraction fails or has no candidates, shrink older tool bodies without losing originals.
+        const selectedBatchIds = summary.batches === undefined ? [] : selectBatchIds(summary, hookCtx.config, hardBudget);
+        summary = { ...summary, projection: { selectedBatchIds, toolResultLimits: summary.projection?.toolResultLimits ?? {}, budget: hardBudget } };
+        result = buildContext();
+        const base = result.baseSystemPrompt ?? "";
+        const rendered = buildModelContext(base, result.messages, result.derivedContext, result.systemPromptSuffix);
+        const allowance = targetBudget - estimateTextTokens(rendered.systemPrompt) + estimateTextTokens(base);
+        const projected = projectToolMessages(result.messages, hookCtx.config, allowance);
+        const limits: Record<string, number> = Object.assign(Object.create(null), summary.projection!.toolResultLimits);
+        for (const message of projected) if (Array.isArray(message.content)) for (const block of message.content) {
+          if (block.type === "tool_result") limits[block.tool_use_id] = estimateTextTokens(block.content);
+        }
+        hookCtx.signal?.throwIfAborted();
+        const projection = { selectedBatchIds, toolResultLimits: limits, budget: hardBudget };
+        summary = isPersistent(hookCtx)
+          ? await updateSessionSummary(pluginCtx.workspacePath, hookCtx.sessionId, summary.revision, latest => ({ ...latest, projection }))
+          : { ...summary, projection };
+        if (!isPersistent(hookCtx)) volatile.set(hookCtx.sessionId, summary);
+        result = buildContext();
+        pluginCtx.log("INFO", `上下文整理结束 batches=${completedBatches} elapsedMs=${Date.now() - startedAt} tokens=${tokens(result)} target=${targetBudget} reason=${stoppedReason ?? "finished"}`, hookCtx.sessionId);
+        modelContext.reportStatus?.({ stage: "session_summary", state: "completed",
+          message: tokens(result) <= targetBudget ? "上下文压缩达标" : `上下文整理结束，仍高于目标${stoppedReason ? `：${stoppedReason}` : ""}`,
+          beforeTokens, afterTokens: tokens(result) + fixed });
         return result;
       },
     });

@@ -2,13 +2,14 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { LOCAL_MODELS } from "./model/local-catalog.js";
 import { loadIdentity } from "./workspace/workspace.js";
-import type { Config } from "./types.js";
+import type { Config, ModelProfile, ModelProvider } from "./types.js";
 import { TOOL_CONTEXT_DEFAULTS, toolContextOptions } from "./tool-context.js";
 
 const DEFAULTS: Partial<Config> = {
   maxTokens: 16384,
   maxContextTokens: 128000,
-  contextCompressionThreshold: 0.7,
+  contextCompressionThreshold: 0.8,
+  contextCompressionTargetRatio: 0.2,
   bashTerminationGraceMs: 1000,
   bashMaxOutputChars: 10000,
   fileReadMaxChars: 20000,
@@ -21,25 +22,32 @@ const VALID_NOTIFICATION_REASONS = ["completed", "approval_required", "iteration
 
 export function createDefaultConfig(): Record<string, unknown> {
   return {
-    remoteModel: { enabled: true },
-    localModel: {
-      enabled: false,
-      modelId: "qwen3.5-4b-q4",
-      contextSize: 32768,
-    },
-    apiUrl: "https://api.deepseek.com",
-    apiKey: "",
-    model: "deepseek-chat",
-    modelProvider: "openai-chat",
+    models: [
+      {
+        id: "deepseek",
+        name: "DeepSeek",
+        provider: "openai-chat",
+        model: "deepseek-chat",
+        apiUrl: "https://api.deepseek.com",
+        apiKey: "",
+      },
+    ],
+    defaultModelId: "deepseek",
     maxTokens: DEFAULTS.maxTokens,
     maxContextTokens: DEFAULTS.maxContextTokens,
     contextCompressionThreshold: DEFAULTS.contextCompressionThreshold,
+    contextCompressionTargetRatio: DEFAULTS.contextCompressionTargetRatio,
     bashTerminationGraceMs: DEFAULTS.bashTerminationGraceMs,
     bashMaxOutputChars: DEFAULTS.bashMaxOutputChars,
     fileReadMaxChars: DEFAULTS.fileReadMaxChars,
     maxAgentIterations: DEFAULTS.maxAgentIterations,
     emptyResponseRetries: DEFAULTS.emptyResponseRetries,
     sessionSummary: {
+      maxBatchesPerCompression: 3,
+      maxCompressionDurationMs: 120000,
+      recentBatchCount: 5,
+      maxBatchTokens: 1500,
+      maxBudgetRatio: 0.1,
       enabled: true,
       persistent: true,
       maxInputChars: 40000,
@@ -138,6 +146,7 @@ export function createDefaultConfig(): Record<string, unknown> {
       enabled: true,
       maxSteps: 100,
     },
+    progress: { enabled: true, silenceMs: 60000, toolCalls: 5 },
     notifications: {
       enabled: true,
       reasons: ["approval_required", "waiting_user", "completed", "iteration_limit"],
@@ -221,9 +230,21 @@ function assertOptionalStringArray(value: unknown, key: string): void {
 }
 
 export function validateConfig(raw: Record<string, unknown>): void {
-  assertString(raw.apiUrl, "apiUrl");
-  if (typeof raw.apiKey !== "string") throw new Error("配置字段 apiKey 必须是字符串");
-  assertString(raw.model, "model");
+  if (Array.isArray(raw.models) && raw.models.length === 0) {
+    throw new Error("至少需要配置一个模型");
+  }
+  const hasExplicitModels = Array.isArray(raw.models) && raw.models.length > 0;
+
+  // 顶层 apiUrl/apiKey/model：旧配置必填；使用 models 数组时改为可选（models 内逐个校验）
+  if (hasExplicitModels) {
+    if (raw.apiUrl !== undefined) assertString(raw.apiUrl, "apiUrl");
+    if (raw.apiKey !== undefined && typeof raw.apiKey !== "string") throw new Error("配置字段 apiKey 必须是字符串");
+    if (raw.model !== undefined) assertString(raw.model, "model");
+  } else {
+    assertString(raw.apiUrl, "apiUrl");
+    if (typeof raw.apiKey !== "string") throw new Error("配置字段 apiKey 必须是字符串");
+    assertString(raw.model, "model");
+  }
 
   if (raw.remoteModel !== undefined) {
     assertObject(raw.remoteModel, "remoteModel");
@@ -238,9 +259,18 @@ export function validateConfig(raw: Record<string, unknown>): void {
     }
     assertOptionalNumber(raw.localModel.contextSize, "localModel.contextSize", { min: 512, max: 262144, integer: true });
   }
-  const remoteEnabled = (raw.remoteModel as { enabled?: boolean } | undefined)?.enabled !== false;
-  const localEnabled = (raw.localModel as { enabled?: boolean } | undefined)?.enabled === true;
-  if (!remoteEnabled && !localEnabled) throw new Error("远程模型和本地模型至少需要启用一个");
+
+  if (hasExplicitModels) {
+    validateModelProfiles(raw.models);
+    const defaultModelId = raw.defaultModelId;
+    if (defaultModelId !== undefined && !(raw.models as Array<{ id?: unknown }>).some((item) => item?.id === String(defaultModelId))) {
+      throw new Error("配置字段 defaultModelId 不在 models 中");
+    }
+  } else {
+    const remoteEnabled = (raw.remoteModel as { enabled?: boolean } | undefined)?.enabled !== false;
+    const localEnabled = (raw.localModel as { enabled?: boolean } | undefined)?.enabled === true;
+    if (!remoteEnabled && !localEnabled) throw new Error("远程模型和本地模型至少需要启用一个");
+  }
 
   const modelProvider = raw.modelProvider ?? "anthropic-messages";
   if (!["anthropic-messages", "openai-chat", "chatgpt"].includes(String(modelProvider))) {
@@ -249,7 +279,16 @@ export function validateConfig(raw: Record<string, unknown>): void {
 
   assertNumber(raw.maxTokens ?? DEFAULTS.maxTokens, "maxTokens", { min: 1, max: 1_000_000, integer: true });
   assertNumber(raw.maxContextTokens ?? DEFAULTS.maxContextTokens, "maxContextTokens", { min: 1, max: 10_000_000, integer: true });
-  assertNumber(raw.contextCompressionThreshold ?? DEFAULTS.contextCompressionThreshold, "contextCompressionThreshold", { min: 0.1, max: 1 });
+  const trigger = raw.contextCompressionThreshold ?? DEFAULTS.contextCompressionThreshold;
+  const target = raw.contextCompressionTargetRatio ?? DEFAULTS.contextCompressionTargetRatio;
+  assertNumber(trigger, "contextCompressionThreshold", { min: 0, max: 1 });
+  assertNumber(target, "contextCompressionTargetRatio", { min: 0, max: 1 });
+  if (!(Number(target) > 0 && Number(target) < Number(trigger) && Number(trigger) < 1)) {
+    throw new Error("上下文压缩阈值必须满足：0 < 目标阈值 < 触发阈值 < 1");
+  }
+  if (raw.sessionSummary === undefined && Number(target) < 0.1) {
+    throw new Error("摘要预算比例必须大于 0 且不超过压缩目标阈值");
+  }
   assertNumber(raw.bashTerminationGraceMs ?? DEFAULTS.bashTerminationGraceMs, "bashTerminationGraceMs", { min: 0, max: 60000, integer: true });
   assertOptionalNumber(raw.bashMaxOutputChars, "bashMaxOutputChars", { min: 1, integer: true });
   assertOptionalNumber(raw.fileReadMaxChars, "fileReadMaxChars", { min: 1, integer: true });
@@ -295,6 +334,13 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertOptionalNumber(raw.sessionSummary.maxSourcesPerOperation, "sessionSummary.maxSourcesPerOperation", { min: 1, integer: true });
     assertOptionalNumber(raw.sessionSummary.checkpointDeltaThreshold, "sessionSummary.checkpointDeltaThreshold", { min: 1, integer: true });
     assertOptionalNumber(raw.sessionSummary.checkpointMaxChars, "sessionSummary.checkpointMaxChars", { min: 1000, integer: true });
+    assertOptionalNumber(raw.sessionSummary.recentBatchCount, "sessionSummary.recentBatchCount", { min: 1, integer: true });
+    assertOptionalNumber(raw.sessionSummary.maxBatchesPerCompression, "sessionSummary.maxBatchesPerCompression", { min: 1, integer: true });
+    assertOptionalNumber(raw.sessionSummary.maxCompressionDurationMs, "sessionSummary.maxCompressionDurationMs", { min: 1, max: 2147483647, integer: true });
+    assertOptionalNumber(raw.sessionSummary.maxBatchTokens, "sessionSummary.maxBatchTokens", { min: 1, integer: true });
+    assertOptionalNumber(raw.sessionSummary.maxBudgetRatio, "sessionSummary.maxBudgetRatio", { min: 0, max: 1 });
+    const summaryRatio = Number(raw.sessionSummary.maxBudgetRatio ?? 0.1);
+    if (!(summaryRatio > 0 && summaryRatio <= Number(target))) throw new Error("摘要预算比例必须大于 0 且不超过压缩目标阈值");
     assertOptionalNumber(raw.sessionSummary.recallMaxResults, "sessionSummary.recallMaxResults", { min: 1, integer: true });
     assertOptionalNumber(raw.sessionSummary.recallMaxOutputChars, "sessionSummary.recallMaxOutputChars", { min: 1, integer: true });
     assertOptionalNumber(raw.sessionSummary.recallMaxQueryChars, "sessionSummary.recallMaxQueryChars", { min: 1, integer: true });
@@ -471,6 +517,13 @@ export function validateConfig(raw: Record<string, unknown>): void {
     assertOptionalBoolean(plan.enabled, "plan.enabled");
     assertOptionalNumber(plan.maxSteps, "plan.maxSteps", { min: 1, max: 100, integer: true });
   }
+  if (raw.progress !== undefined) {
+    assertObject(raw.progress, "progress");
+    const progress = raw.progress as Record<string, unknown>;
+    assertOptionalBoolean(progress.enabled, "progress.enabled");
+    assertOptionalNumber(progress.silenceMs, "progress.silenceMs", { min: 1, integer: true });
+    assertOptionalNumber(progress.toolCalls, "progress.toolCalls", { min: 1, integer: true });
+  }
   if (raw.notifications !== undefined) {
     assertObject(raw.notifications, "notifications");
     const notifications = raw.notifications as Record<string, unknown>;
@@ -493,26 +546,39 @@ export function loadConfig(workspacePath: string): Config {
     throw new Error(`无法读取配置文件: ${configPath}`);
   }
 
-  if (!raw.apiUrl) throw new Error("配置缺少 apiUrl");
-  if (raw.apiKey === undefined) throw new Error("配置缺少 apiKey");
-  if (!raw.model) throw new Error("配置缺少 model");
   raw = stripDeprecatedConfigFields(raw);
+
+  const hasExplicitModels = Array.isArray(raw.models) && raw.models.length > 0;
+  if (!hasExplicitModels) {
+    if (!raw.apiUrl) throw new Error("配置缺少 apiUrl");
+    if (raw.apiKey === undefined) throw new Error("配置缺少 apiKey");
+    if (!raw.model) throw new Error("配置缺少 model");
+  }
   validateConfig(raw);
 
+  const models = normalizeModels(raw);
+  const defaultModelId = (raw.defaultModelId as string | undefined) ?? models[0]?.id;
+  const defaultProfile = models.find((item) => item.id === defaultModelId) ?? models[0];
+
   return {
-    remoteModel: (raw.remoteModel as Config["remoteModel"] | undefined) ?? { enabled: true },
-    localModel: (raw.localModel as Config["localModel"] | undefined) ?? {
-      enabled: false,
-      modelId: "qwen3.5-4b-q4",
-      contextSize: 32768,
-    },
-    apiUrl: raw.apiUrl as string,
-    apiKey: raw.apiKey as string,
-    model: raw.model as string,
-    modelProvider: (raw.modelProvider as string | undefined) ?? "anthropic-messages",
+    remoteModel: { enabled: defaultProfile?.provider !== "local-llama" },
+    localModel: defaultProfile?.provider === "local-llama"
+      ? {
+          enabled: true,
+          modelId: (defaultProfile.localModelId ?? "qwen3.5-4b-q4") as ModelProfile["localModelId"],
+          contextSize: defaultProfile.contextSize,
+        }
+      : { enabled: false },
+    apiUrl: defaultProfile?.apiUrl ?? "",
+    apiKey: defaultProfile?.apiKey ?? "",
+    model: defaultProfile?.model ?? "",
+    modelProvider: defaultProfile?.provider ?? "anthropic-messages",
+    models,
+    defaultModelId,
     maxTokens: (raw.maxTokens as number) ?? DEFAULTS.maxTokens!,
     maxContextTokens: (raw.maxContextTokens as number) ?? DEFAULTS.maxContextTokens!,
     contextCompressionThreshold: (raw.contextCompressionThreshold as number) ?? DEFAULTS.contextCompressionThreshold!,
+    contextCompressionTargetRatio: (raw.contextCompressionTargetRatio as number) ?? DEFAULTS.contextCompressionTargetRatio!,
     bashTerminationGraceMs: (raw.bashTerminationGraceMs as number) ?? DEFAULTS.bashTerminationGraceMs!,
     bashMaxOutputChars: (raw.bashMaxOutputChars as number) ?? DEFAULTS.bashMaxOutputChars!,
     fileReadMaxChars: (raw.fileReadMaxChars as number) ?? DEFAULTS.fileReadMaxChars!,
@@ -536,6 +602,7 @@ export function loadConfig(workspacePath: string): Config {
     security: raw.security as Config["security"] | undefined,
     project: raw.project as Config["project"] | undefined,
     plan: raw.plan as Config["plan"] | undefined,
+    progress: raw.progress as Config["progress"] | undefined,
     notifications: raw.notifications as Config["notifications"] | undefined,
     workspacePath,
     systemPrompt: loadIdentity(workspacePath),
@@ -553,4 +620,186 @@ function normalizeAutoMemoryConfig(value: unknown): Config["autoMemory"] | undef
     maxBatchChars: typeof raw.maxBatchChars === "number" ? raw.maxBatchChars : undefined,
     lockTimeoutSeconds: typeof raw.lockTimeoutSeconds === "number" ? raw.lockTimeoutSeconds : undefined,
   };
+}
+
+function validateModelProfiles(value: unknown): asserts value is Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) throw new Error("配置字段 models 必须是数组");
+  const seen = new Set<string>();
+  for (const [index, item] of value.entries()) {
+    const prefix = `models[${index}]`;
+    assertObject(item, prefix);
+    assertString(item.id, `${prefix}.id`);
+    if (seen.has(String(item.id))) throw new Error(`配置字段 ${prefix}.id 重复`);
+    seen.add(String(item.id));
+    if (item.name !== undefined && typeof item.name !== "string") throw new Error(`配置字段 ${prefix}.name 必须是字符串`);
+    if (typeof item.provider !== "string" || !["anthropic-messages", "openai-chat", "chatgpt", "local-llama"].includes(item.provider)) {
+      throw new Error(`配置字段 ${prefix}.provider 不受支持`);
+    }
+    const provider = item.provider as ModelProvider;
+    if (provider === "local-llama") {
+      const localModelId = item.localModelId;
+      if (typeof localModelId !== "string" || !LOCAL_MODELS.some((model) => model.id === localModelId)) {
+        throw new Error(`配置字段 ${prefix}.localModelId 不受支持`);
+      }
+      assertOptionalNumber(item.contextSize, `${prefix}.contextSize`, { min: 512, max: 262144, integer: true });
+    } else {
+      assertString(item.model, `${prefix}.model`);
+      assertString(item.apiUrl, `${prefix}.apiUrl`);
+      if (item.apiKey !== undefined && typeof item.apiKey !== "string") throw new Error(`配置字段 ${prefix}.apiKey 必须是字符串`);
+    }
+    assertOptionalNumber(item.maxTokens, `${prefix}.maxTokens`, { min: 1, max: 1_000_000, integer: true });
+  }
+}
+
+function normalizeModels(raw: Record<string, unknown>): ModelProfile[] {
+  const explicit = Array.isArray(raw.models) && raw.models.length > 0
+    ? (raw.models as Array<Record<string, unknown>>).map(normalizeModelProfile)
+    : [];
+  const remoteEnabled = (raw.remoteModel as { enabled?: boolean } | undefined)?.enabled !== false;
+  const localEnabled = (raw.localModel as { enabled?: boolean } | undefined)?.enabled === true;
+  const profiles: ModelProfile[] = [...explicit];
+  if (explicit.length === 0 && remoteEnabled) {
+    profiles.push({
+      id: "remote",
+      name: "远程模型",
+      provider: (raw.modelProvider ?? "anthropic-messages") as ModelProvider,
+      model: raw.model as string,
+      apiUrl: raw.apiUrl as string,
+      apiKey: raw.apiKey as string,
+    });
+  }
+  if (localEnabled && !profiles.some((item) => item.provider === "local-llama")) {
+    const local = raw.localModel as { modelId?: string; contextSize?: number } | undefined;
+    profiles.push({
+      id: "local",
+      name: "本地模型",
+      provider: "local-llama",
+      localModelId: (local?.modelId ?? "qwen3.5-4b-q4") as ModelProfile["localModelId"],
+      contextSize: local?.contextSize,
+    });
+  }
+  return profiles;
+}
+
+function normalizeModelProfile(item: Record<string, unknown>): ModelProfile {
+  const provider = String(item.provider) as ModelProvider;
+  return {
+    id: String(item.id),
+    name: typeof item.name === "string" ? item.name : undefined,
+    provider,
+    model: typeof item.model === "string" ? item.model : undefined,
+    apiUrl: typeof item.apiUrl === "string" ? item.apiUrl : undefined,
+    apiKey: typeof item.apiKey === "string" ? item.apiKey : undefined,
+    localModelId: typeof item.localModelId === "string" ? item.localModelId as ModelProfile["localModelId"] : undefined,
+    contextSize: typeof item.contextSize === "number" ? item.contextSize : undefined,
+    maxTokens: typeof item.maxTokens === "number" ? item.maxTokens : undefined,
+  };
+}
+
+/**
+ * 将 config.json 的原始内容归一化，供配置 API（GET/PUT /config）读写。
+ * models 数组为唯一权威：扁平字段（apiUrl/apiKey/model/modelProvider/remoteModel/localModel）
+ * 一律从默认模型 profile 派生，忽略 raw 中的 legacy 原值。
+ */
+export function normalizeConfigForApi(raw: Record<string, unknown>): Record<string, unknown> {
+  const models = normalizeModels(raw);
+  const normalized: Record<string, unknown> = { ...raw };
+  normalized.models = models;
+  const defaultModelId = typeof raw.defaultModelId === "string" ? raw.defaultModelId : undefined;
+  if (defaultModelId && !models.some((item) => item.id === defaultModelId)) {
+    delete normalized.defaultModelId;
+  }
+  const profile = models.find((item) => item.id === defaultModelId) ?? models[0];
+  // models 数组为唯一权威：扁平字段一律从默认模型派生，忽略 legacy 原值
+  normalized.apiUrl = profile?.apiUrl ?? "";
+  normalized.apiKey = profile?.apiKey ?? "";
+  normalized.model = profile?.model ?? "";
+  normalized.modelProvider = profile?.provider ?? "anthropic-messages";
+  normalized.remoteModel = { enabled: profile?.provider !== "local-llama" };
+  normalized.localModel =
+    profile?.provider === "local-llama"
+      ? { enabled: true, modelId: profile.localModelId, contextSize: profile.contextSize }
+      : { enabled: false };
+  return normalized;
+}
+
+export function resolveModelProfile(config: Config, modelId?: string): ModelProfile {
+  const models = config.models ?? [];
+  if (models.length === 0) throw new Error("没有配置任何模型");
+  if (modelId) {
+    const found = models.find((item) => item.id === modelId);
+    if (found) return found;
+    throw new Error(`模型 ${modelId} 不存在`);
+  }
+  const defaultId = config.defaultModelId;
+  if (defaultId) {
+    const found = models.find((item) => item.id === defaultId);
+    if (found) return found;
+  }
+  return models[0];
+}
+
+export function applyModelProfileToConfig(config: Config, profile: ModelProfile): Config {
+  return {
+    ...config,
+    apiUrl: profile.apiUrl ?? config.apiUrl,
+    apiKey: profile.apiKey ?? config.apiKey,
+    model: profile.model ?? config.model,
+    modelProvider: profile.provider,
+    remoteModel: { enabled: profile.provider !== "local-llama" },
+    localModel: profile.provider === "local-llama"
+      ? { enabled: true, modelId: profile.localModelId, contextSize: profile.contextSize }
+      : { enabled: false },
+    maxTokens: profile.maxTokens ?? config.maxTokens,
+  };
+}
+
+const CONFIG_SECRET_KEY = /(key|secret|token|password)$/i;
+
+export function maskConfigSecrets(value: unknown, key = ""): unknown {
+  if (typeof value === "string") {
+    return CONFIG_SECRET_KEY.test(key) && value ? `${value.slice(0, 4)}***` : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => maskConfigSecrets(item));
+  }
+  if (value && typeof value === "object") {
+    const masked: Record<string, unknown> = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      masked[childKey] = maskConfigSecrets(childValue, childKey);
+    }
+    return masked;
+  }
+  return value;
+}
+
+export function restoreMaskedSecrets(value: unknown, existing: unknown, key = ""): unknown {
+  if (typeof value === "string") {
+    if (CONFIG_SECRET_KEY.test(key) && value.endsWith("***")) return existing;
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const existingItems = Array.isArray(existing) ? existing : [];
+    const allHaveId = value.length > 0 && value.every((item) => item && typeof item === "object" && !Array.isArray(item) && typeof (item as Record<string, unknown>).id === "string");
+    if (allHaveId) {
+      const byId = new Map<string, unknown>();
+      for (const item of existingItems) {
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          const id = (item as Record<string, unknown>).id;
+          if (typeof id === "string") byId.set(id, item);
+        }
+      }
+      return value.map((item) => restoreMaskedSecrets(item, byId.get((item as Record<string, unknown>).id as string)));
+    }
+    return value.map((item, index) => restoreMaskedSecrets(item, existingItems[index]));
+  }
+  if (value && typeof value === "object") {
+    const existingRecord = existing && typeof existing === "object" ? existing as Record<string, unknown> : {};
+    const restored: Record<string, unknown> = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      restored[childKey] = restoreMaskedSecrets(childValue, existingRecord[childKey], childKey);
+    }
+    return restored;
+  }
+  return value;
 }

@@ -1,11 +1,16 @@
 {
-  "$comment": "简单配置示例。复制到 workspace/config.json 后修改 API Key 和插件密钥",
-  "remoteModel": { "enabled": true },
-  "localModel": { "enabled": false, "modelId": "qwen3.5-4b-q4", "contextSize": 32768 },
-  "apiUrl": "https://api.deepseek.com",
-  "apiKey": "YOUR_API_KEY",
-  "model": "deepseek-v4-pro",
-  "modelProvider": "openai-chat",
+  "$comment": "简单配置示例。复制到 workspace/config.json 后修改 API Key 和插件密钥。models 数组是模型配置的唯一权威，defaultModelId 指定默认模型。",
+  "models": [
+    {
+      "id": "remote",
+      "name": "远程模型",
+      "provider": "openai-chat",
+      "model": "deepseek-v4-pro",
+      "apiUrl": "https://api.deepseek.com",
+      "apiKey": "YOUR_API_KEY"
+    }
+  ],
+  "defaultModelId": "remote",
   "maxTokens": 16384,
   "emptyResponseRetries": 1,
   "maxContextTokens": 128000,
@@ -25,6 +30,11 @@
     "maxSourcesPerOperation": 8,
     "checkpointDeltaThreshold": 20,
     "checkpointMaxChars": 50000,
+    "recentBatchCount": 5,
+    "maxBatchesPerCompression": 3,
+    "maxCompressionDurationMs": 120000,
+    "maxBatchTokens": 1500,
+    "maxBudgetRatio": 0.1,
     "recallMaxResults": 20,
     "recallMaxOutputChars": 20000,
     "recallMaxQueryChars": 500

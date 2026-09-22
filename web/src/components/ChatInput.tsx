@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { fetchChatCommands, fetchContextSnapshot } from "../lib/api.js";
 import type { ChatCommand, ContextSnapshot, ContextTokenUsage, PermissionMode } from "../types.js";
-import type { ExecutionMode } from "../types.js";
+import type { ExecutionMode, ModelInfo } from "../types.js";
 import ContextViewer from "./ContextViewer.js";
 
 interface Props {
@@ -17,6 +17,10 @@ interface Props {
   permissionError?: string;
   activeSessionId: string | null;
   contextUsage?: ContextTokenUsage;
+  models: ModelInfo[];
+  currentModelId?: string | null;
+  onModelChange: (modelId: string) => void;
+  modelError?: string;
 }
 
 export default function ChatInput({
@@ -30,6 +34,10 @@ export default function ChatInput({
   permissionError,
   activeSessionId,
   contextUsage,
+  models,
+  currentModelId,
+  onModelChange,
+  modelError,
 }: Props) {
   const [text, setText] = useState("");
   const [commands, setCommands] = useState<ChatCommand[]>([]);
@@ -163,6 +171,10 @@ export default function ChatInput({
 
   const visibleUsage = contextUsage ?? snapshot?.usage;
 
+  const effectiveModelId = currentModelId && models.some((model) => model.id === currentModelId)
+    ? currentModelId
+    : (models[0]?.id ?? "");
+
   return (
     <div className="chat-input">
       <div className="composer">
@@ -256,19 +268,6 @@ export default function ChatInput({
                 event.target.value = "";
               }}
             />
-            <span>Enter 发送 · Shift+Enter 换行</span>
-          </div>
-          <div className="composer-actions">
-            {visibleUsage && <button
-              type="button"
-              className={`context-usage-trigger ${visibleUsage && visibleUsage.percent >= 80 ? "danger" : visibleUsage && visibleUsage.percent >= 60 ? "warning" : ""}`}
-              disabled={!activeSessionId || snapshotLoading || !visibleUsage}
-              aria-busy={snapshotLoading}
-              title="查看上下文统计"
-              onClick={() => void openContext()}
-            >
-              {`上下文 ${visibleUsage.percent}%`}
-            </button>}
             <label className="permission-mode-select" title={permissionError || "工具自定义权限配置优先"}>
               <select
                 aria-label="审批模式"
@@ -282,6 +281,33 @@ export default function ChatInput({
               </select>
             </label>
             {permissionError && <span className="permission-mode-error">{permissionError}</span>}
+          </div>
+          <div className="composer-actions">
+            {visibleUsage && <button
+              type="button"
+              className={`context-usage-trigger ${visibleUsage && visibleUsage.percent >= 80 ? "danger" : visibleUsage && visibleUsage.percent >= 60 ? "warning" : ""}`}
+              disabled={!activeSessionId || snapshotLoading || !visibleUsage}
+              aria-busy={snapshotLoading}
+              title="查看上下文统计"
+              onClick={() => void openContext()}
+            >
+              {`上下文 ${visibleUsage.percent}%`}
+            </button>}
+            {models.length > 0 && (
+              <label className="chat-model-picker" title={modelError || "切换当前会话使用的模型"}>
+                <select
+                  aria-label="模型切换"
+                  value={effectiveModelId}
+                  onChange={(event) => onModelChange(event.target.value)}
+                  disabled={!activeSessionId || disabled}
+                  className={modelError ? "model-error" : undefined}
+                >
+                  {models.map((model) => (
+                    <option key={model.id} value={model.id}>{model.name?.trim() || model.model || model.id}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             {disabled ? (
               <button className="stop-btn" disabled={isStopping} onClick={onStop}>{isStopping ? "正在停止..." : "停止"}</button>
             ) : (

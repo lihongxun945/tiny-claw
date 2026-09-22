@@ -37,11 +37,34 @@ export interface Session {
   attention?: "approval" | "input";
   context: SessionContext;
   executionMode: ExecutionMode;
+  currentModelId?: string;
 }
 
 export interface SessionContext {
   mode: "chat" | "project";
   project?: { root: string; name: string };
+}
+
+export interface ModelInfo {
+  id: string;
+  name?: string;
+  provider: string;
+  model?: string;
+  localModelId?: string;
+}
+
+export type ModelProvider = "anthropic-messages" | "openai-chat" | "chatgpt" | "local-llama";
+
+export interface ModelProfile {
+  id: string;
+  name?: string;
+  provider: ModelProvider;
+  model?: string;
+  apiUrl?: string;
+  apiKey?: string;
+  localModelId?: string;
+  contextSize?: number;
+  maxTokens?: number;
 }
 
 export interface SSEEvent {

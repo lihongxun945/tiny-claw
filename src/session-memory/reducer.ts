@@ -71,7 +71,8 @@ export function shouldCompactSummary(
   current: PersistedSessionSummary,
   limits: SummaryCompactionLimits,
 ): boolean {
-  return current.deltas.length >= limits.maxDeltas || JSON.stringify(current).length >= limits.maxChars;
+  return current.deltas.length >= limits.maxDeltas
+    || JSON.stringify({ checkpoint: current.checkpoint, deltas: current.deltas }).length >= limits.maxChars;
 }
 
 function cloneCategories(categories: SummaryCategories): SummaryCategories {

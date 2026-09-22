@@ -1,4 +1,4 @@
-import type { ChatResponse, Message, ToolDefinition } from "../types.js";
+import type { ChatResponse, Message, ModelProvider, ToolDefinition } from "../types.js";
 
 export interface CompleteOptions {
   signal?: AbortSignal;
@@ -17,7 +17,7 @@ export interface ModelClient {
   ): Promise<ChatResponse>;
 }
 
-export type ModelProvider = "anthropic-messages" | "openai-chat" | "chatgpt" | "local-llama";
+export type { ModelProvider };
 
 export type ModelDebugPhase = "request" | "response" | "parsed_response" | "error" | "repair" | "stream_event";
 

@@ -6,6 +6,7 @@ import {
   readSessionMessages,
   readSessionMeta,
   sessionMessagesPath,
+  updateSessionModelId,
 } from "../../src/session-store.js";
 import { createTempWorkspace, removeTempWorkspace } from "../helpers/temp-workspace.js";
 
@@ -89,6 +90,34 @@ describe("session message persistence", () => {
       const appended = await appendSessionMessage(workspacePath, "legacy", { role: "user", content: "new" });
       expect(appended._sequence).toBe(3);
       expect(readSessionMeta(workspacePath, "legacy")?.lastMessageSequence).toBe(3);
+    } finally {
+      removeTempWorkspace(workspacePath);
+    }
+  });
+});
+
+describe("session model persistence", () => {
+  it("persists currentModelId and keeps it through message appends", async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      await appendSessionMessage(workspacePath, "models", { role: "user", content: "hi" });
+      expect(readSessionMeta(workspacePath, "models")?.currentModelId).toBeUndefined();
+
+      const updated = updateSessionModelId(workspacePath, "models", "fast");
+      expect(updated.currentModelId).toBe("fast");
+      expect(readSessionMeta(workspacePath, "models")?.currentModelId).toBe("fast");
+
+      await appendSessionMessage(workspacePath, "models", { role: "assistant", content: "ok" });
+      expect(readSessionMeta(workspacePath, "models")?.currentModelId).toBe("fast");
+    } finally {
+      removeTempWorkspace(workspacePath);
+    }
+  });
+
+  it("throws when updating the model of a missing session", () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      expect(() => updateSessionModelId(workspacePath, "nope", "fast")).toThrow("会话不存在");
     } finally {
       removeTempWorkspace(workspacePath);
     }

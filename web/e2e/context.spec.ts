@@ -24,7 +24,7 @@ test("distinguishes a rejected estimate from the preceding request after reload"
   }
 });
 
-test("keeps context usage beside approvals and full statistics in the dialog", async ({ page }) => {
+test("keeps composer controls visible without overlap and full statistics in the dialog", async ({ page }) => {
   await page.route("**/history/sessions", (route) => route.fulfill({ json: { sessions: [
     { id: "context-session", lastActivity: Date.now(), preview: "上下文测试", context: { mode: "chat" } },
   ] } }));
@@ -44,9 +44,12 @@ test("keeps context usage beside approvals and full statistics in the dialog", a
     await page.setViewportSize({ width, height: 800 });
     const context = (await trigger.boundingBox())!;
     const approval = (await page.getByRole("combobox", { name: "审批模式" }).boundingBox())!;
-    expect(context.x + context.width).toBeLessThanOrEqual(approval.x);
-    expect(Math.abs(context.y - approval.y)).toBeLessThan(2);
+    const separated = approval.x + approval.width <= context.x
+      || approval.y + approval.height <= context.y;
+    expect(separated).toBe(true);
+    expect(approval.x).toBeGreaterThanOrEqual(0);
     expect(approval.x + approval.width).toBeLessThanOrEqual(width);
+    expect(context.x + context.width).toBeLessThanOrEqual(width);
     await trigger.click();
     const dialog = page.getByRole("dialog", { name: "当前模型上下文" });
     await expect(dialog).toContainText("24,000 tokens");

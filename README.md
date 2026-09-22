@@ -6,6 +6,8 @@ tiny-claw 是一个插件化、可扩展的个人 AI Agent，能够围绕用户�
 
 ## 核心功能
 
+上下文压缩保留完整的工具调用与结果配对，避免审批恢复后的任务因工具消息被拆开而中断；原始会话历史保持不变。
+
 - 自主 Agent Loop、流式输出和多轮工具调用
 - 远程模型与内置 Qwen、Gemma 本地模型
 - Web 搜索、网页读取、Shell、文件读写和项目开发工具
@@ -16,6 +18,8 @@ tiny-claw 是一个插件化、可扩展的个人 AI Agent，能够围绕用户�
 - Web UI、macOS/Windows 客户端、Gateway API 和飞书机器人
 - 图片输入、上下文占用与请求内容查看、模型调用调试和工具审计日志
 - 后台系统通知（审批、等待输入、任务完成等）
+
+复杂任务会提示 Agent 汇报关键进展，避免长时间只调用工具。`progress` 配置默认启用，`silenceMs: 60000` 或 `toolCalls: 5` 达到任一条件后，在下一次模型请求中提醒汇报；这是沟通提示，不保证模型立即输出，也不限制工具执行。
 
 ## 本次更新（0.1.0-beta.22）
 
@@ -98,8 +102,8 @@ Windows 关闭窗口后仍驻留系统托盘，通过托盘菜单退出才结束
 - 输入框内审批模式左侧以“上下文 24%”显示最新上下文占用；点击可查看完整统计、System Prompt、上下文摘要、Messages、Tools 和 Token 估算明细。请求准备及超限时保存“最新预算估算（未发送）”，弹窗另外显示上次请求占用，避免工具返回后仍展示过期数字。摘要单独展示本次请求实际使用的会话摘要；兼容旧快照。
 - 每个会话的最新上下文快照保存在会话目录，重启后仍可查看；尚未产生快照时隐藏入口，删除会话时一并删除快照。
 - 完整工具结果保存在消息历史中，发给模型和页面展示的内容受预算保护。大结果标注“内容已精简”，可下载原文；模型通过 `session_history_recall` 的 `tool_call_id`、`result_index`、`offset`、`query` 分页或定位读取，返回 `nextOffset`，不能无限取回全文。
-- `plugins.core-tool-context` 配置结果保护：`maxResultTokens` 默认 8000、`readMaxTokens` 默认 4000、`searchSnippetChars` 默认 1500、`safetyMargin` 默认 0.05、`summaryRetries` 默认 1、`searchMaxResponseBytes` 默认 8388608。历史不按固定轮数裁剪；接近 Token 阈值时可压缩当前轮较早的完整工具交互，保留最新需求和最新交互，原始历史不改写。采集超过上限的搜索响应会明确报告未完整接收。
-- 工具结果预算优先分配给最新交互，旧结果可按引用取回；`readMaxTokens` 同时保障最新结果的阅读预算（受 `maxResultTokens` 上限约束）。预算不足时先压缩历史，不能通过把每页缩成几个字维持执行。请求裁剪不改写内存历史或落盘原文。
+- `plugins.core-tool-context` 配置结果保护：`maxResultTokens` 默认 8000、`readMaxTokens` 默认 4000、`historyResultMaxChars` 默认 500、`searchSnippetChars` 默认 1500、`safetyMargin` 默认 0.05、`summaryRetries` 默认 1、`searchMaxResponseBytes` 默认 8388608。工具结果只截断、不做模型摘要：历史轮次只携带前 500 字符预览和原文引用，当前轮按 Token 预算裁剪，审批等控制结果除外。摘要输入排除工具结果正文，仅整理对话文本与调用元数据；旧消息组可以被摘要覆盖，完整结果仍可用 `session_history_recall` 读取。原始历史不改写。采集超过上限的搜索响应会明确报告未完整接收。
+- 工具结果预算优先分配给最新交互，旧结果可按引用取回；`readMaxTokens` 控制回查单次读取额度，最终请求仍服从共享预算。请求裁剪不改写内存历史或落盘原文。
 - 当工具需要审批时，在聊天消息的工具块中点击“批准”或“拒绝”；刷新、切换会话或重启 Gateway 后审批仍会保留，批准或拒绝后原任务会自动继续处理。
 - 工具调用区域会显示执行中、成功、失败、已拦截和待审批状态；长任务会持续显示已执行时长。未在当前请求开放的工具不会执行，拦截记录不计入执行失败。
 - 工具耗时使用后端时间戳，切回窗口立即校准，完成后保留耗时；计划信息条和历史计划显示本轮总耗时（包含等待审批）。刷新不归零，旧记录缺少时间时不显示估算值。后台任务的运行时间独立于启动工具调用耗时。
@@ -153,7 +157,7 @@ cp config.simple.example.json workspace/config.json
 推荐从 `config.simple.example.json` 开始；`config.all.example.json` 是完整配置参考。
 自动生成的配置会预设 DeepSeek API 地址、`deepseek-chat` 模型和可直接使用的 DuckDuckGo 关键词搜索；API Key、飞书密钥和付费搜索服务密钥等用户凭证保持为空。可以填写远程 API Key，也可以在配置页面下载并启用 Qwen 或 Gemma 本地模型；仅启用本地模型时不需要 API Key。
 
-`workspace/config.json` 必填字段：
+`workspace/config.json` 旧式单模型字段（可选，仅在未配置 `models` 数组时作为输入被自动迁移）：
 
 ```json
 {
@@ -163,6 +167,33 @@ cp config.simple.example.json workspace/config.json
   "modelProvider": "anthropic-messages"
 }
 ```
+
+推荐直接配置多个模型并在会话中随时切换。`models` 数组是模型配置的唯一权威，每个模型独立配置，`defaultModelId` 指定默认模型；旧字段 `apiUrl`/`apiKey`/`model`/`modelProvider` 仅在加载时被归一化迁移成 `remote`/`local` 两个模型，保存后不再落盘：
+
+```json
+{
+  "models": [
+    {
+      "id": "remote",
+      "name": "远程模型",
+      "provider": "anthropic-messages",
+      "model": "glm-5.1",
+      "apiUrl": "https://ark.cn-beijing.volces.com/api/coding",
+      "apiKey": "YOUR_API_KEY"
+    },
+    {
+      "id": "local",
+      "name": "本地模型",
+      "provider": "local-llama",
+      "localModelId": "qwen3.5-4b-q4",
+      "contextSize": 32768
+    }
+  ],
+  "defaultModelId": "remote"
+}
+```
+
+切换模型在 WebUI 聊天工具栏的模型下拉框中进行，选择后立即对当前会话生效并持久化，重启后保持；`provider` 支持 `anthropic-messages`、`openai-chat`、`chatgpt` 和 `local-llama`。
 
 `modelProvider` 用于选择模型协议适配器。当前支持：
 
@@ -228,18 +259,21 @@ WebUI 支持浅色和深色主题，可在左侧栏底部切换。首次打开�
 
 | 配置项 | 默认值 | 示例 | 说明 |
 |---|---:|---|---|
-| `remoteModel.enabled` | `true` | `false` | 是否启用远程模型；与本地模型同时启用时优先使用远程模型 |
+| `remoteModel.enabled` | `true` | `false` | 是否启用远程模型；派生视图，由 `models` 中的远程模型派生 |
 | `localModel.enabled` | `false` | `true` | 是否启用内置本地推理 |
 | `localModel.modelId` | `"qwen3.5-4b-q4"` | `"gemma-4-12b-it-q4"` | 本地模型：Qwen3.5 0.8B/2B/4B/9B/27B/35B-A3B，或 Gemma 4 E2B/E4B/12B/26B-A4B/31B |
 | `localModel.contextSize` | `32768` | `32768` | 本地模型实际加载的上下文 token 数，允许范围最高 262144；默认采用更适合本地内存占用的 32768 |
-| `apiUrl` | 必填 | `"https://ark.cn-beijing.volces.com/api/coding"` | 模型 API 基础地址 |
-| `apiKey` | 必填 | `"YOUR_API_KEY"` | 模型 API Key |
-| `model` | 必填 | `"deepseek-v4-flash"` | 模型名称 |
+| `apiUrl` | 由 `models[0]` 派生 | `"https://ark.cn-beijing.volces.com/api/coding"` | 模型 API 基础地址；派生视图，旧格式输入时必填，保存时不落盘 |
+| `apiKey` | 由 `models[0]` 派生 | `"YOUR_API_KEY"` | 模型 API Key；派生视图，旧格式输入时必填，保存时不落盘 |
+| `model` | 由 `models[0]` 派生 | `"deepseek-v4-flash"` | 模型名称；派生视图，旧格式输入时必填，保存时不落盘 |
 | `modelProvider` | `"anthropic-messages"` | `"openai-chat"` | 模型协议适配器：`anthropic-messages`、`openai-chat`、`chatgpt` |
+| `models` | 由 `createDefaultConfig` 生成 deepseek | 见上文多模型示例 | 多模型 Profile 数组，是唯一权威；每个模型独立配置 provider/model/apiUrl/apiKey 或 localModelId/contextSize |
+| `defaultModelId` | `models[0].id` | `"local"` | 默认使用的模型 ID，必须在 `models` 中 |
 | `maxTokens` | `16384` | `16384` | 单次模型回复最大 token |
 | `emptyResponseRetries` | `1` | `1` | 模型成功返回空文本且无工具调用时的重试次数 |
 | `maxContextTokens` | `128000` | `128000` | 上下文窗口 token 估算上限 |
-| `contextCompressionThreshold` | `0.7` | `0.7` | 超过 `maxContextTokens * threshold` 时触发上下文压缩 |
+| `contextCompressionThreshold` | `0.8` | `0.8` | 可用上下文预算达到此比例时触发集中压缩 |
+| `contextCompressionTargetRatio` | `0.2` | `0.2` | 集中压缩目标，要求 `0 < 目标 < 触发 < 1` |
 | `maxAgentIterations` | `1000` | `1000` | 单次任务最大 Agent Loop 次数；达到上限时会明确提示，配置 `0` 表示不限 |
 | `searchProvider` | `"duckduckgo"` | `"brave"` | 搜索服务：`ollama`、`searxng`、`brave`、`duckduckgo` |
 | `ollamaApiKey` | 无 | `"YOUR_OLLAMA_API_KEY"` | Ollama Web Search API Key，`searchProvider=ollama` 时使用 |
@@ -278,7 +312,7 @@ WebUI 支持浅色和深色主题，可在左侧栏底部切换。首次打开�
 
 如果需要让子 agent 具备更多能力，可以把工具名加入 `allowedTools`，再确保不在 `disabledTools` 中。`sub_agent_run` 会始终被禁用，避免递归派生。
 
-Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作目录放置 `workspace/sub_agent_prompt.md` 覆盖。支持占位符：`{{task}}`、`{{context}}`、`{{allowed_tools}}`、`{{current_date}}`。临时 sub-agent 不独立续跑权限审批；遇到需要审批的工具时会把工具与参数返回给主 Agent，由主 Agent 重新调用并完成审批，避免产生无法恢复的子会话审批。
+Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作目录放置 `workspace/sub_agent_prompt.md` 覆盖。支持占位符：`{{task}}`、`{{context}}`、`{{allowed_tools}}`。临时 sub-agent 不独立续跑权限审批；遇到需要审批的工具时会把工具与参数返回给主 Agent，由主 Agent 重新调用并完成审批，避免产生无法恢复的子会话审批。
 
 | 配置项 | 默认值 | 示例 | 说明 |
 |---|---:|---|---|
@@ -293,9 +327,13 @@ Sub-agent 提示词默认模板位于 `src/prompts/sub_agent.md`，可在工作�
 
 执行期间，回答下方的灰色状态行会显示等待模型响应、生成回答、调用工具或具体命令等阶段及耗时；无需展开工具或计划。刷新后可恢复当前阶段，断线、等待审批与正在停止使用独立提示。
 
-会话摘要只在模型请求前达到 Token 预算时同步生成，不再按对话轮数触发。`contextCompressionThreshold`（默认 `0.7`）按系统提示词、工具定义、摘要和消息的完整输入计算，并预留模型最大输出空间。压缩期间显示“正在进行上下文压缩...”；低占用的多轮对话不触发。旧配置 `sessionSummary.turnThreshold` 兼容读取但不再生效，跨会话的 `autoMemory.turnThreshold` 不受影响。
+会话摘要只在模型请求前达到 Token 预算时同步生成，不按对话轮数触发。可用预算扣除固定提示词、工具定义、输出预留和安全空间；动态资料、任务状态、摘要及消息共用剩余预算。`contextCompressionThreshold` 默认 0.8，`contextCompressionTargetRatio` 默认 0.2，要求 `0 < 目标 < 触发 < 1`。设置页面以百分比编辑，保存与配置加载均由后端校验。压缩期间显示状态，低占用只追加消息，不每轮重写摘要。`autoMemory.turnThreshold` 不受影响。
 
-未压缩的历史正文、工具调用和工具结果跨轮完整保留，不按轮数或消息类型裁剪。达到 Token 预算后，从最早的历史完整轮次生成摘要，成功持久化后才移除对应的请求原文；当前执行轮不参与摘要，磁盘 messages.jsonl 始终保留。失败保留原文和已有摘要：未超过模型硬上限则继续，超过时明确报错。旧 recentTurns 设置不再生效。
+历史和当前轮较早的完整交互按字符及 Token 预算分批整理，工具调用不能与结果拆开。每批摘要独立保存，不再二次概括；`sessionSummary.recentBatchCount` 默认保留最近 5 批，`maxBatchTokens` 默认 1500，`maxBudgetRatio` 默认 0.1 且不得超过压缩目标。超出摘要预算时淘汰最旧批次，但磁盘原文和旧摘要仍保留。当前目标、有效约束及待办独立维护，不随历史摘要淘汰。
+
+没有可整理历史时，继续缩减当前轮较旧工具结果，保留原文引用，使用 `session_history_recall` 按需取回。投影额度持久化，重启后不重新展开已裁剪内容；原始 `messages.jsonl` 不改写。只有达到低水位才报告压缩达标，必要内容高于目标但符合硬上限时继续；仍超过硬上限则报错。旧结构化摘要直接在本地转换，保留原覆盖位置和有效任务状态，旧事实按来源归档，不重新调用模型整理已覆盖历史，并备份旧 Checkpoint。
+
+`sessionSummary.maxBatchesPerCompression` 默认 3，`maxCompressionDurationMs` 默认 120000（两分钟），限制一次集中压缩的批次和模型等待总时间。每批显示批次、覆盖序号、剩余消息及已用时；成功批次立即持久化，取消后从已提交位置继续。达到限制后尝试工具结果裁剪，仍须通过硬预算检查，不能以跳过未覆盖历史换取继续执行。
 
 单次工具输出在进入历史前限制大小：file_read 超限时明确标记并支持 offset/limit 分段读取；bash 保留 stdout/stderr 尾部，超限返回 truncated 和完整日志 outputPath，可通过 file_read 读取。项目搜索沿用 project.searchMaxChars/searchMaxResults。字符上限不等于 Token 保证，请求前仍执行模型硬预算检查。
 
@@ -429,6 +467,8 @@ WebUI 支持选择图片或直接粘贴截图，可在发送前预览和移除�
 
 开启后，每次模型调用会按 Request ID 写入
 `workspace/debug/model-calls/YYYY-MM-DD/<requestId>.json`。在 Web UI 的“日志 → 模型调用”中可以按调用查看：
+
+调用列表分页加载，默认每页 20 条，可选择 50 或 100 条，并支持按 Session ID 筛选。点击记录才加载请求与最终回复。旧日志首次查看会自动建立轻量索引，后续列表查询不再解析全部调用正文。
 
 - 请求原文：发送给模型的 URL 和请求体，包括 system prompt、messages、tools
 - 响应原文：非流式接口返回的原始 JSON
