@@ -58,7 +58,7 @@ async function main() {
     stdinClosed = true;
   });
 
-  console.log("tiny-claw 已启动，输入问题开始对话 (Ctrl+C 退出)\n");
+  console.log("Breeze Coder 已启动，输入问题开始对话 (Ctrl+C 退出)\n");
 
   while (!stdinClosed) {
     let userInput: string;

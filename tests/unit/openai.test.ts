@@ -21,7 +21,7 @@ function config(): Config {
     historyWindowSize: 5,
     maxAgentIterations: 20,
     searchProvider: "ollama",
-    workspacePath: "/tmp/tiny-claw-test",
+    workspacePath: "/tmp/breeze-coder-test",
     systemPrompt: "",
   };
 }

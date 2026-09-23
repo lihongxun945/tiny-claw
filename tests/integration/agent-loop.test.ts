@@ -201,7 +201,7 @@ describe("AgentSession loop", () => {
       const events = await collect(session.chat("hi"));
       expect(events).toEqual([
         { type: "text_delta", text: "hello" },
-        { type: "notification", notification: { title: "本轮完成", body: "皮皮虾已完成本轮任务，可回来查看结果", sessionId: "notify", turnId: expect.any(String) } },
+        { type: "notification", notification: { title: "本轮完成", body: "Breeze Coder 已完成本轮任务，可回来查看结果", sessionId: "notify", turnId: expect.any(String) } },
         { type: "done", text: "hello", reason: "completed" },
       ]);
     } finally {
@@ -2110,8 +2110,9 @@ describe("AgentSession loop", () => {
       expect(client.completeCalls).toHaveLength(1);
       const request = JSON.parse(String(client.completeCalls[0][0].content));
       expect(request.batch.throughSequence).toBe(4);
-      expect(request.messages[2].content).toContain("工具结果正文已省略 ID=old-tool");
-      expect(request.messages[2].content).not.toContain("历史工具结果".repeat(3500));
+      expect(request.messages.map((message: { content: string }) => message.content)).toEqual([source[0].content, "finished"]);
+      expect(JSON.stringify(request.messages)).not.toContain("old-tool");
+      expect(JSON.stringify(request.messages)).not.toContain("历史工具结果");
       expect(JSON.stringify(client.calls[0])).not.toContain("old-tool");
       expect(JSON.stringify(readSessionMessages(workspace, "tool-summary"))).toContain("old-tool");
       await secondManager.loadCorePlugins();

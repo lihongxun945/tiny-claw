@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const require = createRequire(resolve(process.argv[2], "package.json"));
-const workspace = mkdtempSync(join(tmpdir(), "tiny-claw-native-"));
+const workspace = mkdtempSync(join(tmpdir(), "breeze-coder-native-"));
 try {
   const lancedb = require("@lancedb/lancedb");
   const db = await lancedb.connect(join(workspace, "vectors"));

@@ -172,8 +172,9 @@ jobs:
       - name: Verify signed release and generate checksum
         shell: bash
         run: |
-          codesign --verify --deep --strict --verbose=2 release/mac-arm64/tiny-claw.app
-          hdiutil verify release/tiny-claw-*.dmg
+          product_name="$(node -p "require('./package.json').build.productName")"
+          codesign --verify --deep --strict --verbose=2 "release/mac-arm64/${product_name}.app"
+          hdiutil verify release/*.dmg
           node scripts/release-checksums.mjs macos
 
       - name: Upload macOS artifacts
@@ -225,12 +226,15 @@ jobs:
       - name: Install and smoke test Windows application
         run: |
           $installer = (Get-ChildItem release/*-windows-x64-setup.exe).FullName
-          $installPath = Join-Path $env:RUNNER_TEMP 'tiny-claw install'
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $productName = $package.build.productName
+          $executableName = $package.build.win.executableName + '.exe'
+          $installPath = Join-Path $env:RUNNER_TEMP "$productName install"
           $result = Start-Process -FilePath $installer -ArgumentList "/S /currentuser /D=`"$installPath`"" -Wait -PassThru
           if ($result.ExitCode -ne 0) { throw "Installer failed: $($result.ExitCode)" }
-          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $version = $package.version
           $entries = @(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' |
-            Where-Object { $_.DisplayName -eq "tiny-claw $version" -and $_.DisplayVersion -eq $version })
+            Where-Object { $_.DisplayName -eq "$productName $version" -and $_.DisplayVersion -eq $version })
           Write-Host "Requested installation directory: $installPath"
           $entries | Select-Object DisplayName, DisplayVersion, InstallLocation, UninstallString | Format-List
           if ($entries.Count -ne 1) { throw "Expected one current-user installation, found $($entries.Count)" }
@@ -242,14 +246,14 @@ jobs:
             if ([IO.Path]::GetFullPath($actualPath).TrimEnd('\') -ne [IO.Path]::GetFullPath($installPath).TrimEnd('\')) {
               throw "Installation directory mismatch: expected '$installPath', actual '$actualPath'"
             }
-            if (!(Test-Path "$installPath/tiny-claw.exe")) { throw 'Installed application missing' }
+            if (!(Test-Path (Join-Path $installPath $executableName))) { throw 'Installed application missing' }
             npm run desktop:smoke -- "$installPath"
             if ($LASTEXITCODE -ne 0) { throw 'Installed application smoke test failed' }
           } finally {
             $uninstaller = (Get-ChildItem "$actualPath/Uninstall*.exe").FullName
             $removed = Start-Process -FilePath $uninstaller -ArgumentList "/S /currentuser _?=$actualPath" -Wait -PassThru
             if ($removed.ExitCode -ne 0) { throw "Uninstaller failed: $($removed.ExitCode)" }
-            if (Test-Path "$actualPath/tiny-claw.exe") { throw 'Uninstaller did not remove the application' }
+            if (Test-Path (Join-Path $actualPath $executableName)) { throw 'Uninstaller did not remove the application' }
           }
       - name: Generate Windows checksum
         run: node scripts/release-checksums.mjs windows
@@ -279,5 +283,5 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" release/* \
             --verify-tag --generate-notes \
-            --title "tiny-claw ${GITHUB_REF_NAME}" \
+            --title "Breeze Coder ${GITHUB_REF_NAME}" \
             --notes "Windows x64 installer is unsigned. macOS ARM64 DMG is signed and notarized."

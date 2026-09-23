@@ -1,6 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
+export function desktopUserDataPath(appDataPath: string, override?: string): string {
+  // Use a stable directory independent of Electron's display name.
+  return override ? resolve(override) : resolve(appDataPath, "breeze-coder");
+}
+
 export function initializeDesktopWorkspace(userDataPath: string): string {
   const workspacePath = resolve(userDataPath, "workspace");
   mkdirSync(workspacePath, { recursive: true });

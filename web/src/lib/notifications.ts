@@ -30,7 +30,7 @@ export function showBackgroundNotification(payload: NotificationPayload): void {
   try {
     const notification = new Notification(payload.title, {
       body: payload.body ?? "",
-      tag: `tiny-claw-${payload.turnId ?? payload.sessionId ?? "notification"}`,
+      tag: `breeze-coder-${payload.turnId ?? payload.sessionId ?? "notification"}`,
     });
     notification.onclick = () => {
       window.focus();

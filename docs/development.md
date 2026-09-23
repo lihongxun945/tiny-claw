@@ -1,6 +1,6 @@
 # 本地开发与测试
 
-本文面向 tiny-claw 源码贡献者。普通安装和使用请从项目根目录的 [README](../README.md) 开始。
+本文面向 Breeze Coder 源码贡献者。普通安装和使用请从项目根目录的 [README](../README.md) 开始。
 
 ## 环境要求
 

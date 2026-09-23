@@ -1,8 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const gatewayPort = parseInt(process.env.TINY_CLAW_PORT ?? "3000", 10);
-const gatewayToken = process.env.TINY_CLAW_GATEWAY_TOKEN;
+const gatewayPort = parseInt(process.env.BREEZE_CODER_PORT ?? "3000", 10);
+const gatewayToken = process.env.BREEZE_CODER_GATEWAY_TOKEN;
 const proxy = {
   target: `http://localhost:${gatewayPort}`,
   headers: gatewayToken ? { authorization: `Bearer ${gatewayToken}` } : undefined,

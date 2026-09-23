@@ -1,6 +1,6 @@
 # 桌面客户端构建与发布
 
-本文面向 tiny-claw 发布维护者。普通用户应从 GitHub Releases 下载 macOS DMG 或 Windows EXE 安装包。
+本文面向 Breeze Coder 发布维护者。普通用户应从 GitHub Releases 下载 macOS DMG 或 Windows EXE 安装包。
 
 ## 本地构建
 
@@ -13,7 +13,7 @@ npm run desktop:dist
 构建过程会依次编译 WebUI、主程序和 Electron 主进程，再通过 electron-builder 生成 arm64 DMG。安装包输出到：
 
 ```text
-release/tiny-claw-<version>-arm64.dmg
+release/breeze-coder-<version>-arm64.dmg
 ```
 
 如果登录钥匙串中存在有效的 `Developer ID Application` 证书及私钥，electron-builder 会自动签名应用；否则生成的包只能用于本地测试。
@@ -26,7 +26,7 @@ npm run desktop:dist:win
 npm run desktop:smoke
 ```
 
-输出 `release/tiny-claw-<version>-windows-x64-setup.exe`，NSIS 安装向导允许选择目录，默认按当前用户安装，卸载保留用户数据。不使用 Windows 签名证书，首次运行可能被系统安全策略拦截。不要用 macOS 交叉构建代替 Windows 原生构建和测试，因为 LanceDB 与 node-llama-cpp 含平台原生依赖。
+输出 `release/breeze-coder-<version>-windows-x64-setup.exe`，NSIS 安装向导允许选择目录，默认按当前用户安装，卸载保留用户数据。不使用 Windows 签名证书，首次运行可能被系统安全策略拦截。不要用 macOS 交叉构建代替 Windows 原生构建和测试，因为 LanceDB 与 node-llama-cpp 含平台原生依赖。
 
 `desktop:smoke` 检查打包后的原生模块、窗口启动/恢复和 Gateway 退出；Windows 可传安装目录 `npm run desktop:smoke -- "C:/测试目录"`。测试使用临时 userData，不读取真实用户配置；完整小模型推理另由 `npm run test:local-model` 验证。
 
@@ -65,10 +65,10 @@ macOS 构建需要配置以下 Secrets；Windows 构建不需要新增账号或�
 
 ## 发布产物
 
-- `tiny-claw-<version>-arm64.dmg`
-- `tiny-claw-<version>-arm64.dmg.blockmap`
-- `tiny-claw-<version>-windows-x64-setup.exe`
+- `breeze-coder-<version>-arm64.dmg`
+- `breeze-coder-<version>-arm64.dmg.blockmap`
+- `breeze-coder-<version>-windows-x64-setup.exe`
 - `SHA256SUMS-macos.txt`
 - `SHA256SUMS-windows.txt`
 
-macOS 用户数据位于 `~/Library/Application Support/tiny-claw/workspace`，Windows 通常位于 `%APPDATA%/tiny-claw/workspace`，覆盖安装不会删除这些目录。
+macOS 用户数据位于 `~/Library/Application Support/breeze-coder/workspace`，Windows 通常位于 `%APPDATA%/breeze-coder/workspace`，覆盖安装不会删除这些目录。

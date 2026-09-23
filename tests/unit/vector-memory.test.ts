@@ -53,7 +53,7 @@ describe("vector memory", () => {
 
   it("falls back to keyword retrieval when embedding fails", async () => {
     workspacePath = createTempWorkspace();
-    saveMemory(workspacePath, "typescript", "tiny-claw 使用 TypeScript。", { summary: "技术栈" });
+    saveMemory(workspacePath, "typescript", "breeze-coder 使用 TypeScript。", { summary: "技术栈" });
     const failingEmbedding: EmbeddingProvider = {
       id: "broken", dimensions: 8,
       async embed() { throw new Error("offline"); },

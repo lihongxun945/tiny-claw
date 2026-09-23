@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 interface Window {
-  tinyClawDesktop?: {
+  breezeCoderDesktop?: {
     selectProjectDirectory(): Promise<string | null>;
   };
 }

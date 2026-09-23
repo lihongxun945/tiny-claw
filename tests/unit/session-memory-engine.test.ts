@@ -175,7 +175,7 @@ describe("structured session summary engine", () => {
     const client = { complete: async (input: Message[]) => {
       const prompt = String(input[0].content);
       expect(prompt).not.toContain("SECRET_OUTPUT");
-      expect(prompt).toContain("call-original");
+      expect(prompt).not.toContain("call-original");
       expect(prompt).toContain("Confirmed conclusion");
       return JSON.stringify({ operations: [] });
     } } as unknown as ModelClient;
@@ -183,6 +183,50 @@ describe("structured session summary engine", () => {
     const delta = await engine.createDelta(client, "session", emptySessionSummary("session"), source);
     expect(delta.throughSequence).toBe(3);
     expect(source).toEqual(before);
+  });
+
+  it("sends only user input and the final answer across tools, notices and interrupted turns", async () => {
+    const source: Message[] = [
+      { role: "user", content: "question", _turnId: "a" },
+      { role: "assistant", content: "intermediate narration", _turnId: "a" },
+      { role: "assistant", _turnId: "a", content: [
+        { type: "text", text: "working" },
+        { type: "tool_use", id: "secret-call", name: "write", input: { code: "SECRET".repeat(10000) } },
+      ] },
+      { role: "user", _turnId: "a", content: [{ type: "tool_result", tool_use_id: "secret-call", content: "SECRET_RESULT" }] },
+      { role: "assistant", _turnId: "a", _reasoningContent: "SECRET_THINKING", content: "final answer" },
+      { role: "assistant", _turnId: "a", _source: "runtime_notice", content: "system notice" },
+      { role: "user", _turnId: "b", content: "interrupted question" },
+      { role: "assistant", _turnId: "b", content: [{ type: "tool_use", id: "missing", name: "read", input: {} }] },
+      { role: "assistant", _turnId: "b", _source: "runtime_notice", content: "cancelled" },
+    ].map((message, index) => ({ ...message, _sequence: index + 1, _messageId: `m${index + 1}` })) as Message[];
+    const before = structuredClone(source);
+    const client = { complete: async (input: Message[]) => {
+      const request = JSON.parse(String(input[0].content));
+      expect(request.messages.map((message: { content: string }) => message.content))
+        .toEqual(["question", "final answer", "interrupted question"]);
+      expect(request.batch.throughSequence).toBe(9);
+      expect(String(input[0].content)).not.toContain("SECRET");
+      return '{"operations":[]}';
+    } } as unknown as ModelClient;
+    const engine = createSessionSummaryEngine({ limits, maxOutputTokens: 512, maxInputChars: 4000 });
+    expect((await engine.createDelta(client, "s", emptySessionSummary("s"), source)).throughSequence).toBe(9);
+    expect(source).toEqual(before);
+  });
+
+  it("rejects citations to discarded messages and never splits a turn to fit the budget", async () => {
+    const source: Message[] = [
+      { role: "user", content: "question", _sequence: 1, _messageId: "q", _turnId: "t" },
+      { role: "assistant", content: "progress", _sequence: 2, _messageId: "p", _turnId: "t" },
+      { role: "assistant", content: "answer", _sequence: 3, _messageId: "a", _turnId: "t" },
+    ];
+    const client = { complete: async () => JSON.stringify({ operations: [
+      { type: "add", category: "facts", item: { text: "fact", sourceMessageIds: ["p"] } },
+    ] }) } as unknown as ModelClient;
+    const engine = createSessionSummaryEngine({ limits, maxOutputTokens: 512, maxInputChars: 4000 });
+    await expect(engine.createDelta(client, "s", emptySessionSummary("s"), source)).rejects.toThrow("用户输入或最终回答");
+    source[2].content = "answer".repeat(2000);
+    await expect(engine.createDelta(client, "s", emptySessionSummary("s"), source)).rejects.toThrow("单轮问答");
   });
 
   it("bounds summary requests and only covers the prefix actually sent", async () => {
@@ -207,7 +251,7 @@ describe("structured session summary engine", () => {
     expect(delta.throughSequence).toBe(1);
     expect(requestTokens + 512).toBeLessThanOrEqual(maxContextTokens);
     expect(calls).toBe(2);
-    await expect(createSessionSummaryEngine({ ...options, maxContextTokens: 1 }).createDelta(client, "session", current, source)).rejects.toThrow("摘要请求超过输入字符或模型上下文预算");
+    await expect(createSessionSummaryEngine({ ...options, maxContextTokens: 1 }).createDelta(client, "session", current, source)).rejects.toThrow("单轮问答超过摘要输入字符或模型上下文预算");
     expect(calls).toBe(2);
     expect(current.summarizedThroughSequence).toBe(0);
   });

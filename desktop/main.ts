@@ -9,7 +9,7 @@ import {
   showDesktopWindow,
 } from "./window-lifecycle.js";
 import { createLoadingPageUrl } from "./loading-page.js";
-import { initializeDesktopWorkspace } from "./workspace.js";
+import { desktopUserDataPath, initializeDesktopWorkspace } from "./workspace.js";
 import { selectProjectDirectory } from "./directory-picker.js";
 import { stopDesktopGateway } from "./gateway-lifecycle.js";
 
@@ -78,15 +78,15 @@ async function createTray(): Promise<void> {
   const trayIcon = nativeImage.createFromPath(iconPath);
   if (process.platform === "darwin") trayIcon.setTemplateImage(true);
   tray = new Tray(process.platform === "win32" ? trayIcon.resize({ width: 32, height: 32 }) : trayIcon);
-  tray.setToolTip("tiny-claw");
+  tray.setToolTip("Breeze Coder");
   tray.setContextMenu(Menu.buildFromTemplate([
     {
-      label: "打开 tiny-claw",
+      label: "打开 Breeze Coder",
       click: () => showDesktopWindow(mainWindow),
     },
     { type: "separator" },
     {
-      label: "退出 tiny-claw",
+      label: "退出 Breeze Coder",
       click: () => app.quit(),
     },
   ]));
@@ -107,7 +107,7 @@ async function launchDesktop(): Promise<void> {
     height: 960,
     minWidth: 960,
     minHeight: 640,
-    title: "tiny-claw",
+    title: "Breeze Coder",
     icon: logoPath,
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#111113" : "#f7f7f5",
     webPreferences: {
@@ -169,7 +169,7 @@ async function launchDesktop(): Promise<void> {
   gatewayProcess.once("exit", (code, signal) => {
     gatewayProcess = null;
     if (!quitting) {
-      void dialog.showErrorBox("tiny-claw Gateway 已停止", `退出码：${code ?? "无"}\n信号：${signal ?? "无"}`);
+      void dialog.showErrorBox("Breeze Coder Gateway 已停止", `退出码：${code ?? "无"}\n信号：${signal ?? "无"}`);
     }
   });
 
@@ -179,7 +179,7 @@ async function launchDesktop(): Promise<void> {
 
 // An explicit data directory also permits isolated packaged-app smoke tests.
 const userDataDirectory = app.commandLine.getSwitchValue("user-data-dir");
-if (userDataDirectory) app.setPath("userData", resolve(userDataDirectory));
+app.setPath("userData", desktopUserDataPath(app.getPath("appData"), userDataDirectory));
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
@@ -190,11 +190,11 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady()
     .then(() => {
-      if (process.platform === "win32") app.setAppUserModelId("com.lihongxun.tiny-claw");
+      if (process.platform === "win32") app.setAppUserModelId("com.lihongxun.breeze-coder");
       return launchDesktop();
     })
     .catch((error) => {
-      dialog.showErrorBox("tiny-claw 启动失败", error instanceof Error ? error.message : String(error));
+      dialog.showErrorBox("Breeze Coder 启动失败", error instanceof Error ? error.message : String(error));
       app.quit();
     });
 

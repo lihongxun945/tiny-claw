@@ -229,7 +229,7 @@ function resolveProjectRoot(requestedPath: string): string {
 }
 
 function projectSignature(root: string): string {
-  return [...STACK_MARKERS.map((marker) => marker.file), ".tiny-claw/rules.md", "AGENTS.md"]
+  return [...STACK_MARKERS.map((marker) => marker.file), ".breeze-coder/rules.md", "AGENTS.md"]
     .map((relativePath) => {
       const path = resolve(root, relativePath);
       if (!existsSync(path)) return `${relativePath}:missing`;
@@ -254,7 +254,7 @@ function isTimeoutError(error: unknown): boolean {
 
 export function loadProjectRules(root: string): string {
   const sections: string[] = [];
-  for (const relativePath of [".tiny-claw/rules.md", "AGENTS.md"]) {
+  for (const relativePath of [".breeze-coder/rules.md", "AGENTS.md"]) {
     const path = resolve(root, relativePath);
     if (!existsSync(path) || !statSync(path).isFile()) continue;
     const raw = readFileSync(path, "utf-8");

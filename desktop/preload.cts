@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-contextBridge.exposeInMainWorld("tinyClawDesktop", {
+contextBridge.exposeInMainWorld("breezeCoderDesktop", {
   selectProjectDirectory: (): Promise<string | null> => ipcRenderer.invoke("project:select-directory"),
 });

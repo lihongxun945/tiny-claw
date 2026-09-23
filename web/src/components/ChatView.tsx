@@ -124,7 +124,7 @@ export default function ChatView({
           <div className="chat-empty-state">
             <img className="empty-mark" src="/icon.png" alt="" aria-hidden="true" />
             <h1>开始一段新对话</h1>
-            <p>描述你想完成的任务，tiny-claw 会调用合适的工具并持续执行。</p>
+            <p>描述你想完成的任务，Breeze Coder 会调用合适的工具并持续执行。</p>
           </div>
         )}
         {displayedMessages.map((msg, i) => (

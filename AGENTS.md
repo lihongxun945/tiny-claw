@@ -4,7 +4,7 @@ This file provides guidance to AI, when working with code in this repository.
 
 ## 项目概述
 
-tiny-claw 是一个个人项目，目标是构建一个类似 open-claw 的自主 Agent，能够自主规划、执行任务。
+breeze-coder 是一个个人项目，目标是构建一个类似 open-claw 的自主 Agent，能够自主规划、执行任务。
 
 ## 编程语言
 

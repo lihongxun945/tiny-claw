@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 const SUBDIRS = ["skills", "memory", "logs", "sessions"];
 
 export function resolveWorkspacePath(cliPath?: string): string {
-  return cliPath || process.env.TINY_CLAW_WORKSPACE || resolve(process.cwd(), "workspace");
+  return cliPath || process.env.BREEZE_CODER_WORKSPACE || resolve(process.cwd(), "workspace");
 }
 
 export function ensureWorkspace(workspacePath: string): void {

@@ -6,10 +6,11 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 
 const windows = process.platform === "win32";
-const bundle = resolve(process.argv[2] ?? (windows ? "release/win-unpacked" : "release/mac-arm64/tiny-claw.app/Contents"));
-const executablePath = join(bundle, windows ? "tiny-claw.exe" : "MacOS/tiny-claw");
+const { build } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const bundle = resolve(process.argv[2] ?? (windows ? "release/win-unpacked" : `release/mac-arm64/${build.productName}.app/Contents`));
+const executablePath = join(bundle, windows ? `${build.win.executableName}.exe` : `MacOS/${build.productName}`);
 const appRoot = join(bundle, windows ? "resources/app" : "Resources/app");
-const data = mkdtempSync(join(tmpdir(), "tiny-claw-desktop-smoke-"));
+const data = mkdtempSync(join(tmpdir(), "breeze-coder-desktop-smoke-"));
 let electron;
 try {
   await new Promise((resolveRun, reject) => {
@@ -25,7 +26,7 @@ try {
   const window = await electron.firstWindow();
   await window.waitForURL(/^http:\/\/127\.0\.0\.1:/);
   await window.waitForLoadState("domcontentloaded");
-  await expect(window.locator("body")).toContainText("tiny-claw");
+  await expect(window.locator(".brand")).toContainText(build.productName);
   assert.ok(JSON.parse(readFileSync(join(data, "workspace/config.json"), "utf8")));
   const pidRecord = readFileSync(join(data, "workspace/gateway.pid"), "utf8").trim();
   const gatewayPid = Number(pidRecord);

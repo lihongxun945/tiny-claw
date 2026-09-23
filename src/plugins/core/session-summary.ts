@@ -317,15 +317,13 @@ export const coreSessionSummaryPlugin: Plugin = {
         const rawCurrent = current;
         const activeTurns = new Set(listRuns(pluginCtx.workspacePath, hookCtx.sessionId)
           .filter(run => ["running", "waiting_approval", "waiting_user"].includes(run.state)).map(run => run.turnId));
+        if (hookCtx.turnId) activeTurns.add(hookCtx.turnId);
+        for (const message of rawCurrent) if (message._turnId) activeTurns.add(message._turnId);
         // Only the already-finished prefix may describe missing results. Live calls stay protected.
         const normalizedPrevious = sanitizeToolMessageChains(previous, message =>
           message._turnId && activeTurns.has(message._turnId) ? "preserve" : "describe");
         const hardBudget = modelContext.hardMessageTokenBudget ?? modelContext.messageTokenBudget;
         const targetBudget = Math.floor(hardBudget * (hookCtx.config.contextCompressionTargetRatio ?? 0.2));
-        let lastAssistant = -1;
-        rawCurrent.forEach((message, index) => { if (message.role === "assistant") lastAssistant = index; });
-        // Keep the latest exchange and user request; earlier complete exchanges may be summarized.
-        const eligibleCurrent = lastAssistant > 1 ? rawCurrent.slice(0, lastAssistant) : [];
         const buildContext = (): ModelCallContext => {
           const summaryText = hasSummaryItems(summary) ? renderSummary(summary) : undefined;
           const readable = selectUncoveredMessages(normalizedPrevious, summary.summarizedThroughSequence);
@@ -368,7 +366,11 @@ export const coreSessionSummaryPlugin: Plugin = {
             if (!isPersistent(hookCtx)) volatile.set(hookCtx.sessionId, summary);
             result = buildContext();
           }
-          const uncovered = selectUncoveredMessages([...normalizedPrevious, ...eligibleCurrent], summary.summarizedThroughSequence);
+          // A watermark cannot pass a live turn. Use originals so sanitized tool
+          // descriptions cannot be mistaken for final assistant answers.
+          const activeIndex = previous.findIndex(message => message._turnId && activeTurns.has(message._turnId));
+          const finished = activeIndex < 0 ? previous : previous.slice(0, activeIndex);
+          const uncovered = finished.filter(message => (message._sequence ?? 0) > summary.summarizedThroughSequence);
           let candidates = uncovered;
           while (candidates.length > 0 && tokens(result) > targetBudget) {
             const remainingMs = maxDurationMs - (Date.now() - startedAt);

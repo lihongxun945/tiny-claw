@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { ensureWorkspace } from "../../src/workspace/workspace.js";
 
 export function createTempWorkspace(config: Record<string, unknown> = {}): string {
-  const workspacePath = mkdtempSync(resolve(tmpdir(), "tiny-claw-test-"));
+  const workspacePath = mkdtempSync(resolve(tmpdir(), "breeze-coder-test-"));
   ensureWorkspace(workspacePath);
   writeFileSync(
     resolve(workspacePath, "config.json"),

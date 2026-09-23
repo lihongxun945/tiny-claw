@@ -21,7 +21,7 @@ const DEFAULT_MAX_CANDIDATES = 5;
 const DEFAULT_MAX_BATCH_CHARS = 8000;
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 300;
 
-const AUTO_MEMORY_PROMPT = `你是 tiny-claw 的长期记忆整理器。你的任务不是总结对话，而是分别维护用户 Profile 和向量长期记忆。
+const AUTO_MEMORY_PROMPT = `你是 Breeze Coder 的长期记忆整理器。你的任务不是总结对话，而是分别维护用户 Profile 和向量长期记忆。
 
 你必须通过可用的 profile 或 memory 工具完成整理，不要输出自定义 JSON actions。
 

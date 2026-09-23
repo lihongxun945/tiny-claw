@@ -3,10 +3,10 @@ import type { Plugin, NotificationPayload, TurnEndReason } from "../types.js";
 const DEFAULT_REASONS: TurnEndReason[] = ["approval_required", "waiting_user", "completed", "iteration_limit"];
 
 const NOTIFICATION_TEXT: Partial<Record<TurnEndReason, { title: string; body: string }>> = {
-  completed: { title: "本轮完成", body: "皮皮虾已完成本轮任务，可回来查看结果" },
-  approval_required: { title: "需要你的审批", body: "皮皮虾已暂停，等待你批准后继续执行" },
-  waiting_user: { title: "等待你的输入", body: "皮皮虾已暂停，等待你的回答" },
-  iteration_limit: { title: "已达迭代上限", body: "皮皮虾本轮已自动停止，可继续追问" },
+  completed: { title: "本轮完成", body: "Breeze Coder 已完成本轮任务，可回来查看结果" },
+  approval_required: { title: "需要你的审批", body: "Breeze Coder 已暂停，等待你批准后继续执行" },
+  waiting_user: { title: "等待你的输入", body: "Breeze Coder 已暂停，等待你的回答" },
+  iteration_limit: { title: "已达迭代上限", body: "Breeze Coder 本轮已自动停止，可继续追问" },
 };
 
 interface NotificationSettings {

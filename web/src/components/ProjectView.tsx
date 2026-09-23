@@ -119,7 +119,7 @@ export default function ProjectView({
   const inputRef = useRef<HTMLInputElement>(null);
   const openingRef = useRef(false);
   const openTimeoutMsRef = useRef(30_000);
-  const canSelectDirectory = Boolean(window.tinyClawDesktop?.selectProjectDirectory);
+  const canSelectDirectory = Boolean(window.breezeCoderDesktop?.selectProjectDirectory);
 
   // 加载项目信息
   const loadProjectInfo = useCallback(async (projectPath: string, signal?: AbortSignal) => {
@@ -233,7 +233,7 @@ export default function ProjectView({
   }, [pathInput, runOpenProject]);
 
   const handleSelectDirectory = useCallback(async () => {
-    await runOpenProject(async () => window.tinyClawDesktop?.selectProjectDirectory() ?? null);
+    await runOpenProject(async () => window.breezeCoderDesktop?.selectProjectDirectory() ?? null);
   }, [runOpenProject]);
 
   const handleSelectDiff = useCallback(async (file: string) => {
@@ -288,7 +288,7 @@ export default function ProjectView({
             <div className="project-picker-body">
               <h1 className="project-picker-title">项目开发模式</h1>
               <p className="project-picker-desc">
-                输入项目根目录路径，tiny-claw 将在该项目上下文中工作：
+                输入项目根目录路径，Breeze Coder 将在该项目上下文中工作：
                 工具（bash、文件读写）的相对路径均基于项目根目录解析，
                 技术栈与项目规则会注入系统提示词，Git 状态可在项目栏查看。
               </p>

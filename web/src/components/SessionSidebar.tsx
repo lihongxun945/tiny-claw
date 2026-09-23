@@ -129,7 +129,7 @@ export default function SessionSidebar({ activeSessionId, currentView, sidebarMo
       <div className="sidebar-header">
         <div className="brand">
           <img className="brand-mark" src="/icon.png" alt="" aria-hidden="true" />
-          <span>tiny-claw</span>
+          <span>Breeze Coder</span>
         </div>
         <button className="refresh-btn" onClick={() => void loadSessions()} disabled={isLoading} title="刷新会话列表">
           {isLoading ? "…" : "↻"}

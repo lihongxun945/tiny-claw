@@ -16,7 +16,7 @@ describe("loadConfig", () => {
   it("loads defaults and identity from the workspace", () => {
     const workspacePath = createTempWorkspace();
     workspaces.push(workspacePath);
-    writeFileSync(resolve(workspacePath, "identity.md"), "You are tiny-claw.", "utf-8");
+    writeFileSync(resolve(workspacePath, "identity.md"), "You are breeze-coder.", "utf-8");
 
     expect(loadConfig(workspacePath)).toMatchObject({
       apiUrl: "https://example.com/api",
@@ -32,7 +32,7 @@ describe("loadConfig", () => {
       maxAgentIterations: 1000,
       searchProvider: "duckduckgo",
       workspacePath,
-      systemPrompt: "You are tiny-claw.",
+      systemPrompt: "You are breeze-coder.",
     });
   });
 

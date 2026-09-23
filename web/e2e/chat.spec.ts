@@ -938,10 +938,10 @@ test(`preserves per-turn plan snapshots on reload and moves the active plan into
   await expect(planToggle).toContainText("第 1 步：当前执行步骤");
   await expect(activePlan.locator(".plan-progress-track")).toHaveCount(0);
   if (mode === "chat") {
-    await page.screenshot({ path: "/tmp/tiny-claw-progress-desktop.png" });
+    await page.screenshot({ path: "/tmp/breeze-coder-progress-desktop.png" });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(planToggle).toBeInViewport();
-    await page.screenshot({ path: "/tmp/tiny-claw-progress-mobile.png" });
+    await page.screenshot({ path: "/tmp/breeze-coder-progress-mobile.png" });
     await page.setViewportSize({ width: 1280, height: 720 });
   }
   await expect(activePlan.locator(".plan-step-list")).toHaveCount(0);

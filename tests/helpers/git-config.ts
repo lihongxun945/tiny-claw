@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 export function isolateGitConfig(): void {
   let directory: string;
   beforeEach(() => {
-    directory = mkdtempSync(resolve(tmpdir(), "tiny-claw-git-config-"));
+    directory = mkdtempSync(resolve(tmpdir(), "breeze-coder-git-config-"));
     const path = resolve(directory, "config");
     writeFileSync(path, "");
     vi.stubEnv("GIT_CONFIG_GLOBAL", path);

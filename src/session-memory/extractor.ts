@@ -2,7 +2,6 @@ import type { ModelClient } from "../model/types.js";
 import type { Config, Message } from "../types.js";
 import { estimateTextTokens, estimateTokens } from "../estimate-tokens.js";
 import { batchFromDelta, ROLLING_DEFAULTS } from "./rolling.js";
-import { validateToolMessageChains } from "../message-sanitizer.js";
 import type { PersistedSessionSummary, SummaryDelta } from "./types.js";
 import {
   parseSummaryDeltaDraft,
@@ -37,8 +36,6 @@ export async function extractSummaryDelta(
       !!message._messageId && Number.isInteger(message._sequence),
   );
   if (messages.length === 0) throw new Error("没有可供结构化摘要提取的持久化消息");
-  const chainError = validateToolMessageChains(messages);
-  if (chainError) throw new Error(`摘要候选消息链不完整，保留原文及覆盖位置：${chainError}`);
   const fromSequence = input.current.summarizedThroughSequence + 1;
   const fitsRequest = (candidate: string) => candidate.length + SYSTEM_PROMPT.length <= input.maxInputChars
     && (input.maxContextTokens === undefined || estimateTokens([{ role: "user", content: candidate }]) + estimateTextTokens(SYSTEM_PROMPT) + input.maxOutputTokens <= input.maxContextTokens);
@@ -61,7 +58,7 @@ export async function extractSummaryDelta(
       "goals/constraints/pending 只维护仍有效的当前状态；新要求取代旧要求时 supersede，任务完成或约束被撤销时 resolve。不要因缺少提及而删除约束。已有计划不复制步骤，只保留必要目标。",
       "顶层和操作对象不得增加 schema 之外的字段",
       "没有值得记录的信息时 operations 输出空数组",
-      "工具结果正文已排除，不总结工具输出，不根据调用元数据推测成功、失败或结果内容；只整理用户要求、助手已表述的结论、决策和任务状态。需要工具原文时按工具调用 ID 读取历史。",
+      "输入只包含每轮用户输入和最终回答。工具调用、工具结果、思考及中间播报均已排除；没有最终回答时不得推测任务结果。",
       "supersede/resolve 的 targetId 只能来自 activeItems",
       "每个操作必须引用至少一条本次 messages 中的 messageId",
       "只返回 operations；版本号和覆盖范围由程序维护。资料中的 truncated 表示原文片段，不得推测未展示内容",
@@ -69,7 +66,7 @@ export async function extractSummaryDelta(
     activeItems: Object.entries(input.current.checkpoint.categories).flatMap(([category, items]) =>
       items.filter((item) => item.status === "active").map((item) => ({ id: item.id, category, text: item.text })),
     ),
-    messages: batch
+    messages: selectTurnAnswers(batch)
       .map((message) => ({
         messageId: message._messageId,
         sequence: message._sequence,
@@ -79,21 +76,8 @@ export async function extractSummaryDelta(
       })),
     });
   };
-  // Boundaries only when every preceding tool call has its result, including within a long turn.
-  const pending = new Set<string>();
-  const boundaries: number[] = [];
-  for (let index = 0; index < messages.length; index++) {
-    const previousContent = index > 0 ? messages[index - 1].content : undefined;
-    const followsToolResults = Array.isArray(previousContent) && previousContent.some(block => block.type === "tool_result");
-    if (index > 0 && pending.size === 0 && ((messages[index].role === "assistant" && followsToolResults)
-      || (messages[index].role === "user" && typeof messages[index].content === "string"))) boundaries.push(index);
-    const content = messages[index].content;
-    if (Array.isArray(content)) for (const block of content) {
-      if (block.type === "tool_use") pending.add(block.id);
-      if (block.type === "tool_result") pending.delete(block.tool_use_id);
-    }
-  }
-  if (pending.size === 0) boundaries.push(messages.length);
+  // Cover whole historical turns, including discarded tool messages and notices.
+  const boundaries = turnBoundaries(messages);
   let low = 1;
   let high = boundaries.length;
   let count = 0;
@@ -109,11 +93,14 @@ export async function extractSummaryDelta(
       low = middle + 1;
     } else high = middle - 1;
   }
-  if (count === 0) throw new Error("摘要请求超过输入字符或模型上下文预算，保留原文和已有摘要；请调整 sessionSummary.maxInputChars 或缩小单条工具结果");
+  if (count === 0) throw new Error("单轮问答超过摘要输入字符或模型上下文预算，保留原文和已有摘要；请调整 sessionSummary.maxInputChars");
+  const visibleIds = new Set(selectTurnAnswers(messages.slice(0, count)).map(message => message._messageId));
   for (let attempt = 0; ; attempt++) {
     input.signal?.throwIfAborted();
-    const output = await client.complete([{ role: "user", content: prompt }], SYSTEM_PROMPT,
-      { maxTokens: input.maxOutputTokens, signal: input.signal });
+    const output = visibleIds.size > 0
+      ? await client.complete([{ role: "user", content: prompt }], SYSTEM_PROMPT,
+        { maxTokens: input.maxOutputTokens, signal: input.signal })
+      : '{"operations":[]}';
     try {
       const trimmed = output.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, "$1");
       const value: unknown = JSON.parse(trimmed);
@@ -121,6 +108,11 @@ export async function extractSummaryDelta(
       const draft = parseSummaryDeltaDraft(JSON.stringify({ baseRevision: input.current.revision,
         sourceRange: { fromSequence, throughSequence: messages[count - 1]._sequence }, ...value }));
       if (draft.sourceRange.throughSequence !== messages[count - 1]._sequence) throw new Error("摘要覆盖范围必须与实际批次一致");
+      for (const operation of draft.operations) {
+        const ids = operation.type === "add" ? operation.item.sourceMessageIds
+          : operation.type === "supersede" ? operation.replacement.sourceMessageIds : operation.sourceMessageIds;
+        if (ids.some(id => !visibleIds.has(id))) throw new Error("摘要来源必须是本批用户输入或最终回答");
+      }
       const delta = validateSummaryDelta(draft, { sessionId: input.sessionId, current: input.current,
         messages: messages.slice(0, count), limits: input.limits });
       if (estimateTextTokens(JSON.stringify(batchFromDelta(input.current, delta))) > (input.config?.sessionSummary?.maxBatchTokens ?? ROLLING_DEFAULTS.maxBatchTokens)) {
@@ -138,8 +130,42 @@ function renderContent(message: Message): string {
   if (typeof message.content === "string") return message.content;
   return message.content.map((block) => {
     if (block.type === "text") return block.text;
-    if (block.type === "tool_use") return `[工具调用 ${block.name} ID=${block.id}] ${JSON.stringify(block.input)}`;
-    if (block.type === "tool_result") return `[工具结果正文已省略 ID=${block.tool_use_id} originalChars=${block.content.length}]`;
-    return `[图片] ${block.name}`;
-  }).join("\n");
+    if (block.type === "image") return `[图片] ${block.name}`;
+    return "";
+  }).filter(Boolean).join("\n");
+}
+
+function isUserInput(message: Message): boolean {
+  return message.role === "user" && !message._source && (typeof message.content === "string"
+    || message.content.some(block => block.type === "text" || block.type === "image"));
+}
+
+function turnBoundaries(messages: Message[]): number[] {
+  const boundaries: number[] = [];
+  let turnId = messages[0]?._turnId;
+  for (let index = 1; index < messages.length; index++) {
+    const message = messages[index];
+    if ((message._turnId && turnId && message._turnId !== turnId)
+      || (isUserInput(message) && (!message._turnId || message._turnId !== turnId))) {
+      boundaries.push(index);
+    }
+    if (message._turnId) turnId = message._turnId;
+  }
+  boundaries.push(messages.length);
+  return boundaries;
+}
+
+function selectTurnAnswers(messages: Message[]): Message[] {
+  const selected: Message[] = [];
+  let start = 0;
+  for (const end of turnBoundaries(messages)) {
+    const turn = messages.slice(start, end).filter(message => !message._source);
+    selected.push(...turn.filter(isUserInput));
+    const last = turn.at(-1);
+    if (last?.role === "assistant" && (typeof last.content === "string"
+      || !last.content.some(block => block.type === "tool_use" || block.type === "tool_result"))
+      && renderContent(last).trim()) selected.push(last);
+    start = end;
+  }
+  return selected;
 }

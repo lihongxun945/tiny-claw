@@ -13,7 +13,7 @@ describe("ensureWebBuild", () => {
   });
 
   function createRoot(): string {
-    const root = mkdtempSync(resolve(tmpdir(), "tiny-claw-web-build-"));
+    const root = mkdtempSync(resolve(tmpdir(), "breeze-coder-web-build-"));
     roots.push(root);
     return root;
   }

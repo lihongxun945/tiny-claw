@@ -1,6 +1,6 @@
 # Gateway API
 
-Gateway 提供 HTTP 与 SSE 接口，用于 WebUI、桌面客户端和外部系统接入 tiny-claw。
+Gateway 提供 HTTP 与 SSE 接口，用于 WebUI、桌面客户端和外部系统接入 Breeze Coder。
 
 ## 启动
 

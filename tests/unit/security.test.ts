@@ -34,7 +34,7 @@ describe("security boundary", () => {
 
   it("allows file tools to access paths outside the workspace", async () => {
     const workspacePath = createTempWorkspace();
-    const outsidePath = mkdtempSync(resolve(tmpdir(), "tiny-claw-outside-"));
+    const outsidePath = mkdtempSync(resolve(tmpdir(), "breeze-coder-outside-"));
     paths.push(workspacePath, outsidePath);
     writeFileSync(resolve(workspacePath, "inside.txt"), "inside", "utf-8");
     writeFileSync(resolve(outsidePath, "outside.txt"), "outside", "utf-8");
@@ -57,7 +57,7 @@ describe("security boundary", () => {
 
   it("allows bash by default and supports ask and allow modes", async () => {
     const workspacePath = createTempWorkspace();
-    const outsidePath = mkdtempSync(resolve(tmpdir(), "tiny-claw-bash-outside-"));
+    const outsidePath = mkdtempSync(resolve(tmpdir(), "breeze-coder-bash-outside-"));
     paths.push(workspacePath, outsidePath);
     const configPath = resolve(workspacePath, "config.json");
     const bash = createBashTool(workspacePath, () => loadConfig(workspacePath));
@@ -257,7 +257,7 @@ describe("security boundary", () => {
 
   it("skips skills that escape the workspace through symlinks", async () => {
     const workspacePath = createTempWorkspace();
-    const outsidePath = mkdtempSync(resolve(tmpdir(), "tiny-claw-skill-outside-"));
+    const outsidePath = mkdtempSync(resolve(tmpdir(), "breeze-coder-skill-outside-"));
     paths.push(workspacePath, outsidePath);
     writeFileSync(resolve(outsidePath, "SKILL.md"), [
       "---",
@@ -273,7 +273,7 @@ describe("security boundary", () => {
 
   it("discovers and loads project skills from universal and Claude directories", async () => {
     const workspacePath = createTempWorkspace();
-    const projectRoot = mkdtempSync(resolve(tmpdir(), "tiny-claw-project-skills-"));
+    const projectRoot = mkdtempSync(resolve(tmpdir(), "breeze-coder-project-skills-"));
     paths.push(workspacePath, projectRoot);
 
     const workspaceSkillDir = resolve(workspacePath, "skills", "review");

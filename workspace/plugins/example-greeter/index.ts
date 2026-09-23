@@ -29,7 +29,7 @@ export default {
       description: "示例插件：向指定名字问好",
       usage: "/greet [名字]",
       execute(command) {
-        const name = command.rawArgs.trim() || "tiny-claw 用户";
+        const name = command.rawArgs.trim() || "breeze-coder 用户";
         return { text: `${config.greeting || "你好"}，${name}！` };
       },
     });

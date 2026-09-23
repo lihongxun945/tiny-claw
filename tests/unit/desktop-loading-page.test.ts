@@ -9,6 +9,7 @@ describe("desktop loading page", () => {
 
     expect(pageUrl.startsWith("data:text/html;charset=UTF-8,")).toBe(true);
     expect(html).toContain(`src="${logoDataUrl}"`);
+    expect(html).toContain("Breeze Coder");
     expect(html).toContain("正在启动服务…");
     expect(html).toContain('role="status"');
     expect(html).toContain("background: #f7f7f5");

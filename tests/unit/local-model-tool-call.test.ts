@@ -66,7 +66,7 @@ const config = {
   historyWindowSize: 5,
   maxAgentIterations: 20,
   searchProvider: "duckduckgo",
-  workspacePath: "/tmp/tiny-claw-local-tool-test",
+  workspacePath: "/tmp/breeze-coder-local-tool-test",
   systemPrompt: "",
   remoteModel: { enabled: false },
   localModel: { enabled: true, modelId: "qwen3.5-0.8b-q4" },

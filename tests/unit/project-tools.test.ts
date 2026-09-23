@@ -38,7 +38,7 @@ describe("project development tools", () => {
       },
     });
     paths.push(workspace);
-    const root = mkdtempSync(resolve(tmpdir(), "tiny-claw-project-tools-"));
+    const root = mkdtempSync(resolve(tmpdir(), "breeze-coder-project-tools-"));
     paths.push(root);
     const sessionContext = { mode: "project" as const, project: { root, name: "project" } };
     const config = applySessionConfig(loadConfig(workspace), sessionContext);

@@ -23,7 +23,7 @@ export function resolveBash(
     const bash = win32.join(root, "bin", "bash.exe");
     if (exists(bash) && exists(win32.join(root, "cmd", "git.exe"))) return bash;
   }
-  throw new Error("未找到 Git Bash。请安装 Git for Windows 后重启 tiny-claw；聊天和文件工具不受影响。不支持以 WSL 或 PowerShell 替代 Bash。");
+  throw new Error("未找到 Git Bash。请安装 Git for Windows 后重启 Breeze Coder；聊天和文件工具不受影响。不支持以 WSL 或 PowerShell 替代 Bash。");
 }
 
 export function shellEnvironment(tempPath?: string): NodeJS.ProcessEnv {

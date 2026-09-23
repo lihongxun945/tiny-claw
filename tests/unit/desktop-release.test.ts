@@ -14,6 +14,15 @@ describe("desktop release", () => {
     expect(packageJson.scripts["desktop:dist:win"]).toContain("--win nsis --x64 --publish never");
     expect(packageJson.build.win.target).toEqual([{ target: "nsis", arch: ["x64"] }]);
     expect(packageJson.build.win.forceCodeSigning).toBe(false);
+    expect(packageJson.name).toBe("breeze-coder");
+    expect(packageJson.build.productName).toBe("Breeze Coder");
+    expect(packageJson.build.appId).toBe("com.lihongxun.breeze-coder");
+    expect(packageJson.build.win.executableName).toBe("breeze-coder");
+    const smoke = readFileSync(resolve(process.cwd(), "scripts/desktop-smoke.mjs"), "utf8");
+    expect(smoke).toContain("${build.productName}.app/Contents");
+    expect(smoke).toContain("${build.win.executableName}.exe");
+    expect(workflow).toContain("$productName = $package.build.productName");
+    expect(workflow).toContain("$package.build.win.executableName");
     expect(packageJson.dependencies["apache-arrow"]).toBe("18.1.0");
     expect(packageJson.build.nsis.deleteAppDataOnUninstall).toBe(false);
     expect(packageJson.build.mac.icon).toBe("build/icon.png");
@@ -41,7 +50,7 @@ describe("desktop release", () => {
     expect(workflow).toContain('npm run desktop:smoke -- "$installPath"');
     expect(workflow).toContain('/S /currentuser /D=`"$installPath`"');
     expect(workflow).toContain("$_.DisplayVersion -eq $version");
-    expect(workflow).toContain('$_.DisplayName -eq "tiny-claw $version"');
+    expect(workflow).toContain('$_.DisplayName -eq "$productName $version"');
     expect(workflow).toContain('HKCU:\\Software\\$($entries[0].PSChildName)');
     expect(workflow).toContain("Registered installation directory:");
     expect(workflow).toContain("Installation directory mismatch:");

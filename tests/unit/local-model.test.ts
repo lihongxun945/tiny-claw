@@ -20,7 +20,7 @@ const baseConfig = {
   historyWindowSize: 5,
   maxAgentIterations: 20,
   searchProvider: "duckduckgo",
-  workspacePath: "/tmp/tiny-claw-local-test",
+  workspacePath: "/tmp/breeze-coder-local-test",
   systemPrompt: "",
 } satisfies Config;
 

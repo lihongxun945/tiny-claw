@@ -121,7 +121,7 @@ describe("memory storage", () => {
   });
 
   it("supports disabling and enabling an existing memory", () => {
-    saveMemory(workspacePath, "project", "tiny-claw");
+    saveMemory(workspacePath, "project", "breeze-coder");
     expect(setMemoryDisabled(workspacePath, "project", true).disabled).toBe(true);
     expect(listMemories(workspacePath)).toBe("暂无记忆");
     expect(setMemoryDisabled(workspacePath, "project", false).disabled).toBe(false);

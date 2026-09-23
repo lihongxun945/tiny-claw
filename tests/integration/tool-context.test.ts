@@ -100,7 +100,7 @@ describe("tool context lifecycle", () => {
     } finally { await manager.destroy(); await restored.destroy(); removeTempWorkspace(workspace); }
   });
 
-  it.each([false, true])("compresses complete current exchanges or falls back without replay (failure=%s)", async failure => {
+  it("truncates current tool results without summarizing or replaying the live turn", async () => {
     const workspace = createTempWorkspace({ maxContextTokens: 32000, maxTokens: 1000, contextCompressionThreshold: 0.65, autoMemory: { enabled: false } });
     const manager = new PluginManager(workspace);
     try {
@@ -114,20 +114,19 @@ describe("tool context lifecycle", () => {
           expect(validateToolMessageChains(messages)).toBeUndefined();
           const assistants = messages.filter(message => message.role === "assistant");
           expect(assistants.at(-1)?._reasoningContent).toBe("");
-          if (failure) expect(assistants[0]._reasoningContent).toBe("first reasoning");
+          expect(assistants[0]._reasoningContent).toBe("first reasoning");
           expect(JSON.stringify(messages)).toContain("keep this requirement");
-          if (!failure) expect(JSON.stringify(messages)).not.toContain('"id":"first"');
+          expect(JSON.stringify(messages)).toContain('"id":"first"');
           return { text: "done", toolCalls: [] };
         },
       ]);
-      client.complete = vi.fn(async () => failure ? "invalid json" : JSON.stringify({ operations: [] }));
+      client.complete = vi.fn(async () => { throw new Error("Live turns must not be summarized"); });
       const session = new AgentSession("current", workspace, manager, {}, client);
       const events = await collect(session.chat("keep this requirement"));
       expect(events.at(-1)).toMatchObject({ type: "done" });
       expect(execute).toHaveBeenCalledTimes(2);
-      expect(client.complete).toHaveBeenCalledTimes(failure ? 2 : 1);
-      expect(loadSessionSummary(workspace, session.id).summarizedThroughSequence).toBe(failure ? 0 : 3);
-      if (failure) expect(events).toContainEqual(expect.objectContaining({ type: "status", state: "failed" }));
+      expect(client.complete).not.toHaveBeenCalled();
+      expect(loadSessionSummary(workspace, session.id).summarizedThroughSequence).toBe(0);
       expect(readSessionMessages(workspace, session.id).filter(m => Array.isArray(m.content) && m.content.some(b => b.type === "tool_result"))).toHaveLength(2);
     } finally { await manager.destroy(); removeTempWorkspace(workspace); }
   });

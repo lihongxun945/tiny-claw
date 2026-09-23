@@ -4,7 +4,7 @@ export function createLoadingPageUrl(logoDataUrl: string): string {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>tiny-claw</title>
+    <title>Breeze Coder</title>
     <style>
       * { box-sizing: border-box; }
       html, body { width: 100%; height: 100%; margin: 0; }
@@ -64,8 +64,9 @@ export function createLoadingPageUrl(logoDataUrl: string): string {
   </head>
   <body>
     <main>
-      <img src="${logoDataUrl}" alt="tiny-claw Logo" />
-      <h1>tiny-claw</h1>
+      <img src="${logoDataUrl}" alt="Breeze Coder Logo" />
+      <h1>Breeze Coder</h1>
+      <p>让编程如沐清风。</p>
       <div class="status" role="status" aria-live="polite">
         <span class="spinner" aria-hidden="true"></span>
         <span>正在启动服务…</span>

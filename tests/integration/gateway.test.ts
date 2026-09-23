@@ -571,7 +571,7 @@ describe("Gateway HTTP API", () => {
     writeFileSync(resolve(workspacePath, "memory", "project.md"), [
       "---",
       "name: project",
-      "tags: [tiny-claw]",
+      "tags: [breeze-coder]",
       "createdAt: 2026-06-02T00:00:00.000Z",
       "updatedAt: 2026-06-02T00:00:00.000Z",
       "disabled: false",
@@ -580,7 +580,7 @@ describe("Gateway HTTP API", () => {
       "summary: 项目背景",
       "---",
       "",
-      "tiny-claw project",
+      "breeze-coder project",
       "",
     ].join("\n"), "utf-8");
 

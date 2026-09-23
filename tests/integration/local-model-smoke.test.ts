@@ -11,7 +11,7 @@ const enabled = process.env.RUN_LOCAL_MODEL_TEST === "1";
 let workspacePath = "";
 
 describe.skipIf(!enabled)("local model catalog smoke test", () => {
-  beforeAll(() => { workspacePath = mkdtempSync(join(tmpdir(), "tiny-claw-qwen-smoke-")); });
+  beforeAll(() => { workspacePath = mkdtempSync(join(tmpdir(), "breeze-coder-qwen-smoke-")); });
   afterAll(async () => {
     await disposeLocalModels();
     rmSync(workspacePath, { recursive: true, force: true });

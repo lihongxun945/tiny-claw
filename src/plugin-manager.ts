@@ -187,7 +187,7 @@ export class PluginManager {
         const mod = await import(pathToFileURL(indexFile).href) as PluginModule;
         const plugin = normalizePlugin(mod.default, "workspace");
         this.registerUserPlugin(plugin, async () => {
-          const url = `${pathToFileURL(indexFile).href}?tiny_claw_reload=${Date.now()}-${workspaceReloadNonce++}`;
+          const url = `${pathToFileURL(indexFile).href}?breeze_coder_reload=${Date.now()}-${workspaceReloadNonce++}`;
           const reloaded = await import(url) as PluginModule;
           return normalizePlugin(reloaded.default, "workspace");
         });

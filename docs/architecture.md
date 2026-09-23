@@ -1,4 +1,4 @@
-# tiny-claw 架构文档
+# Breeze Coder 架构文档
 
 ## 项目目标
 
@@ -113,7 +113,11 @@ desktop/                # Electron macOS 桌面壳
 
 ## 桌面应用
 
-桌面入口同时支持 macOS ARM64 和 Windows x64，复用同一 Web UI、Gateway 和插件体系。Windows 使用 electron-builder NSIS 安装向导，默认按当前用户安装、不删除用户数据；Windows 暂不签名，macOS 维持 Developer ID 签名和公证。Windows 图标从现有 PNG 由打包器生成 ICO，托盘使用普通图片而不是 macOS Template 图像，配置 AppUserModelId；默认数据目录来自 app.getPath("userData")，通常为 `%APPDATA%/tiny-claw/workspace`。显式 `--user-data-dir` 支持隔离测试目录。
+品牌名称为 `Breeze Coder`，npm 包名为 `breeze-coder`，Windows 可执行文件为 `breeze-coder.exe`。发布脚本从 package.json 的 build 配置读取产品名和可执行文件名，不再假定安装路径不含空格。应用 ID / Windows AppUserModelId 为 `com.lihongxun.breeze-coder`，NSIS 安装 GUID 随应用 ID 更新。桌面启动在获取单实例锁前显式将 userData 指向 appData 下的 `breeze-coder`；`--user-data-dir` 仍优先。环境变量统一为 `BREEZE_CODER_*`，项目规则目录为 `.breeze-coder/`，浏览器主题键为 `breeze-coder-theme`，preload 桥接名称为 `breezeCoderDesktop`。不保留旧品牌标识兼容，不自动迁移旧工作空间；已有用户数据不会被删除或改写，迁移时需先备份并复制到新目录。
+
+图标源为用户选定的 `build/icon-source.png`，`build/icon.png`、iconset 和 WebUI 图标均由此缩放生成；macOS 托盘使用 `build/trayTemplate.svg` 的黑白简化版本。旧品牌 SVG 已移除。
+
+桌面入口同时支持 macOS ARM64 和 Windows x64，复用同一 Web UI、Gateway 和插件体系。Windows 使用 electron-builder NSIS 安装向导，默认按当前用户安装、不删除用户数据；Windows 暂不签名，macOS 维持 Developer ID 签名和公证。Windows 图标从现有 PNG 由打包器生成 ICO，托盘使用普通图片而不是 macOS Template 图像，配置 AppUserModelId；默认数据目录来自 app.getPath("userData")，通常为 `%APPDATA%/breeze-coder/workspace`。显式 `--user-data-dir` 支持隔离测试目录。
 
 Electron 通过私有父子进程 IPC 发送 desktop:shutdown；Gateway 取消前台任务、等待流完成、销毁插件及托管任务后退出。IPC 断开也触发清理；超时沿用原有 3 秒兜底，Windows 使用 taskkill /T /F 结束进程树，POSIX 使用信号。Shell 执行统一由 platform/shell.ts 查找 Git for Windows 的 bin/bash.exe（安装目录或 PATH 中 git.exe 的同一安装），拒绝以 WSL bash 代替。缺失 Bash 时返回依赖安装提示，不阻断其他工具。动态 Skill 命令也使用同一 Shell。Windows 仅对可明确解析的盘符/相对路径进行自动审批；/tmp、/usr、自定义挂载等不确定路径请求人工确认。受管 TMPDIR 和安全转换后的执行路径统一为正斜杠。命令取消/超时通过 platform/process-tree.ts 终止 Windows 进程树，POSIX 进程组行为不变。
 
@@ -121,13 +125,13 @@ Tag 发布工作流拆为 macos/windows/publish 三个 Job。各平台独立全�
 
 桌面版使用 Electron 承载现有 Web UI，不改变 Agent Loop 和插件边界。Electron 主进程创建窗口后先加载内置启动页，启动页与窗口背景跟随操作系统深浅色外观，展示应用 Logo 和服务启动状态；同时启动独立 Gateway 子进程，Gateway 就绪后在同一窗口切换到本机随机端口上的 Web UI。窗口不直接开放 Node.js 能力。受 sandbox 和 context isolation 保护的 preload 只暴露 `selectProjectDirectory()`，通过固定 IPC 请求调用系统目录选择器；主进程仅接受当前主窗口的请求。浏览器版没有该桥接能力，继续使用手动路径输入。桌面主进程创建系统托盘/菜单栏图标，关闭主窗口时只隐藏窗口并保持 Gateway 常驻；点击托盘、macOS Dock 或再次启动应用会恢复并聚焦现有窗口。显式退出应用时通过上述 IPC 关闭流程等待 Gateway 清理完成。
 
-macOS 桌面版 workspace 默认位于 `~/Library/Application Support/tiny-claw/workspace`。首次启动由统一配置初始化器生成不含真实密钥的完整默认配置，应用升级和重新安装不会覆盖已有配置、会话、记忆、技能及插件。开发模式和 CLI/Gateway 模式仍使用原有 `./workspace` 或显式指定的目录。
+macOS 桌面版 workspace 默认位于 `~/Library/Application Support/breeze-coder/workspace`。首次启动由统一配置初始化器生成不含真实密钥的完整默认配置，应用升级和重新安装不会覆盖已有配置、会话、记忆、技能及插件。开发模式和 CLI/Gateway 模式仍使用原有 `./workspace` 或显式指定的目录。
 
 macOS 发布由 Tag 触发 GitHub Actions。流水线在临时钥匙串中导入 Developer ID Application 证书，签名 Electron 应用并生成 DMG，然后使用 Apple `notarytool` 公证最终 DMG、装订公证票据并验证签名与磁盘映像完整性。证书、私钥密码和 Apple 公证凭据仅通过 GitHub Actions Secrets 注入，临时钥匙串在任务结束时删除。
 
 ## 工作目录结构
 
-tiny-claw 运行时需要一个工作目录（workspace），所有持久化数据都放在其中。工作目录路径通过 `--workspace` CLI 参数或 `TINY_CLAW_WORKSPACE` 环境变量指定，默认为 `./workspace`。
+Breeze Coder 运行时需要一个工作目录（workspace），所有持久化数据都放在其中。工作目录路径通过 `--workspace` CLI 参数或 `BREEZE_CODER_WORKSPACE` 环境变量指定，默认为 `./workspace`。
 
 ```
 workspace/
@@ -158,7 +162,7 @@ workspace/
 
 项目开发模式建立在持久化的 `SessionContext` 上。普通会话使用 `{ mode: "chat" }`；项目会话在创建时绑定规范化后的项目真实路径，并把 `{ mode: "project", project: { root, name } }` 写入 `sessions/<session>/meta.json`。绑定创建后不可修改，后续 `/chat` 只接收 `session_id`，不会从请求中临时切换项目。
 
-`core-project` 插件负责 `/projects/inspect`、`/projects/status`、`/projects/diff` 路由和项目提示词注入。静态项目检查只识别技术栈与规则文件，并按文件签名缓存；动态 Git 状态与 diff 通过异步子进程按需读取，不阻塞 Gateway 事件循环，也不重复注入模型上下文。Git 参数使用数组传递而不拼接 shell 字符串，超时和 diff 最大字符数由 `project.gitTimeoutMs`、`project.diffMaxChars` 控制。读取 `.tiny-claw/rules.md` 和根目录 `AGENTS.md` 时应用单文件与总字符上限。项目模式还会自动发现项目根目录下 `.agents/skills/<name>/SKILL.md`，并兼容 `.claude/skills/<name>/SKILL.md`；默认只把技能名称和描述注入提示词，完整正文仍通过 `skill_use` 按需加载。Gateway 只维护一个 `PluginManager`，项目根目录和有效配置通过 session 运行时上下文传递给插件及工具。
+`core-project` 插件负责 `/projects/inspect`、`/projects/status`、`/projects/diff` 路由和项目提示词注入。静态项目检查只识别技术栈与规则文件，并按文件签名缓存；动态 Git 状态与 diff 通过异步子进程按需读取，不阻塞 Gateway 事件循环，也不重复注入模型上下文。Git 参数使用数组传递而不拼接 shell 字符串，超时和 diff 最大字符数由 `project.gitTimeoutMs`、`project.diffMaxChars` 控制。读取 `.breeze-coder/rules.md` 和根目录 `AGENTS.md` 时应用单文件与总字符上限。项目模式还会自动发现项目根目录下 `.agents/skills/<name>/SKILL.md`，并兼容 `.claude/skills/<name>/SKILL.md`；默认只把技能名称和描述注入提示词，完整正文仍通过 `skill_use` 按需加载。Gateway 只维护一个 `PluginManager`，项目根目录和有效配置通过 session 运行时上下文传递给插件及工具。
 
 `core-project-tools` 插件注册 `project_tree`、`project_search`、`git_status`、`git_diff` 四个只读开发工具。工具注册支持基于 `SessionContext` 的可用性过滤，因此普通会话不会把项目工具定义发送给模型。目录树使用异步文件系统 API，并跳过依赖、版本库和常见构建目录；项目搜索优先使用 `rg --json` 解析结构化结果，若运行环境未安装 ripgrep，则自动切换到内置 TypeScript 搜索实现，避免桌面发布包依赖用户系统预装外部命令。两种搜索实现都会在达到结果数、字符数或超时上限时主动截断或终止。四个工具都强制使用项目根目录和符号链接边界校验，并继承统一权限审批与审计日志。
 
@@ -228,7 +232,7 @@ Approval 仍关联具体工具、参数和 continuation。批准或拒绝在原 
 
 会话摘要投影按完整工具交换保留或移除消息：助手的工具调用及其全部连续结果视为一个整体，旧 Checkpoint 落在交换内部时保留整组。当前片段首条仅在确实是用户问题（不含工具结果）时特殊保留，审批恢复后以助手调用开头的片段不再留下已被摘要覆盖的孤立调用。最终模型请求仍做严格工具链校验；失败日志记录轮次、迭代及投影前后消息的序号、角色、块类型和工具 ID，不记录正文、参数或结果，也不补造结果或重放工具。
 
-主请求与摘要抽取共享已结束历史的协议投影：缺少结果的历史工具调用转成包含原始调用 ID 和参数的文字说明，明确不能推断执行结果；同组已有结果的调用仍保留协议配对。原始消息日志不变。Run 为 running、waiting_approval 或 waiting_user 的调用保持原样，不视为已结束历史。摘要抽取在分批前校验整段候选消息链，结构不完整时保留覆盖位置并报告链路错误，避免孤立调用阻塞所有分批边界后被误报为输入预算不足。
+主请求对已结束历史使用协议投影：缺少结果的历史工具调用转成文字说明，同组已有结果的调用仍保留协议配对。摘要抽取独立读取原始历史，只选择用户输入和最终回答，不使用这些工具说明。Run 为 running、waiting_approval 或 waiting_user 的轮次不参与摘要，覆盖位置不能跨过活动轮次。历史工具链缺失不阻塞问答提取，也不会被推断成成功结果；原始消息日志不变。
 
 `core-progress` 通过提示词钩子要求复杂任务说明行动意图及关键发现。按 sessionId/turnId 隔离记录最近正文响应时间及随后工具调用数；默认 60 秒或 5 次工具调用后，在下一次请求消息末尾附加临时进展提醒，不修改固定系统提示词或持久化历史，不阻断工具、不额外调用模型。正文响应和提醒均重置计数以节流；暂停、结束、错误时清理，恢复后重新计时，不把等待审批时间算作沉默。配置为 progress.enabled/silenceMs/toolCalls。仅实际模型正文沿现有消息历史和 SSE 快照保存；单次模型请求期间不会伪造进度或插入提醒。
 
@@ -590,9 +594,9 @@ Gateway 在聊天和审批续跑的 SSE 响应空闲期间发送注释心跳，�
 
 Agent 向插件提供全部未压缩历史和当前轮消息，不按 historyWindowSize 或工具消息类型裁剪；跨轮保留完整工具调用及结果，只修复孤立的协议记录。唯一摘要路径是 core-session-summary，在 onBeforeModelCall 按完整输入 Token 阈值触发，主会话和子 Agent 共用。
 
-摘要覆盖已验证的完整交互前缀，包括历史轮次及当前轮较早的已完成工具交互，成功落盘后推进覆盖序号；最新用户需求和最新交互保留，不另设 recentTurns。关闭摘要时不生成临时摘要、不按轮数丢弃历史，工具结果预算保护仍生效，硬预算不足时明确报错。取消和失败保留原文及已提交的摘要批次。原始 messages.jsonl 不被摘要改写。
+摘要只覆盖已结束的历史轮次，成功落盘后推进整个轮次的覆盖序号（包括未发给摘要模型的工具消息）。当前轮尚无最终回答，不生成摘要，仅沿用工具结果截断。关闭摘要时不生成临时摘要、不按轮数丢弃历史，工具结果预算保护仍生效，硬预算不足时明确报错。取消和失败保留原文及已提交的摘要批次。原始 messages.jsonl 不被摘要改写。
 
-摘要请求将提示词、已有条目、元数据和消息投影一起计入 maxInputChars，同时预留 maxOutputTokens 并检查模型上下文上限；二分选择能容纳的完整交互前缀，工具调用和结果不能拆开。工具结果正文（包括预览和控制结果正文）完全排除出摘要输入，仅保留调用 ID 与原始长度；调用名称和参数保留在调用元数据中。模型只整理用户要求、助手结论、决策和任务状态，不推测工具结果。用户文本不固定截取；仍无法容纳时失败，不推进覆盖序号。所有主模型调用继续执行最终硬预算和工具链合法性检查。
+摘要请求将提示词、已有条目、元数据和问答投影一起计入 maxInputChars，同时预留 maxOutputTokens 并检查模型上下文上限；二分选择能容纳的完整轮次前缀，不拆分单轮问答。按 turnId 分组，旧消息缺少 turnId 时以真实用户输入分轮；每轮只发送用户输入及末尾无工具调用的模型回答。工具名称、参数、结果、思考、中间播报和 runtime_notice 全部排除，图片仅保留附件名称。失败或中止且没有最终回答的轮次仅保留用户输入，不编造回答。模型引用只能来自实际发送的问答，覆盖范围仍以原始连续消息校验；纯工具残留可直接提交空 Delta，不调用模型。单轮问答无法容纳时保留原文，不截断用户输入、不推进覆盖序号。所有主模型调用继续执行最终硬预算和工具链合法性检查。
 
 主请求的工具输出只做确定性截断，不做模型摘要。根据 turnStartIndex 区分当前轮与历史轮，审批恢复沿用原轮边界。历史结果按 plugins.core-tool-context.historyResultMaxChars（默认 500，正整数）保留前缀，附带 truncated、originalChars 和 contentRef.toolCallId；当前轮沿用单条和共享 Token 预算，新结果优先。审批及用户确认控制消息不截断。请求投影保留工具协议配对，不修改磁盘原文；摘要覆盖旧消息组后仍可按调用 ID 读取原结果。
 
@@ -604,7 +608,7 @@ Agent 向插件提供全部未压缩历史和当前轮消息，不按 historyWin
 
 集中压缩由 maxBatchesPerCompression（默认 3）和 maxCompressionDurationMs（默认 120000）限制。每批调用前以剩余总时间创建取消信号，并以 Promise race 防止不响应信号的适配器阻塞；迟到结果不提交。用户取消仍传播为取消，而预算耗尽转为保留原文的工具投影兜底，最终硬预算检查保持生效。每批报告批次、覆盖位置、剩余条数和已用时，成功批次即时原子提交，后续请求只处理未覆盖部分。
 
-预算统一为扣除固定提示词、工具定义、输出预留和安全空间后的可用容量，高水位默认 80%，低水位默认 20%；完整动态包装及运行资料均参与计数。正常追加阶段不改写摘要投影。集中整理时依次处理完整历史/本轮较旧交互，选择最近 N 批独立摘要（默认 5），并受 maxBudgetRatio（默认 0.1）约束；单批 maxBatchTokens 默认 1500，生成后校验，超限有限重试。不能达到低水位时从旧工具结果回收正文额度，保留原文引用，最新结果优先但不以每条最低额度突破共享硬预算。
+预算统一为扣除固定提示词、工具定义、输出预留和安全空间后的可用容量，高水位默认 80%，低水位默认 20%；完整动态包装及运行资料均参与计数。正常追加阶段不改写摘要投影。集中整理时依次处理已结束轮次的问答，选择最近 N 批独立摘要（默认 5），并受 maxBudgetRatio（默认 0.1）约束；单批 maxBatchTokens 默认 1500，生成后校验，超限有限重试。不能达到低水位时从旧工具结果回收正文额度，保留原文引用，最新结果优先但不以每条最低额度突破共享硬预算。
 
 projection 持久化选中批次 ID 与工具结果 Token 上限，旧原文不因淘汰摘要或服务重启重新注入；批次正文不可变。摘要数据和原文仍保留在磁盘供追溯。只在达到低水位时上报达标，必要内容超过目标但符合硬预算时继续，否则最终请求校验拒绝发送。配置加载和设置保存共同校验 `0 < target < trigger < 1`。存储 compact 仅用于归档 Delta，不做摘要再摘要；归档阈值不包含累积的独立批次，避免批次增多后每次都触发归档。
 
@@ -855,7 +859,7 @@ web/
 
 Web UI 按 session 保存消息、流式文本、工具调用、运行状态和中止控制器。切换会话或进入其他页签不会关闭仍在运行的 SSE；流事件继续写入其所属 session，返回该会话时可恢复处理中状态和已有输出。“停止”只中止当前会话。Gateway 的 `GatewayStream` 独立消费 Agent 事件，维护当前轮次累计文本、工具状态与订阅者，页面连接断开仅移除订阅；任务结束后释放内存快照。刷新或断线后，前端根据会话轮询通过 `GET /sessions/:id/events` 获取 `snapshot` 并订阅后续增量，204 表示任务已结束，应刷新历史。按快照 `turnId` 替换同轮历史助手片段，避免历史消息和流式消息重复；审批恢复沿用审批 ID 合并工具结果。该机制只恢复当前 Gateway 进程中的 Web 任务，不跨服务重启恢复执行。助手消息由 ReactMarkdown 渲染，围栏代码块通过共享的 highlight.js 语言注册表执行语法高亮；项目 Diff 视图复用同一高亮模块，未知或未标注语言使用自动识别。
 
-Web UI 的主题状态只属于客户端展示偏好，不进入 Gateway 配置或 Session 数据。首次加载优先读取浏览器 `localStorage` 中的 `tiny-claw-theme`，没有有效值时使用 `prefers-color-scheme`；用户通过侧栏切换后持久化为 `light` 或 `dark`。`index.html` 在 React 挂载前同步设置根节点的 `data-theme`，避免页面先以浅色渲染再切换；组件样式通过语义化 CSS 变量响应主题。
+Web UI 的主题状态只属于客户端展示偏好，不进入 Gateway 配置或 Session 数据。首次加载优先读取浏览器 `localStorage` 中的 `breeze-coder-theme`，没有有效值时使用 `prefers-color-scheme`；用户通过侧栏切换后持久化为 `light` 或 `dark`。`index.html` 在 React 挂载前同步设置根节点的 `data-theme`，避免页面先以浅色渲染再切换；组件样式通过语义化 CSS 变量响应主题。
 
 **记忆管理：** Web UI 提供"记忆"页签，支持搜索、刷新、查看、编辑、保存、删除、启用/禁用长期记忆。面板直接调用 `/memory` API，不通过 agent tool，以避免管理操作被模型行为影响。
 
@@ -865,7 +869,7 @@ Web UI 的主题状态只属于客户端展示偏好，不进入 Gateway 配置�
 
 ### 插件系统
 
-tiny-claw 采用插件化架构，主框架（AgentSession）只负责编排 Agent Loop 和在关键节点调用插件钩子，所有业务逻辑（工具注册、提示词构建、上下文压缩、日志记录）均由插件实现。
+Breeze Coder 采用插件化架构，主框架（AgentSession）只负责编排 Agent Loop 和在关键节点调用插件钩子，所有业务逻辑（工具注册、提示词构建、上下文压缩、日志记录）均由插件实现。
 
 **核心原则：** 插件通过注册钩子介入流程，框架通过 PluginManager 统一调度。
 

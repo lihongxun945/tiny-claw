@@ -62,7 +62,7 @@ function parsePortArg(): number {
   if (idx !== -1 && idx + 1 < process.argv.length) {
     return parseInt(process.argv[idx + 1], 10) || 3000;
   }
-  const envPort = process.env.TINY_CLAW_PORT;
+  const envPort = process.env.BREEZE_CODER_PORT;
   if (envPort) return parseInt(envPort, 10) || 3000;
   return 3000;
 }
@@ -72,7 +72,7 @@ function parseWebPortArg(): number | undefined {
   if (idx !== -1 && idx + 1 < process.argv.length) {
     return parseInt(process.argv[idx + 1], 10) || undefined;
   }
-  const envPort = process.env.TINY_CLAW_WEB_PORT;
+  const envPort = process.env.BREEZE_CODER_WEB_PORT;
   if (envPort) return parseInt(envPort, 10) || undefined;
   return undefined;
 }
@@ -1343,8 +1343,8 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
         stdio: "inherit",
         env: {
           ...process.env,
-          TINY_CLAW_PORT: String(port),
-          ...(gatewayToken ? { TINY_CLAW_GATEWAY_TOKEN: gatewayToken } : {}),
+          BREEZE_CODER_PORT: String(port),
+          ...(gatewayToken ? { BREEZE_CODER_GATEWAY_TOKEN: gatewayToken } : {}),
         },
       });
       viteChild.on("error", (err) => {
@@ -1361,7 +1361,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
     if (hasDist) appendLog(workspacePath, "info", `Web UI: http://localhost:${webPort}`);
     appendLog(workspacePath, "info", `工作目录: ${workspacePath}`);
   } else {
-    console.log(`tiny-claw 已启动`);
+    console.log(`Breeze Coder 已启动`);
     console.log(`  Gateway API: http://${gatewayHost}:${port}`);
     console.log(`  Web UI:      http://localhost:${webPort}${!hasDist && viteChild ? " (dev)" : ""}`);
     console.log(`  工作目录:    ${workspacePath}`);
@@ -1410,7 +1410,7 @@ async function runServer(port: number, workspacePath: string): Promise<void> {
 }
 
 async function main() {
-  const workspacePath = parseWorkspaceArg() || process.env.TINY_CLAW_WORKSPACE || process.cwd() + "/workspace";
+  const workspacePath = parseWorkspaceArg() || process.env.BREEZE_CODER_WORKSPACE || process.cwd() + "/workspace";
   const port = parsePortArg();
   const command = parseCommand();
 

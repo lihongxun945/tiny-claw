@@ -69,7 +69,8 @@ describe("summary tool-chain boundaries", () => {
       let calls = 0;
       const client = { complete: async (input: Message[]) => {
         calls++;
-        expect(String(input[0].content)).toContain("历史工具调用未记录到结果");
+        expect(String(input[0].content)).not.toContain("历史工具调用未记录到结果");
+        expect(String(input[0].content)).not.toContain("PRIVATE_ARGUMENT");
         return JSON.stringify({ operations: [] });
       } };
       await hooks.onBeforeModelCall!({ sessionId, config: loadConfig(workspace), client } as unknown as HookContext,

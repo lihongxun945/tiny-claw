@@ -20,7 +20,7 @@ describe("project development context", () => {
   });
 
   it("inspects paths with shell metacharacters without shell interpolation", async () => {
-    const parent = mkdtempSync(resolve(tmpdir(), "tiny-claw-project-parent-"));
+    const parent = mkdtempSync(resolve(tmpdir(), "breeze-coder-project-parent-"));
     paths.push(parent);
     const name = process.platform === "win32" ? "项目 repo $(echo unsafe) & test" : 'repo "$(echo unsafe)"';
     const root = resolve(parent, name);
@@ -62,7 +62,7 @@ describe("project development context", () => {
   });
 
   it("reads git status asynchronously and truncates diffs at the configured limit", async () => {
-    const root = mkdtempSync(resolve(tmpdir(), "tiny-claw-git-project-"));
+    const root = mkdtempSync(resolve(tmpdir(), "breeze-coder-git-project-"));
     paths.push(root);
     execFileSync("git", ["-C", root, "init", "-q"]);
     execFileSync("git", ["-C", root, "config", "user.email", "test@example.com"]);
@@ -97,7 +97,7 @@ describe("project development context", () => {
   it("prevents project file writes from escaping the project root", async () => {
     const workspace = createTempWorkspace({ security: { mode: "allow" } });
     paths.push(workspace);
-    const project = mkdtempSync(resolve(tmpdir(), "tiny-claw-project-root-"));
+    const project = mkdtempSync(resolve(tmpdir(), "breeze-coder-project-root-"));
     paths.push(project);
     const tool = createFileWriteTool(workspace, () => loadConfig(workspace));
     const result = await tool.execute({ path: "../outside.txt", content: "blocked" }, {

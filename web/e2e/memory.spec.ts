@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 const memory = {
   name: "project-context",
   summary: "项目背景",
-  content: "tiny-claw project",
+  content: "breeze-coder project",
   tags: ["project"],
   scope: "project",
   sensitive: false,

@@ -27,10 +27,10 @@ test("does not grant trust on cancel and keeps failed saves visible", async ({ p
   await page.getByPlaceholder("例如 /Users/you/my-project").fill("/projects/example");
   await page.getByRole("button", { name: "打开项目", exact: true }).click();
   await page.getByLabel("信任此项目").check();
-  await page.screenshot({ path: "/tmp/tiny-claw-project-settings-desktop.png" });
+  await page.screenshot({ path: "/tmp/breeze-coder-project-settings-desktop.png" });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole("dialog")).toBeInViewport();
-  await page.screenshot({ path: "/tmp/tiny-claw-project-settings-mobile.png" });
+  await page.screenshot({ path: "/tmp/breeze-coder-project-settings-mobile.png" });
   await page.getByRole("button", { name: "取消", exact: true }).click();
   expect(writes).toBe(0);
   await page.setViewportSize({ width: 1280, height: 720 });
@@ -47,7 +47,7 @@ test("persists project approval mode without changing the global mode", async ({
     id: "project-permission-session",
     lastActivity: Date.now(),
     preview: "权限测试",
-    context: { mode: "project", project: { root: "/Users/test/tiny-claw", name: "tiny-claw" } },
+    context: { mode: "project", project: { root: "/Users/test/breeze-coder", name: "breeze-coder" } },
     executionMode: "normal",
   };
   let config: Record<string, unknown> = {
@@ -57,7 +57,7 @@ test("persists project approval mode without changing the global mode", async ({
   await page.route("**/history/sessions", async (route) => route.fulfill({ json: { sessions: [session] } }));
   await page.route("**/history/sessions/*/messages", async (route) => route.fulfill({ json: { messages: [] } }));
   await page.route("**/projects/inspect", async (route) => route.fulfill({ json: { project: {
-    root: "/Users/test/tiny-claw", name: "tiny-claw", stack: [], rules: "(无)",
+    root: "/Users/test/breeze-coder", name: "breeze-coder", stack: [], rules: "(无)",
   } } }));
   await page.route("**/projects/status", async (route) => route.fulfill({ json: { status: {
     isRepository: false, branch: "", clean: true, changedCount: 0, files: [],
@@ -80,14 +80,14 @@ test("persists project approval mode without changing the global mode", async ({
 test("creates and restores a project session as soon as a directory is selected", async ({ page }) => {
   const sessions: Array<Record<string, unknown>> = [];
   await page.addInitScript(() => {
-    window.tinyClawDesktop = {
-      selectProjectDirectory: async () => "/Users/test/tiny-claw",
+    window.breezeCoderDesktop = {
+      selectProjectDirectory: async () => "/Users/test/breeze-coder",
     };
   });
   await page.route("**/projects/inspect", async (route) => {
     await route.fulfill({ json: { project: {
-      root: "/Users/test/tiny-claw",
-      name: "tiny-claw",
+      root: "/Users/test/breeze-coder",
+      name: "breeze-coder",
       stack: ["Node.js / npm"],
       rules: "(无)",
     } } });
@@ -104,7 +104,7 @@ test("creates and restores a project session as soon as a directory is selected"
       id: "project-session-1",
       lastActivity: Date.now(),
       preview: "",
-      context: { mode: "project", project: { root: "/Users/test/tiny-claw", name: "tiny-claw" } },
+      context: { mode: "project", project: { root: "/Users/test/breeze-coder", name: "breeze-coder" } },
     };
     sessions.push(session);
     await route.fulfill({ json: { session } });
@@ -124,9 +124,9 @@ test("creates and restores a project session as soon as a directory is selected"
   await page.getByLabel("信任此项目").check();
   await page.getByRole("button", { name: "创建项目", exact: true }).click();
 
-  await expect(page.locator(".project-group-title")).toHaveText("tiny-claw");
+  await expect(page.locator(".project-group-title")).toHaveText("breeze-coder");
   await expect(page.locator(".project-conversation-item .session-id")).toHaveText("新对话");
-  await expect(page.locator(".project-toolbar-path")).toHaveText("/Users/test/tiny-claw");
+  await expect(page.locator(".project-toolbar-path")).toHaveText("/Users/test/breeze-coder");
   await page.getByRole("button", { name: "项目设置", exact: true }).click();
   await expect(page.getByLabel("信任此项目")).toBeChecked();
   await page.getByLabel("信任此项目").uncheck();
@@ -142,15 +142,15 @@ test("creates and restores a project session as soon as a directory is selected"
   await page.getByRole("button", { name: "对话", exact: true }).click();
   await page.getByRole("button", { name: "项目", exact: true }).click();
 
-  await expect(page.locator(".project-group-title")).toHaveText("tiny-claw");
+  await expect(page.locator(".project-group-title")).toHaveText("breeze-coder");
   await expect(page.locator(".session-item.active")).toHaveCount(1);
-  await expect(page.locator(".project-toolbar-path")).toHaveText("/Users/test/tiny-claw");
+  await expect(page.locator(".project-toolbar-path")).toHaveText("/Users/test/breeze-coder");
 });
 
 test("prevents duplicate project sessions while a project is opening", async ({ page }) => {
   let createCount = 0;
   await page.addInitScript(() => {
-    window.tinyClawDesktop = { selectProjectDirectory: async () => "/Users/test/large-project" };
+    window.breezeCoderDesktop = { selectProjectDirectory: async () => "/Users/test/large-project" };
   });
   await page.route("**/projects/inspect", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -180,7 +180,7 @@ test("groups conversations under projects and exposes separate project actions",
     id: "persisted-project-session",
     lastActivity: Date.now(),
     preview: "继续开发项目",
-    context: { mode: "project", project: { root: "/Users/test/tiny-claw", name: "tiny-claw" } },
+    context: { mode: "project", project: { root: "/Users/test/breeze-coder", name: "breeze-coder" } },
   }, {
     id: "other-project-session",
     lastActivity: Date.now() - 1,
@@ -195,8 +195,8 @@ test("groups conversations under projects and exposes separate project actions",
   });
   await page.route("**/projects/inspect", async (route) => {
     await route.fulfill({ json: { project: {
-      root: "/Users/test/tiny-claw",
-      name: "tiny-claw",
+      root: "/Users/test/breeze-coder",
+      name: "breeze-coder",
       stack: ["Node.js / npm"],
       rules: "(无)",
     } } });
@@ -210,7 +210,7 @@ test("groups conversations under projects and exposes separate project actions",
       id: "new-project-conversation",
       lastActivity: Date.now() + 1,
       preview: "",
-      context: { mode: "project", project: { root: body.projectRoot, name: "tiny-claw" } },
+      context: { mode: "project", project: { root: body.projectRoot, name: "breeze-coder" } },
     };
     sessions.unshift(session);
     await route.fulfill({ json: { session } });
@@ -222,16 +222,16 @@ test("groups conversations under projects and exposes separate project actions",
   await page.goto("/");
   await page.getByRole("button", { name: "项目", exact: true }).click();
 
-  await expect(page.locator(".project-group-title")).toHaveText(["tiny-claw", "other-app"]);
+  await expect(page.locator(".project-group-title")).toHaveText(["breeze-coder", "other-app"]);
   await expect(page.locator(".project-conversation-item .session-id")).toHaveText(["继续开发项目", "检查另一个项目"]);
   await expect.poll(async () => (
     await page.locator(".project-conversation-item").allTextContents()
-  ).every((text) => !text.includes("tiny-claw"))).toBe(true);
+  ).every((text) => !text.includes("breeze-coder"))).toBe(true);
   await expect(page.locator(".session-item.active")).toHaveCount(1);
-  await expect(page.locator(".project-toolbar-path")).toHaveText("/Users/test/tiny-claw");
+  await expect(page.locator(".project-toolbar-path")).toHaveText("/Users/test/breeze-coder");
 
-  await page.getByRole("button", { name: "在 tiny-claw 中新建对话" }).click();
-  await expect.poll(() => createdForRoot).toBe("/Users/test/tiny-claw");
+  await page.getByRole("button", { name: "在 breeze-coder 中新建对话" }).click();
+  await expect.poll(() => createdForRoot).toBe("/Users/test/breeze-coder");
   await expect(page.locator(".project-group").first().locator(".project-conversation-item")).toHaveCount(2);
   await expect(page.locator(".project-group").first().locator(".project-conversation-item").first()).toContainText("新对话");
 
@@ -240,17 +240,17 @@ test("groups conversations under projects and exposes separate project actions",
 });
 
 test("deletes a project by removing its sessions without touching the local directory", async ({ page }) => {
-  const projectRoot = "/Users/test/tiny-claw";
+  const projectRoot = "/Users/test/breeze-coder";
   const sessions = [{
     id: "project-session-a",
     lastActivity: Date.now(),
     preview: "第一条对话",
-    context: { mode: "project", project: { root: projectRoot, name: "tiny-claw" } },
+    context: { mode: "project", project: { root: projectRoot, name: "breeze-coder" } },
   }, {
     id: "project-session-b",
     lastActivity: Date.now() - 1,
     preview: "第二条对话",
-    context: { mode: "project", project: { root: projectRoot, name: "tiny-claw" } },
+    context: { mode: "project", project: { root: projectRoot, name: "breeze-coder" } },
   }];
   const deletedUrls: string[] = [];
 
@@ -261,7 +261,7 @@ test("deletes a project by removing its sessions without touching the local dire
     await route.fulfill({ json: { messages: [] } });
   });
   await page.route("**/projects/inspect", async (route) => {
-    await route.fulfill({ json: { project: { root: projectRoot, name: "tiny-claw", stack: [], rules: "(无)" } } });
+    await route.fulfill({ json: { project: { root: projectRoot, name: "breeze-coder", stack: [], rules: "(无)" } } });
   });
   await page.route("**/projects/status", async (route) => {
     await route.fulfill({ json: { status: { isRepository: false, branch: "", clean: true, changedCount: 0, files: [] } } });
@@ -280,7 +280,7 @@ test("deletes a project by removing its sessions without touching the local dire
   await expect(page.locator(".project-conversation-item")).toHaveCount(2);
 
   page.once("dialog", async (dialog) => dialog.dismiss());
-  await page.getByRole("button", { name: "删除项目 tiny-claw" }).click();
+  await page.getByRole("button", { name: "删除项目 breeze-coder" }).click();
   await expect.poll(() => deletedUrls.length).toBe(0);
   await expect(page.locator(".project-conversation-item")).toHaveCount(2);
 
@@ -288,7 +288,7 @@ test("deletes a project by removing its sessions without touching the local dire
     expect(dialog.message()).toContain("本地目录和文件不会被删除");
     await dialog.accept();
   });
-  await page.getByRole("button", { name: "删除项目 tiny-claw" }).click();
+  await page.getByRole("button", { name: "删除项目 breeze-coder" }).click();
 
   await expect.poll(() => deletedUrls.length).toBe(2);
   expect(deletedUrls.every((url) => !url.includes(encodeURIComponent(projectRoot)) && !url.includes(projectRoot))).toBe(true);
@@ -297,13 +297,13 @@ test("deletes a project by removing its sessions without touching the local dire
 });
 
 test("keeps the project list visible while navigating utility views", async ({ page }) => {
-  const projectRoot = "/Users/test/tiny-claw";
+  const projectRoot = "/Users/test/breeze-coder";
   await page.route("**/history/sessions", async (route) => {
     await route.fulfill({ json: { sessions: [{
       id: "project-navigation-session",
       lastActivity: Date.now(),
       preview: "项目会话",
-      context: { mode: "project", project: { root: projectRoot, name: "tiny-claw" } },
+      context: { mode: "project", project: { root: projectRoot, name: "breeze-coder" } },
     }, {
       id: "chat-navigation-session",
       lastActivity: Date.now() - 1,
@@ -315,7 +315,7 @@ test("keeps the project list visible while navigating utility views", async ({ p
     await route.fulfill({ json: { messages: [] } });
   });
   await page.route("**/projects/inspect", async (route) => {
-    await route.fulfill({ json: { project: { root: projectRoot, name: "tiny-claw", stack: [], rules: "(无)" } } });
+    await route.fulfill({ json: { project: { root: projectRoot, name: "breeze-coder", stack: [], rules: "(无)" } } });
   });
   await page.route("**/projects/status", async (route) => {
     await route.fulfill({ json: { status: { isRepository: false, branch: "", clean: true, changedCount: 0, files: [] } } });
@@ -325,12 +325,12 @@ test("keeps the project list visible while navigating utility views", async ({ p
   await page.getByRole("button", { name: "项目", exact: true }).click();
   await expect(page.locator(".sidebar-nav .nav-btn").nth(0)).toHaveAccessibleName("项目");
   await expect(page.locator(".sidebar-nav .nav-btn").nth(1)).toHaveAccessibleName("对话");
-  await expect(page.locator(".project-group-title")).toHaveText("tiny-claw");
+  await expect(page.locator(".project-group-title")).toHaveText("breeze-coder");
   await expect(page.locator(".sidebar-primary-action")).toContainText("新建项目");
 
   for (const name of ["记忆", "日志", "配置"]) {
     await page.getByRole("button", { name, exact: true }).click();
-    await expect(page.locator(".project-group-title")).toHaveText("tiny-claw");
+    await expect(page.locator(".project-group-title")).toHaveText("breeze-coder");
     await expect(page.locator(".project-conversation-item")).toContainText("项目会话");
     await expect(page.locator(".sidebar-primary-action")).toContainText("新建项目");
     await expect(page.locator(".session-preview", { hasText: "普通会话" })).toHaveCount(0);

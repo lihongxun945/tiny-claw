@@ -87,6 +87,30 @@ describe("rolling context compression", () => {
     } finally { removeTempWorkspace(workspace); }
   });
 
+  it("does not summarize earlier tool exchanges in a live turn", async () => {
+    const workspace = createTempWorkspace();
+    try {
+      for (const message of [
+        { role: "user", content: "live request" },
+        { role: "assistant", content: [{ type: "tool_use", id: "a", name: "read", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "data".repeat(8000) }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "b", name: "read", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "b", content: "more data".repeat(8000) }] },
+      ] as Message[]) await appendSessionMessage(workspace, "live", { ...message, _turnId: "turn" });
+      const messages = readSessionMessages(workspace, "live");
+      let calls = 0;
+      const client = { complete: async () => { calls++; return '{"operations":[]}'; } };
+      const context = { sessionId: "live", turnId: "turn", config: loadConfig(workspace), client } as unknown as HookContext;
+      // Resume may begin after the original user request, without a Run record.
+      const result = await (await hooks(workspace)).onBeforeModelCall!(context,
+        { messages, turnStartIndex: 1, messageTokenBudget: 6400, hardMessageTokenBudget: 8000 });
+      expect(calls).toBe(0);
+      expect(loadSessionSummary(workspace, "live").summarizedThroughSequence).toBe(0);
+      expect(validateToolMessageChains(result!.messages)).toBeUndefined();
+      expect(readSessionMessages(workspace, "live")).toEqual(messages);
+    } finally { removeTempWorkspace(workspace); }
+  });
+
   it("budgets complete dynamic wrappers instead of only summary text (105-token regression)", async () => {
     let toolHooks!: PluginHooks;
     await coreToolContextPlugin.init({ registerRoute() {}, extendPrompt() {}, registerHooks(value: PluginHooks) { toolHooks = value; } } as unknown as PluginContext);

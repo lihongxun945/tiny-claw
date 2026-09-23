@@ -1,7 +1,7 @@
 {
-  "name": "tiny-claw",
-  "version": "0.1.0-beta.28",
-  "description": "一个自主规划、执行任务的 Agent",
+  "name": "breeze-coder",
+  "version": "0.1.0-beta.29",
+  "description": "Breeze Coder，让编程如沐清风。一个插件化、可扩展的个人 AI 编程助手。",
   "type": "module",
   "main": "desktop-dist/main.js",
   "scripts": {
@@ -50,8 +50,8 @@
     "tsx": "^4.22.2"
   },
   "build": {
-    "appId": "com.lihongxun.tiny-claw",
-    "productName": "tiny-claw",
+    "appId": "com.lihongxun.breeze-coder",
+    "productName": "Breeze Coder",
     "asar": false,
     "directories": {
       "output": "release"
@@ -91,10 +91,11 @@
       ]
     },
     "win": {
+      "executableName": "breeze-coder",
       "icon": "build/icon.png",
       "target": [{ "target": "nsis", "arch": ["x64"] }],
       "forceCodeSigning": false,
-      "artifactName": "tiny-claw-${version}-windows-${arch}-setup.${ext}"
+      "artifactName": "breeze-coder-${version}-windows-${arch}-setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -106,8 +107,8 @@
       "createStartMenuShortcut": true
     },
     "dmg": {
-      "title": "tiny-claw ${version}",
-      "artifactName": "tiny-claw-${version}-${arch}.${ext}"
+      "title": "Breeze Coder ${version}",
+      "artifactName": "breeze-coder-${version}-${arch}.${ext}"
     }
   }
 }
