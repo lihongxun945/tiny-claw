@@ -115,7 +115,7 @@ desktop/                # Electron macOS 桌面壳
 
 品牌名称为 `Breeze Coder`，npm 包名为 `breeze-coder`，Windows 可执行文件为 `breeze-coder.exe`。发布脚本从 package.json 的 build 配置读取产品名和可执行文件名，不再假定安装路径不含空格。应用 ID / Windows AppUserModelId 为 `com.lihongxun.breeze-coder`，NSIS 安装 GUID 随应用 ID 更新。桌面启动在获取单实例锁前显式将 userData 指向 appData 下的 `breeze-coder`；`--user-data-dir` 仍优先。环境变量统一为 `BREEZE_CODER_*`，项目规则目录为 `.breeze-coder/`，浏览器主题键为 `breeze-coder-theme`，preload 桥接名称为 `breezeCoderDesktop`。不保留旧品牌标识兼容，不自动迁移旧工作空间；已有用户数据不会被删除或改写，迁移时需先备份并复制到新目录。
 
-图标源为用户选定的 `build/icon-source.png`，`build/icon.png`、iconset 和 WebUI 图标均由此缩放生成；macOS 托盘使用 `build/trayTemplate.svg` 的黑白简化版本。旧品牌 SVG 已移除。
+图标源为用户选定的 `build/icon-source.png`，`build/icon.png` 仅在原图四角应用半径为边长 20% 的透明圆角遮罩，不增加外围边距、不缩放主体；iconset 和 WebUI 图标由圆角图标缩放生成。macOS 托盘使用 `build/trayTemplate.svg` 的透明黑白简化版本，不添加白底。旧品牌 SVG 已移除。
 
 桌面入口同时支持 macOS ARM64 和 Windows x64，复用同一 Web UI、Gateway 和插件体系。Windows 使用 electron-builder NSIS 安装向导，默认按当前用户安装、不删除用户数据；Windows 暂不签名，macOS 维持 Developer ID 签名和公证。Windows 图标从现有 PNG 由打包器生成 ICO，托盘使用普通图片而不是 macOS Template 图像，配置 AppUserModelId；默认数据目录来自 app.getPath("userData")，通常为 `%APPDATA%/breeze-coder/workspace`。显式 `--user-data-dir` 支持隔离测试目录。
 

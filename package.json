@@ -1,6 +1,6 @@
 {
   "name": "breeze-coder",
-  "version": "0.1.0-beta.29",
+  "version": "0.1.0-beta.30",
   "description": "Breeze Coder，让编程如沐清风。一个插件化、可扩展的个人 AI 编程助手。",
   "type": "module",
   "main": "desktop-dist/main.js",
